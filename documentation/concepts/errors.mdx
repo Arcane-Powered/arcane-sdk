@@ -1,0 +1,44 @@
+---
+title: "Errors"
+description: "SdkError variants and stable string codes for Arcane ownership checks."
+keywords: ["errors", "SdkError", "ticket_missing", "device_mismatch"]
+---
+
+All ownership failures map to `SdkError`. Use `err.code()` for stable machine-readable codes (also prefixed in C ABI error buffers).
+
+## Status vs error
+
+Successful checks return `OwnershipStatus`:
+
+| Value | Meaning |
+|-------|---------|
+| `Owned` | Valid ticket for this game and device |
+| `DrmDisabled` | DRM is off for this game; no ticket required |
+
+## Error codes
+
+| Code | Variant | Typical cause |
+|------|---------|----------------|
+| `ticket_missing` | `TicketMissing` | No ticket cache, or empty ticket while DRM is on |
+| `ticket_expired` | `TicketExpired` | JWT past `exp` (beyond skew) |
+| `ticket_invalid` | `TicketInvalid` | Bad JWT, JWKS, game mismatch, `own=false`, corrupt file |
+| `device_mismatch` | `DeviceMismatch` | Ticket / cache fingerprint ≠ this machine |
+| `clock_rollback` | `ClockRollback` | System clock earlier than ticket or last-seen time |
+| `internal` | `Io` | Filesystem / path errors |
+
+## C ABI mapping
+
+`arcane_sdk_init` and `arcane_check_ownership_offline` return:
+
+| Return | Meaning |
+|--------|---------|
+| `0` | Success (`Owned` or `DrmDisabled`) |
+| `1` | Null / invalid `game_id` |
+| `2` | `SdkError` — message written to `err_buf` as `code: message` |
+
+```c
+char err[256];
+if (arcane_sdk_init(game_id, err, sizeof(err)) != 0) {
+  // e.g. "ticket_missing: No ownership ticket cached for game `…`."
+}
+```
