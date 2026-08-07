@@ -1,35 +1,39 @@
 ---
 title: "Introduction"
-description: "Arcane SDK — offline ownership verification for Arcane Powered games."
-keywords: ["arcane", "sdk", "drm", "ownership", "rust"]
+description: "Native SDK that connects your game to Arcane Powered."
+keywords: ["arcane", "sdk", "integration", "games", "rust"]
 ---
 
-The Arcane SDK is the native core for integrating **Arcane Powered** into games: offline ownership tickets, DRM checks, and a C ABI for Unity, Unreal, and other engines.
+The **Arcane SDK** is how your game talks to **Arcane Powered**. Link it once (Rust crate or C ABI) and you get the platform integration path for ownership, achievements, cloud saves, friends, and the rest of the Arcane surface — with multi-engine bindings (Unity, Unreal, native).
 
-The desktop launcher issues and refreshes JWTs, then writes them under the shared Arcane app-data DRM directory. Your game links this crate (or the C ABI) and verifies ownership **without network calls**.
+## Integration in practice
+
+For launch, you do two things:
+
+1. Link the SDK
+2. Call `arcane_init` with your **portal public key**
+
+That is the default path. `arcane_init` checks ownership at launch automatically, unless the cached `drm_enabled` flag is `false` — then it succeeds without a ticket. You do not wire a separate ownership step unless you want a custom flow.
 
 <Columns cols={2}>
   <Card title="Quickstart" icon="rocket" href="/quickstart">
-    Add the crate, call `arcane_init`, and verify ownership offline.
+    Link the SDK and call `arcane_init` at launch.
   </Card>
-  <Card title="Ownership model" icon="shield" href="/concepts/ownership">
-    How tickets, JWKS, device fingerprints, and DRM flags work.
+  <Card title="Ownership" icon="shield" href="/concepts/ownership">
+    What init does by default, and when DRM is skipped.
   </Card>
   <Card title="Rust API" icon="code" href="/reference/rust-api">
-    Public functions, types, and status values for native Rust games.
+    Public functions and types for native Rust games.
   </Card>
   <Card title="C ABI" icon="cube" href="/reference/c-abi">
-    FFI entry points for Unity, Unreal, and other native engines.
+    FFI for Unity, Unreal, and other native engines.
   </Card>
 </Columns>
 
-## What you get today
+## Portal public key
 
-- Offline ownership verification via cached JWT tickets (ES256)
-- Device-bound tickets (`device_hash`) and clock-rollback detection
-- Cached `drm_enabled` short-circuit when DRM is disabled for a game
-- `cdylib` / `staticlib` / `rlib` builds plus a minimal C ABI
+Each title gets a **public key** generated in the Arcane portal. Pass that value to `arcane_init` (and related APIs). It identifies your game to Arcane Powered — it is not a hand-picked slug or package name.
 
-## Roadmap surface
+## Shipped today
 
-The README lists broader Arcane Powered features (achievements, cloud saves, friends). This crate currently focuses on **ownership / DRM**. Docs for other surfaces will land as they land in the SDK.
+Ownership is the first platform surface in this crate. More Arcane Powered capabilities land in the same SDK as they ship — one dependency, one integration story.
