@@ -1,15 +1,36 @@
 ---
 title: "Rust API"
-description: "Public Arcane SDK functions and types for native Rust games."
-keywords: ["rust", "api", "arcane_init", "check_ownership_offline"]
+description: "Public Arcane SDK functions and types for integrating with Arcane Powered from Rust."
+keywords: ["rust", "api", "arcane_init", "public key"]
 ---
 
 Crate name: `arcane_sdk` (package `arcane-sdk`).
 
-## Init and ownership
+Pass your **portal public key** into APIs whose parameter is currently named `game_id`.
+
+## Init (default launch path)
 
 ```rust
 pub fn arcane_init(game_id: &str) -> Result<OwnershipStatus, SdkError>;
+```
+
+| Function | Description |
+|----------|-------------|
+| `arcane_init` | Call at launch. Checks ownership unless cached `drm_enabled` is `false`. |
+
+```rust
+const PUBLIC_KEY: &str = "pk_..."; // from Arcane portal
+
+match arcane_init(PUBLIC_KEY)? {
+    OwnershipStatus::Owned | OwnershipStatus::DrmDisabled => { /* continue */ }
+}
+```
+
+## Advanced ownership helpers
+
+Most games only need `arcane_init`. These are for custom flows:
+
+```rust
 pub fn check_ownership_offline(game_id: &str) -> Result<OwnershipStatus, SdkError>;
 pub fn verify_ticket(
     jwt: &str,
@@ -20,9 +41,8 @@ pub fn verify_ticket(
 
 | Function | Description |
 |----------|-------------|
-| `arcane_init` | High-level launch check; honors cached `drm_enabled` |
-| `check_ownership_offline` | Full offline ticket verification |
-| `verify_ticket` | Verify a raw JWT against game id + device hash |
+| `check_ownership_offline` | Force offline ticket verification |
+| `verify_ticket` | Verify a raw JWT against portal public key + device hash |
 
 ## Device and paths
 
@@ -45,7 +65,7 @@ pub enum OwnershipStatus {
 
 pub struct OwnershipTicketClaims {
     pub sub: String,
-    pub gid: String,
+    pub gid: String, // portal public key
     pub own: bool,
     pub iat: i64,
     pub nbf: i64,
@@ -57,7 +77,7 @@ pub struct OwnershipTicketClaims {
 }
 ```
 
-See [Errors](/concepts/errors) for `SdkError` and [Ownership model](/concepts/ownership) for ticket semantics.
+See [Errors](/concepts/errors) and [Ownership model](/concepts/ownership).
 
 ## Crate types
 
@@ -65,4 +85,4 @@ See [Errors](/concepts/errors) for `SdkError` and [Ownership model](/concepts/ow
 crate-type = ["cdylib", "rlib", "staticlib"]
 ```
 
-Use `rlib` from Rust games; link `cdylib` / `staticlib` when exposing the [C ABI](/reference/c-abi).
+Use `rlib` from Rust games; link `cdylib` / `staticlib` for the [C ABI](/reference/c-abi).

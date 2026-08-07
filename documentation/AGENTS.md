@@ -5,7 +5,8 @@
 
 ## About this project
 
-- Docs for **Arcane SDK** (`arcane-sdk`), the Rust core for Arcane Powered game integrations
+- Docs for **Arcane SDK** (`arcane-sdk`), the native bridge between games and Arcane Powered
+- Position the SDK as full platform integration (not “DRM-only”); document ownership as the first shipped surface
 - Site root is this `documentation/` directory (`docs.json` here)
 - Preview locally with: `bunx mint dev` (from this directory)
 - Prefer Bun over npm/pnpm for CLI tooling in this repo
@@ -13,11 +14,13 @@
 ## Terminology
 
 - **Arcane Powered** — the platform / desktop launcher
-- **Arcane SDK** — this native crate and its C ABI
-- **Ownership ticket** — cached JWT proving offline ownership for a game + device
+- **Arcane SDK** — the integration layer games link to talk to Arcane Powered (Rust + C ABI)
+- **Portal public key** — identifier generated in the Arcane portal for a title; pass it to `arcane_init` (crate param still named `game_id` today)
+- **Ownership ticket** — cached JWT proving offline ownership for a title + device (one platform surface)
 - **DRM root** — `{app_data}/Arcane Powered/drm/`
-- Prefer "ownership check" / "offline verification" over vague "auth"
-- Prefer `game_id` (not "app id" or "product id") when referring to the SDK argument
+- Prefer "platform integration" for the SDK overall; ownership is the default launch check inside `arcane_init`, not a separate integration step
+- Never call the portal public key a "game id" in prose — say "public key" / "portal public key"
+- Do not imply games must call `check_ownership_offline` in addition to init; that is optional / advanced only
 
 ## Style preferences
 

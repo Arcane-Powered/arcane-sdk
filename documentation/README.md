@@ -1,6 +1,6 @@
 # Arcane SDK docs
 
-Mintlify documentation for the Arcane SDK.
+Mintlify documentation for the Arcane SDK — the native bridge between games and Arcane Powered.
 
 ## Preview locally
 

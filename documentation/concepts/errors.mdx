@@ -8,12 +8,12 @@ All ownership failures map to `SdkError`. Use `err.code()` for stable machine-re
 
 ## Status vs error
 
-Successful checks return `OwnershipStatus`:
+Successful init / checks return `OwnershipStatus`:
 
 | Value | Meaning |
 |-------|---------|
-| `Owned` | Valid ticket for this game and device |
-| `DrmDisabled` | DRM is off for this game; no ticket required |
+| `Owned` | Valid ticket for this portal public key and device |
+| `DrmDisabled` | DRM is off for this title; no ticket required |
 
 ## Error codes
 
@@ -21,7 +21,7 @@ Successful checks return `OwnershipStatus`:
 |------|---------|----------------|
 | `ticket_missing` | `TicketMissing` | No ticket cache, or empty ticket while DRM is on |
 | `ticket_expired` | `TicketExpired` | JWT past `exp` (beyond skew) |
-| `ticket_invalid` | `TicketInvalid` | Bad JWT, JWKS, game mismatch, `own=false`, corrupt file |
+| `ticket_invalid` | `TicketInvalid` | Bad JWT, JWKS, public key mismatch, `own=false`, corrupt file |
 | `device_mismatch` | `DeviceMismatch` | Ticket / cache fingerprint ≠ this machine |
 | `clock_rollback` | `ClockRollback` | System clock earlier than ticket or last-seen time |
 | `internal` | `Io` | Filesystem / path errors |
@@ -33,12 +33,12 @@ Successful checks return `OwnershipStatus`:
 | Return | Meaning |
 |--------|---------|
 | `0` | Success (`Owned` or `DrmDisabled`) |
-| `1` | Null / invalid `game_id` |
+| `1` | Null / invalid public key argument |
 | `2` | `SdkError` — message written to `err_buf` as `code: message` |
 
 ```c
 char err[256];
-if (arcane_sdk_init(game_id, err, sizeof(err)) != 0) {
-  // e.g. "ticket_missing: No ownership ticket cached for game `…`."
+if (arcane_sdk_init(PUBLIC_KEY, err, sizeof(err)) != 0) {
+  /* e.g. "ticket_missing: …" */
 }
 ```
