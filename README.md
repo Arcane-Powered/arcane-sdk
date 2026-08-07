@@ -2,6 +2,8 @@
 
 Native SDK for integrating Arcane Powered — ownership, achievements, cloud saves, friends. Rust core, multi-engine bindings.
 
+Docs live in [`documentation/`](./documentation). Preview with `bunx mint dev` from that folder.
+
 ## Versioning
 
 Releases are automated on merge to `main` from the **PR title** (Conventional Commits).

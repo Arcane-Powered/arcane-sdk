@@ -1,0 +1,35 @@
+---
+title: "Introduction"
+description: "Arcane SDK — offline ownership verification for Arcane Powered games."
+keywords: ["arcane", "sdk", "drm", "ownership", "rust"]
+---
+
+The Arcane SDK is the native core for integrating **Arcane Powered** into games: offline ownership tickets, DRM checks, and a C ABI for Unity, Unreal, and other engines.
+
+The desktop launcher issues and refreshes JWTs, then writes them under the shared Arcane app-data DRM directory. Your game links this crate (or the C ABI) and verifies ownership **without network calls**.
+
+<Columns cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Add the crate, call `arcane_init`, and verify ownership offline.
+  </Card>
+  <Card title="Ownership model" icon="shield" href="/concepts/ownership">
+    How tickets, JWKS, device fingerprints, and DRM flags work.
+  </Card>
+  <Card title="Rust API" icon="code" href="/reference/rust-api">
+    Public functions, types, and status values for native Rust games.
+  </Card>
+  <Card title="C ABI" icon="cube" href="/reference/c-abi">
+    FFI entry points for Unity, Unreal, and other native engines.
+  </Card>
+</Columns>
+
+## What you get today
+
+- Offline ownership verification via cached JWT tickets (ES256)
+- Device-bound tickets (`device_hash`) and clock-rollback detection
+- Cached `drm_enabled` short-circuit when DRM is disabled for a game
+- `cdylib` / `staticlib` / `rlib` builds plus a minimal C ABI
+
+## Roadmap surface
+
+The README lists broader Arcane Powered features (achievements, cloud saves, friends). This crate currently focuses on **ownership / DRM**. Docs for other surfaces will land as they land in the SDK.

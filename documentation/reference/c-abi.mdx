@@ -1,0 +1,58 @@
+---
+title: "C ABI"
+description: "FFI entry points for Unity, Unreal, and other native engines."
+keywords: ["ffi", "c abi", "unity", "unreal", "arcane_sdk_init"]
+---
+
+Minimal C ABI for engines that cannot call Rust directly. Build the crate as `cdylib` or `staticlib`, then declare the headers below.
+
+## Functions
+
+```c
+#include <stddef.h>
+
+/* 0 = ok, 1 = bad game_id, 2 = SdkError (see err_buf) */
+int arcane_sdk_init(const char *game_id, char *err_buf, size_t err_len);
+
+int arcane_check_ownership_offline(
+    const char *game_id,
+    char *err_buf,
+    size_t err_len
+);
+```
+
+| Function | Behavior |
+|----------|----------|
+| `arcane_sdk_init` | Same policy as Rust `arcane_init` |
+| `arcane_check_ownership_offline` | Same as Rust `check_ownership_offline` |
+
+Both require a NUL-terminated UTF-8 `game_id`. On error code `2`, `err_buf` receives a truncated `code: message` string.
+
+## Example
+
+```c
+char err[512];
+int rc = arcane_sdk_init("com.studio.game", err, sizeof(err));
+if (rc == 0) {
+  // Owned or DRM disabled — continue launch
+} else if (rc == 1) {
+  // Invalid arguments
+} else {
+  // Parse err for ticket_missing, ticket_expired, …
+}
+```
+
+## Safety notes
+
+- Pointers must be valid for the duration of the call
+- `err_buf` may be null or `err_len == 0` if you do not need the message
+- Do not free strings owned by the SDK; only the caller-owned `err_buf` is written into
+
+## Link
+
+```bash
+cargo build --release
+# artifacts: target/release/libarcane_sdk.{a,so,dylib} (platform-specific)
+```
+
+Wire the library into your engine’s native plugin / module build. Platform-specific packaging for Unity and Unreal will be documented as bindings land.

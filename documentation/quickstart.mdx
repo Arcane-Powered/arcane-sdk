@@ -1,0 +1,75 @@
+---
+title: "Quickstart"
+description: "Verify offline ownership in a few minutes with the Arcane SDK."
+keywords: ["install", "quickstart", "arcane_init", "cargo"]
+---
+
+Get from zero to a working offline ownership check.
+
+## Prerequisites
+
+- [Rust](https://rustup.rs/) (edition 2021)
+- The Arcane desktop app has run online at least once for the target game (so a ticket and JWKS exist under the shared DRM data directory)
+
+## Get started
+
+<Steps>
+  <Step title="Add the crate">
+    Point Cargo at this repository (path or git dependency):
+
+    ```toml Cargo.toml
+    [dependencies]
+    arcane-sdk = { path = "../arcane-sdk" }
+    ```
+
+    Or build the shared library for FFI:
+
+    ```bash
+    cargo build --release
+    ```
+  </Step>
+  <Step title="Call init at launch">
+    `arcane_init` respects the cached DRM flag: if DRM is disabled for the game, it returns success without requiring a ticket.
+
+    ```rust
+    use arcane_sdk::{arcane_init, OwnershipStatus, SdkError};
+
+    fn boot(game_id: &str) -> Result<(), SdkError> {
+        match arcane_init(game_id)? {
+            OwnershipStatus::Owned | OwnershipStatus::DrmDisabled => Ok(()),
+        }
+    }
+    ```
+  </Step>
+  <Step title="Or check ownership explicitly">
+    Use `check_ownership_offline` when you always want a ticket verification (ignores the init short-circuit policy in your own control flow).
+
+    ```rust
+    use arcane_sdk::check_ownership_offline;
+
+    let status = check_ownership_offline("your-game-id")?;
+    ```
+  </Step>
+</Steps>
+
+## Engine bindings
+
+For Unity / Unreal / C++, call the C ABI instead. See [C ABI](/reference/c-abi).
+
+```c
+char err[256];
+int rc = arcane_sdk_init("your-game-id", err, sizeof(err));
+if (rc != 0) {
+  // err contains "code: message"
+}
+```
+
+<Tip>
+  Tickets live under the Arcane Powered DRM data root (platform app-data). If checks fail with `ticket_missing`, launch the Arcane desktop app online once for that game.
+</Tip>
+
+## Next steps
+
+- [Ownership model](/concepts/ownership) — ticket layout, JWKS, device binding
+- [Errors](/concepts/errors) — codes returned by Rust and the C ABI
+- [Rust API](/reference/rust-api) — full surface

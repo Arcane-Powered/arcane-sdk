@@ -1,0 +1,58 @@
+---
+title: "Ownership model"
+description: "How Arcane offline ownership tickets, JWKS, and device fingerprints work."
+keywords: ["ownership", "ticket", "jwt", "jwks", "drm", "device"]
+---
+
+The SDK never talks to the network. The Arcane desktop launcher refreshes tickets online; the game only reads and verifies local cache.
+
+## Data layout
+
+Everything lives under the Arcane DRM root:
+
+```
+{app_data}/Arcane Powered/drm/
+├── machine_id          # stable UUID for this install
+├── jwks.json           # ES256 public keys
+├── flags/{game_id}.json
+└── tickets/{user_id}/{game_id}.ticket
+```
+
+`drm_data_root()` resolves `{app_data}` via the OS application data directory.
+
+## Init policy
+
+`arcane_init(game_id)`:
+
+1. Reads `flags/{game_id}.json` for `drm_enabled`
+2. If `drm_enabled` is `false` → returns `OwnershipStatus::DrmDisabled` (no ticket required)
+3. Otherwise → runs `check_ownership_offline(game_id)`
+
+## Offline check
+
+`check_ownership_offline`:
+
+1. Loads a cached ticket file for `game_id` (scans all `tickets/{user_id}/` dirs)
+2. Rejects clock rollback vs `last_seen_wall_time`
+3. If `drm_enabled` on the ticket file is false → `DrmDisabled`
+4. Ensures the ticket string is non-empty
+5. Compares cached `device_hash` to the local fingerprint
+6. Verifies the JWT (ES256, issuer `arcane-drm`, audience `arcane-game-sdk`)
+
+## Ticket claims
+
+| Claim | Role |
+|-------|------|
+| `gid` | Must match the requested game id |
+| `own` | Must be `true` |
+| `dev` | Must match local `device_hash` |
+| `iat` / `nbf` / `exp` | Time bounds (±5 min skew) |
+| `sub` / `jti` / `ver` | Subject, ticket id, version |
+
+## Device fingerprint
+
+`machine_id` is a UUID written once under the DRM root (mode `0600` on Unix). `device_hash` is the first 16 bytes of SHA-256(`machine_id`), hex-encoded. Tickets are bound to that hash so they cannot be copied to another machine.
+
+## JWKS
+
+Verification keys come from `jwks.json`. The JWT `kid` selects the key when present. If JWKS is missing, the SDK returns `ticket_invalid` and asks the player to refresh via the desktop app.
