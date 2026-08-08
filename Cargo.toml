@@ -3,7 +3,14 @@ name = "arcane-sdk"
 version = "0.1.0"
 edition = "2021"
 description = "Arcane Powered game SDK core (ownership tickets, DRM checks)"
-license = "UNLICENSED"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/Arcane-Powered/arcane-sdk"
+homepage = "https://github.com/Arcane-Powered/arcane-sdk"
+documentation = "https://docs.rs/arcane-sdk"
+keywords = ["game", "sdk", "drm", "ownership", "ffi"]
+categories = ["game-development", "api-bindings"]
+exclude = ["documentation/", ".github/"]
 
 [lib]
 name = "arcane_sdk"

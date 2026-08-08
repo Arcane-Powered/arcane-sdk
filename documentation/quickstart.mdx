@@ -20,10 +20,10 @@ Link the SDK, pass your portal public key, call `arcane_init` at launch. That is
 
     ```toml Cargo.toml
     [dependencies]
-    arcane-sdk = { path = "../arcane-sdk" }
+    arcane-sdk = "0.1"
     ```
 
-    Engines (Unity / Unreal / C++): build the shared library and load the [C ABI](/reference/c-abi).
+    Engines (Unity / Unreal / C++): build the shared library, include `include/arcane_sdk.h`, and load the [C ABI](/reference/c-abi).
 
     ```bash
     cargo build --release

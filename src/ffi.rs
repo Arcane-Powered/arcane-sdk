@@ -23,10 +23,9 @@ fn write_err(err: &SdkError, buf: *mut c_char, len: usize) {
     }
 }
 
-/// Verify offline ownership for `game_id` (respects cached drm_enabled via init policy).
+/// Default launch check (portal public key). Returns 0 on success, 1 on bad args, 2 on SdkError.
 ///
-/// # Safety
-/// `game_id` must be a valid NUL-terminated C string.
+/// `game_id` must be a valid NUL-terminated UTF-8 C string (portal public key).
 #[no_mangle]
 pub unsafe extern "C" fn arcane_sdk_init(
     game_id: *const c_char,
@@ -49,10 +48,9 @@ pub unsafe extern "C" fn arcane_sdk_init(
     }
 }
 
-/// Explicit ownership check (ignores drm_disabled short-circuit in callers that want it).
+/// Force offline ownership check. Returns 0 on success, 1 on bad args, 2 on SdkError.
 ///
-/// # Safety
-/// `game_id` must be a valid NUL-terminated C string.
+/// `game_id` must be a valid NUL-terminated UTF-8 C string (portal public key).
 #[no_mangle]
 pub unsafe extern "C" fn arcane_check_ownership_offline(
     game_id: *const c_char,
