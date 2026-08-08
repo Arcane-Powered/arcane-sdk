@@ -13,7 +13,8 @@ const AUD: &str = "arcane-game-sdk";
 const CLOCK_SKEW_SECS: i64 = 300;
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct OwnershipTicketClaims {
+#[allow(dead_code)] // deserialized JWT claims; only a subset is checked today
+pub(crate) struct OwnershipTicketClaims {
     pub sub: String,
     pub gid: String,
     pub own: bool,
@@ -60,7 +61,7 @@ fn load_decoding_key(kid: Option<&str>) -> Result<DecodingKey, SdkError> {
         .map_err(|e| SdkError::TicketInvalid(format!("cannot build decoding key: {e}")))
 }
 
-pub fn verify_ticket(
+pub(crate) fn verify_ticket(
     jwt: &str,
     expected_game: &str,
     expected_device_hash: &str,

@@ -1,10 +1,12 @@
 ---
 title: "C ABI"
 description: "FFI entry points for Unity, Unreal, and other native engines."
-keywords: ["ffi", "c abi", "unity", "unreal", "arcane_sdk_init", "public key", "header"]
+keywords: ["ffi", "c abi", "unity", "unreal", "arcane_sdk_init", "public key", "header", "errors"]
 ---
 
 Minimal C ABI for engines that cannot call Rust directly. Build as `cdylib` or `staticlib`, include [`include/arcane_sdk.h`](https://github.com/Arcane-Powered/arcane-sdk/blob/main/include/arcane_sdk.h), then call init at launch with your portal public key.
+
+Error **codes** match Rust `SdkError::code()` — use [Errors](/concepts/errors) when debugging `err_buf`.
 
 ## Header
 
@@ -19,12 +21,43 @@ cargo install cbindgen --version 0.29.4 --locked
 .github/scripts/generate-header.sh
 ```
 
-## Functions
+## `arcane_sdk_init`
+
+Default launch path — same as Rust `arcane_init`.
 
 ```c
 /* 0 = ok, 1 = bad public key arg, 2 = SdkError (see err_buf) */
 int arcane_sdk_init(const char *game_id, char *err_buf, size_t err_len);
+```
 
+`game_id` is the **portal public key** (NUL-terminated UTF-8).
+
+### Return values
+
+| Return | Meaning |
+|--------|---------|
+| `0` | Success (`Owned` or `DrmDisabled`) |
+| `1` | Null / invalid public key argument |
+| `2` | Ownership / IO failure — `err_buf` is `code: message` |
+
+### Errors on failure
+
+| Code in `err_buf` | Problem |
+|-------------------|---------|
+| `ticket_missing` | No ticket cache, or empty ticket while DRM is on |
+| `ticket_expired` | JWT past `exp` |
+| `ticket_invalid` | Bad JWT / JWKS / public key mismatch / corrupt file |
+| `device_mismatch` | Ticket bound to another machine |
+| `clock_rollback` | System clock earlier than ticket or last-seen time |
+| `internal` | Filesystem / path failure |
+
+Full causes and fixes: [Errors → by function](/concepts/errors#arcane_init--arcane_sdk_init) · [Error codes](/concepts/errors#error-codes-debug).
+
+## `arcane_check_ownership_offline`
+
+Optional custom check — same as Rust `check_ownership_offline`. Prefer `arcane_sdk_init` for normal launch.
+
+```c
 int arcane_check_ownership_offline(
     const char *game_id,
     char *err_buf,
@@ -32,14 +65,11 @@ int arcane_check_ownership_offline(
 );
 ```
 
-The `game_id` parameter is the **portal public key** (NUL-terminated UTF-8).
+### Return values and errors
 
-| Function | Behavior |
-|----------|----------|
-| `arcane_sdk_init` | Default launch path — same as Rust `arcane_init` |
-| `arcane_check_ownership_offline` | Optional custom check — same as Rust `check_ownership_offline` |
+Same return codes (`0` / `1` / `2`) and same `err_buf` codes as [`arcane_sdk_init`](#errors-on-failure).
 
-On error code `2`, `err_buf` receives a truncated `code: message` string.
+See [Errors → by function](/concepts/errors#check_ownership_offline--arcane_check_ownership_offline).
 
 ## Example
 
@@ -54,7 +84,7 @@ if (rc == 0) {
 } else if (rc == 1) {
   /* Invalid arguments */
 } else {
-  /* See err for ticket_missing, ticket_expired, … */
+  /* Parse code before ':' — e.g. ticket_missing, ticket_expired, … */
 }
 ```
 

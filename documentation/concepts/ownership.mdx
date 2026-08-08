@@ -43,7 +43,7 @@ When DRM is not disabled, init verifies the cached ticket:
 └── tickets/{user_id}/{public_key}.ticket
 ```
 
-`drm_data_root()` resolves `{app_data}` via the OS application data directory.
+`{app_data}` is the OS application data directory (the SDK resolves this internally).
 
 ## Ticket claims
 
@@ -66,3 +66,5 @@ Verification keys come from `jwks.json`. The JWT `kid` selects the key when pres
 ## Custom check only
 
 `check_ownership_offline` always runs the ticket path (useful if you manage DRM policy yourself). Prefer `arcane_init` for normal launch.
+
+When a check fails, match the stable error code — see [Errors](/concepts/errors) (function → code → fix).
