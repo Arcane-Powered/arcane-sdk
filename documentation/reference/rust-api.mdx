@@ -18,7 +18,7 @@ Default launch path.
 pub fn arcane_init(game_id: &str) -> Result<OwnershipStatus, SdkError>;
 ```
 
-Call once at launch. Checks ownership unless cached `drm_enabled` is `false` (then returns `DrmDisabled` without a ticket).
+Call once at launch. Checks ownership unless cached `drm_enabled` is `false` (then returns `DrmDisabled` without a ticket). On `ticket_missing` / `ticket_expired`, contacts the Arcane desktop loopback (and may open the app) to refresh, then re-verifies offline.
 
 ```rust
 const PUBLIC_KEY: &str = "pk_..."; // from Arcane portal
@@ -39,13 +39,17 @@ On failure, `Err(SdkError)` with a stable `err.code()`:
 | `ticket_invalid` | Bad JWT / JWKS / public key mismatch / corrupt file |
 | `device_mismatch` | Ticket bound to another machine |
 | `clock_rollback` | System clock earlier than ticket or last-seen time |
+| `not_owned` | Cloud says this account does not own the title |
+| `network_required` | No usable ticket and refresh needs the network |
+| `not_authenticated` | Arcane is running but the user is signed out |
+| `arcane_unavailable` | Could not reach or launch Arcane desktop |
 | `internal` | Filesystem / path failure |
 
 Full causes and fixes: [Errors → by function](/concepts/errors#arcane_init--arcane_sdk_init) · [Error codes](/concepts/errors#error-codes-debug).
 
 ## `check_ownership_offline`
 
-Optional. Force the offline ticket path (skips init’s DRM short-circuit). Prefer `arcane_init` for normal launch.
+Optional. Force the offline ticket path (skips init’s DRM short-circuit). Prefer `arcane_init` for normal launch. Does **not** open Arcane or refresh.
 
 ```rust
 pub fn check_ownership_offline(game_id: &str) -> Result<OwnershipStatus, SdkError>;
@@ -53,9 +57,7 @@ pub fn check_ownership_offline(game_id: &str) -> Result<OwnershipStatus, SdkErro
 
 ### Errors
 
-Same codes as [`arcane_init`](#errors) — always goes through ticket verification when DRM is on for the cached file.
-
-See [Errors → by function](/concepts/errors#check_ownership_offline--arcane_check_ownership_offline).
+Offline ticket codes only (`ticket_*`, `device_mismatch`, `clock_rollback`, `internal`) — see [Errors → by function](/concepts/errors#check_ownership_offline--arcane_check_ownership_offline).
 
 ## Types
 

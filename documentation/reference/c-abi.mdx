@@ -49,13 +49,17 @@ int arcane_sdk_init(const char *game_id, char *err_buf, size_t err_len);
 | `ticket_invalid` | Bad JWT / JWKS / public key mismatch / corrupt file |
 | `device_mismatch` | Ticket bound to another machine |
 | `clock_rollback` | System clock earlier than ticket or last-seen time |
+| `not_owned` | Cloud says this account does not own the title |
+| `network_required` | No usable ticket and refresh needs the network |
+| `not_authenticated` | Arcane is running but the user is signed out |
+| `arcane_unavailable` | Could not reach or launch Arcane desktop |
 | `internal` | Filesystem / path failure |
 
 Full causes and fixes: [Errors → by function](/concepts/errors#arcane_init--arcane_sdk_init) · [Error codes](/concepts/errors#error-codes-debug).
 
 ## `arcane_check_ownership_offline`
 
-Optional custom check — same as Rust `check_ownership_offline`. Prefer `arcane_sdk_init` for normal launch.
+Optional custom check — same as Rust `check_ownership_offline`. Prefer `arcane_sdk_init` for normal launch. Offline-only (does not open Arcane).
 
 ```c
 int arcane_check_ownership_offline(
@@ -67,9 +71,7 @@ int arcane_check_ownership_offline(
 
 ### Return values and errors
 
-Same return codes (`0` / `1` / `2`) and same `err_buf` codes as [`arcane_sdk_init`](#errors-on-failure).
-
-See [Errors → by function](/concepts/errors#check_ownership_offline--arcane_check_ownership_offline).
+Same return codes (`0` / `1` / `2`). Offline ticket codes only — see [Errors → by function](/concepts/errors#check_ownership_offline--arcane_check_ownership_offline).
 
 ## Example
 

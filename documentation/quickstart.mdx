@@ -10,7 +10,7 @@ Link the SDK, pass your portal public key, call `arcane_init` at launch. That is
 
 - [Rust](https://rustup.rs/) (edition 2021), or a native engine that can load the C ABI
 - A **public key** for your title from the Arcane portal
-- The Arcane desktop app has run online at least once for that title (so local ticket / JWKS cache exists when DRM is on)
+- The Arcane desktop app is installed (init opens it when a ticket must be refreshed online)
 
 ## Get started
 
@@ -53,7 +53,7 @@ Link the SDK, pass your portal public key, call `arcane_init` at launch. That is
     }
     ```
 
-    If init fails, match the code (`ticket_missing`, `ticket_expired`, …) in [Errors](/concepts/errors): each function lists which codes it can return and what they mean.
+    If init fails, match the code (`not_owned`, `network_required`, `ticket_expired`, …) in [Errors](/concepts/errors): each function lists which codes it can return and what they mean.
   </Step>
 </Steps>
 
@@ -66,7 +66,7 @@ Link the SDK, pass your portal public key, call `arcane_init` at launch. That is
 </Note>
 
 <Tip>
-  If init fails with `ticket_missing`, launch the Arcane desktop app online once for this title so the platform can cache a ticket. Other codes: [Errors](/concepts/errors#error-codes-debug).
+  Init may open Arcane and refresh a ticket automatically. Handle `not_owned` (buy on Store/marketplace), `network_required` (go online), and `not_authenticated` (sign in). Other codes: [Errors](/concepts/errors#error-codes-debug).
 </Tip>
 
 ## Next steps

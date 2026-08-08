@@ -36,7 +36,7 @@
 - Document public Rust API and C ABI only — public surface is `arcane_init` / `arcane_sdk_init`, optional `check_ownership_offline` / `arcane_check_ownership_offline`, plus `OwnershipStatus` / `SdkError`
 - Do not document internal helpers (paths, device hash, raw JWT verify) as integration APIs
 - Do not invent achievements / cloud saves / friends APIs until they exist in `src/`
-- Do not document launcher-internal endpoints beyond what the SDK reads from disk
+- Document that `arcane_init` may contact the desktop loopback (`127.0.0.1:39284`) and open `arcane-powered://` when refreshing; do not document other launcher-internal endpoints as game APIs
 - Keep security-sensitive details accurate to source; do not add speculative bypass guidance
 - Keep [`contributing.mdx`](./contributing.mdx) aligned with `.github/workflows` (tag-only release, version bump in PR, merge queue)
 
