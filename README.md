@@ -4,6 +4,8 @@ Native SDK for integrating Arcane Powered — ownership, achievements, cloud sav
 
 Docs live in [`documentation/`](./documentation). Preview with `bunx mint dev` from that folder.
 
+Production Ready Documentation can be accessed here [Arcane Powered SDK Documentation](https://docs.arcane-powered.com/sdk)
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.
