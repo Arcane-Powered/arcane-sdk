@@ -1,16 +1,27 @@
 ---
 title: "C ABI"
 description: "FFI entry points for Unity, Unreal, and other native engines."
-keywords: ["ffi", "c abi", "unity", "unreal", "arcane_sdk_init", "public key"]
+keywords: ["ffi", "c abi", "unity", "unreal", "arcane_sdk_init", "public key", "header"]
 ---
 
-Minimal C ABI for engines that cannot call Rust directly. Build as `cdylib` or `staticlib`, then call init at launch with your portal public key.
+Minimal C ABI for engines that cannot call Rust directly. Build as `cdylib` or `staticlib`, include [`include/arcane_sdk.h`](https://github.com/Arcane-Powered/arcane-sdk/blob/main/include/arcane_sdk.h), then call init at launch with your portal public key.
+
+## Header
+
+```c
+#include "arcane_sdk.h"
+```
+
+The header ships in the crate (`include/arcane_sdk.h`) and is attached to each GitHub Release. Regenerate after FFI changes (cbindgen **0.29.4**):
+
+```bash
+cargo install cbindgen --version 0.29.4 --locked
+.github/scripts/generate-header.sh
+```
 
 ## Functions
 
 ```c
-#include <stddef.h>
-
 /* 0 = ok, 1 = bad public key arg, 2 = SdkError (see err_buf) */
 int arcane_sdk_init(const char *game_id, char *err_buf, size_t err_len);
 
@@ -33,6 +44,8 @@ On error code `2`, `err_buf` receives a truncated `code: message` string.
 ## Example
 
 ```c
+#include "arcane_sdk.h"
+
 char err[512];
 /* public key from Arcane portal */
 int rc = arcane_sdk_init("pk_...", err, sizeof(err));
@@ -56,4 +69,5 @@ if (rc == 0) {
 ```bash
 cargo build --release
 # artifacts: target/release/libarcane_sdk.{a,so,dylib} (platform-specific)
+# header:    include/arcane_sdk.h
 ```
