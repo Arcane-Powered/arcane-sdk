@@ -39,8 +39,10 @@ On a releasing merge, CI bumps `Cargo.toml`, publishes to **crates.io**, pushes 
 ### C header
 
 ```bash
+# Pin matches CI (.github/workflows/ci.yml)
+cargo install cbindgen --version 0.29.4 --locked
 # Regenerate after changing src/ffi.rs
 .github/scripts/generate-header.sh
 ```
 
-Committed at [`include/arcane_sdk.h`](include/arcane_sdk.h). Engines include it and link the `cdylib` / `staticlib` from `cargo build --release`.
+Committed at [`include/arcane_sdk.h`](include/arcane_sdk.h); PRs verify it stays in sync. Engines include it and link the `cdylib` / `staticlib` from `cargo build --release`. The release job never installs cbindgen (keeps publish credentials away from registry-installed tools).

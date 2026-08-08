@@ -12,9 +12,10 @@ Minimal C ABI for engines that cannot call Rust directly. Build as `cdylib` or `
 #include "arcane_sdk.h"
 ```
 
-The header ships in the crate (`include/arcane_sdk.h`) and is attached to each GitHub Release. Regenerate after FFI changes:
+The header ships in the crate (`include/arcane_sdk.h`) and is attached to each GitHub Release. Regenerate after FFI changes (cbindgen **0.29.4**):
 
 ```bash
+cargo install cbindgen --version 0.29.4 --locked
 .github/scripts/generate-header.sh
 ```
 

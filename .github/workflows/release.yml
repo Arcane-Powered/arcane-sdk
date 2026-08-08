@@ -90,14 +90,8 @@ jobs:
           git push origin HEAD:main
           git push origin "$TAG"
 
-      - name: Verify C header
-        if: steps.pr.outputs.skip != 'true' && steps.bump.outputs.bump != 'none'
-        run: |
-          set -euo pipefail
-          cargo install cbindgen --locked
-          chmod +x .github/scripts/generate-header.sh
-          .github/scripts/generate-header.sh
-          git diff --exit-code -- include/arcane_sdk.h
+      # C header is committed (include/arcane_sdk.h) and verified on PRs in ci.yml.
+      # Do not install/run cbindgen here — this job holds publish credentials.
 
       - name: Publish to crates.io
         if: steps.pr.outputs.skip != 'true' && steps.bump.outputs.bump != 'none'
