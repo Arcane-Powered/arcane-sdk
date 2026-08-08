@@ -22,6 +22,7 @@ bunx mint broken-links
 ## Structure
 
 - `docs.json` — site config and navigation
-- `index.mdx` / `quickstart.mdx` — getting started
+- `index.mdx` / `quickstart.mdx` — getting started (game integration)
+- `contributing.mdx` — how the GitHub repo works (PRs, SemVer, merge queue, releases)
 - `concepts/` — ownership model and errors
 - `reference/` — Rust API and C ABI

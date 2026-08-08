@@ -37,3 +37,4 @@
 - Do not invent achievements / cloud saves / friends APIs until they exist in `src/`
 - Do not document launcher-internal endpoints beyond what the SDK reads from disk
 - Keep security-sensitive details accurate to source; do not add speculative bypass guidance
+- Keep [`contributing.mdx`](./contributing.mdx) aligned with `.github/workflows` (tag-only release, version bump in PR, merge queue)

@@ -8,29 +8,32 @@ permissions:
   contents: write
   pull-requests: read
 
+# Variant B: version is bumped in the PR. On merge we only tag + publish.
+# Never push commits to main (merge queue / signed commits / PR-only).
+
 jobs:
   release:
-    name: SemVer tag on main
+    name: Tag + crates.io + GitHub Release
     runs-on: ubuntu-latest
-    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # Optional PAT/App token that can push to protected main.
-          # Fallback: GITHUB_TOKEN (needs "Allow GitHub Actions to bypass" or no push restriction).
           token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Resolve merged PR title
-        id: pr
+      - name: Resolve merged PR and plan
+        id: plan
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          chmod +x .github/scripts/semver.sh .github/scripts/check-version-bump.sh
+          # shellcheck source=/dev/null
+          source .github/scripts/semver.sh
 
           TITLE="$(gh api \
             "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" \
@@ -40,81 +43,94 @@ jobs:
             TITLE="$(git log -1 --pretty=%s)"
           fi
 
+          echo "Resolved title: $TITLE"
+
           if [[ "$TITLE" =~ ^Merge\ pull\ request ]]; then
-            echo "No conventional PR title associated with this push; skipping."
+            echo "No conventional PR title; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
+          BUMP="$(semver_parse_bump "$TITLE")"
+          VERSION="$(semver_read_cargo_version Cargo.toml)"
+          TAG="v${VERSION}"
+
+          if [[ "$BUMP" == "invalid" || "$BUMP" == "none" ]]; then
+            echo "Non-releasing title (${BUMP}); skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Prefer previous tag as base; fall back to pre-merge Cargo.toml.
+          if PREV_TAG="$(git describe --tags --abbrev=0 2>/dev/null)"; then
+            BASE_VERSION="${PREV_TAG#v}"
+          else
+            BEFORE="${{ github.event.before }}"
+            if [[ -n "$BEFORE" && "$BEFORE" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "${BEFORE}:Cargo.toml" 2>/dev/null; then
+              tmp="$(mktemp)"
+              git show "${BEFORE}:Cargo.toml" >"$tmp"
+              BASE_VERSION="$(semver_read_cargo_version "$tmp")"
+              rm -f "$tmp"
+            else
+              echo "::error::No previous tag and cannot read base Cargo.toml; refusing to publish."
+              exit 1
+            fi
+          fi
+
+          EXPECTED="$(semver_bump_version "$BASE_VERSION" "$BUMP")"
+          if [[ "$VERSION" != "$EXPECTED" ]]; then
+            echo "::error::Cargo.toml is ${VERSION}, expected ${EXPECTED} from base ${BASE_VERSION} (${BUMP})."
+            exit 1
+          fi
+
           {
+            echo "skip=false"
             echo "title<<EOF"
             echo "$TITLE"
             echo "EOF"
-            echo "skip=false"
+            echo "bump=${BUMP}"
+            echo "version=${VERSION}"
+            echo "tag=${TAG}"
           } >> "$GITHUB_OUTPUT"
-          echo "Resolved title: $TITLE"
+          echo "Will release ${TAG} (${BUMP}) for: ${TITLE}"
 
-      - name: Bump version
-        id: bump
-        if: steps.pr.outputs.skip != 'true'
+      - name: Create tag
+        if: steps.plan.outputs.skip != 'true'
         env:
-          PR_TITLE: ${{ steps.pr.outputs.title }}
+          TAG: ${{ steps.plan.outputs.tag }}
         run: |
           set -euo pipefail
-          chmod +x .github/scripts/bump-version.sh
-          eval "$(.github/scripts/bump-version.sh "$PR_TITLE")"
-          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Bump=$BUMP version=$VERSION"
-
-      - name: Commit, tag, and push
-        if: steps.pr.outputs.skip != 'true' && steps.bump.outputs.bump != 'none'
-        env:
-          VERSION: ${{ steps.bump.outputs.version }}
-        run: |
-          set -euo pipefail
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          TAG="v${VERSION}"
-
           if git rev-parse "$TAG" >/dev/null 2>&1; then
             echo "Tag $TAG already exists; aborting to avoid overwrite."
             exit 1
           fi
-
-          git add Cargo.toml Cargo.lock
-          git commit -m "chore(release): ${TAG}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "Release ${TAG}"
-          git push origin HEAD:main
           git push origin "$TAG"
 
-      # C header is committed (include/arcane_sdk.h) and verified on PRs in ci.yml.
-      # Do not install/run cbindgen here — this job holds publish credentials.
-
       - name: Publish to crates.io
-        if: steps.pr.outputs.skip != 'true' && steps.bump.outputs.bump != 'none'
+        if: steps.plan.outputs.skip != 'true'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
           if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]]; then
-            echo "CARGO_REGISTRY_TOKEN secret is not set; skipping crates.io publish."
+            echo "CARGO_REGISTRY_TOKEN secret is not set."
             exit 1
           fi
           cargo publish --locked
 
       - name: Create GitHub Release
-        if: steps.pr.outputs.skip != 'true' && steps.bump.outputs.bump != 'none'
+        if: steps.plan.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.bump.outputs.version }}
-          TITLE: ${{ steps.pr.outputs.title }}
-          BUMP: ${{ steps.bump.outputs.bump }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          TITLE: ${{ steps.plan.outputs.title }}
+          BUMP: ${{ steps.plan.outputs.bump }}
         run: |
           set -euo pipefail
-          TAG="v${VERSION}"
           gh release create "$TAG" \
             include/arcane_sdk.h \
             --title "$TAG" \
