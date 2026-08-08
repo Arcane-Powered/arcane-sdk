@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use crate::error::SdkError;
 use crate::paths::{drm_data_root, machine_id_path};
 
-pub fn machine_id() -> Result<String, SdkError> {
+pub(crate) fn machine_id() -> Result<String, SdkError> {
     let path = machine_id_path().map_err(SdkError::Io)?;
     if let Ok(existing) = fs::read_to_string(&path) {
         let trimmed = existing.trim();
@@ -25,7 +25,7 @@ pub fn machine_id() -> Result<String, SdkError> {
     Ok(id)
 }
 
-pub fn device_hash() -> Result<String, SdkError> {
+pub(crate) fn device_hash() -> Result<String, SdkError> {
     let mid = machine_id()?;
     let mut hasher = Sha256::new();
     hasher.update(mid.as_bytes());
@@ -47,7 +47,7 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), SdkError> {
     Ok(())
 }
 
-pub fn now_unix() -> i64 {
+pub(crate) fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -55,7 +55,7 @@ pub fn now_unix() -> i64 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CachedTicketFile {
+pub(crate) struct CachedTicketFile {
     pub ticket: String,
     pub cached_at: String,
     pub expires_at: String,
@@ -67,7 +67,7 @@ pub struct CachedTicketFile {
     pub last_seen_wall_time: Option<i64>,
 }
 
-	#[allow(dead_code)]
-	pub fn drm_root() -> Result<PathBuf, SdkError> {
-	    drm_data_root().map_err(SdkError::Io)
-	}
+#[allow(dead_code)]
+pub(crate) fn drm_root() -> Result<PathBuf, SdkError> {
+    drm_data_root().map_err(SdkError::Io)
+}

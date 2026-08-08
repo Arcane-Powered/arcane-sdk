@@ -49,9 +49,11 @@ Link the SDK, pass your portal public key, call `arcane_init` at launch. That is
     char err[256];
     int rc = arcane_sdk_init("pk_...", err, sizeof(err));
     if (rc != 0) {
-      // err contains "code: message"
+      // err is "code: message" — see Errors
     }
     ```
+
+    If init fails, match the code (`ticket_missing`, `ticket_expired`, …) in [Errors](/concepts/errors): each function lists which codes it can return and what they mean.
   </Step>
 </Steps>
 
@@ -64,11 +66,11 @@ Link the SDK, pass your portal public key, call `arcane_init` at launch. That is
 </Note>
 
 <Tip>
-  If init fails with `ticket_missing`, launch the Arcane desktop app online once for this title so the platform can cache a ticket.
+  If init fails with `ticket_missing`, launch the Arcane desktop app online once for this title so the platform can cache a ticket. Other codes: [Errors](/concepts/errors#error-codes-debug).
 </Tip>
 
 ## Next steps
 
 - [Ownership model](/concepts/ownership) — what init does under the hood
-- [Errors](/concepts/errors) — codes from Rust and the C ABI
-- [Rust API](/reference/rust-api) — full surface
+- [Errors](/concepts/errors) — this function → these codes → how to fix
+- [Rust API](/reference/rust-api) · [C ABI](/reference/c-abi)

@@ -1,32 +1,57 @@
 ---
 title: "Errors"
-description: "SdkError variants and stable string codes for Arcane ownership checks."
-keywords: ["errors", "SdkError", "ticket_missing", "device_mismatch"]
+description: "Which Arcane SDK function returns which error — and what each code means when debugging."
+keywords: ["errors", "SdkError", "ticket_missing", "device_mismatch", "debug"]
 ---
 
-All ownership failures map to `SdkError`. Use `err.code()` for stable machine-readable codes (also prefixed in C ABI error buffers).
+All ownership failures map to `SdkError`. Use `err.code()` (Rust) or the `code:` prefix in the C error buffer for stable machine-readable codes.
+
+When something fails at launch, start from **the function you called**, then match the **code**. Full detail for each code is below.
+
+## By function
+
+### `arcane_init` / `arcane_sdk_init`
+
+Default launch path. Same error set as the offline check, **unless** cached `drm_enabled` is `false` — then it succeeds with `DrmDisabled` and never hits ticket errors.
+
+| Code | Typical problem |
+|------|-----------------|
+| `ticket_missing` | No ticket cache, or empty ticket while DRM is on |
+| `ticket_expired` | JWT past `exp` |
+| `ticket_invalid` | Bad JWT / JWKS / public key mismatch / corrupt file |
+| `device_mismatch` | Ticket bound to another machine |
+| `clock_rollback` | System clock earlier than ticket or last-seen time |
+| `internal` | Filesystem / path failure |
+
+See [Rust `arcane_init`](/reference/rust-api#arcane_init) · [C `arcane_sdk_init`](/reference/c-abi#arcane_sdk_init).
+
+### `check_ownership_offline` / `arcane_check_ownership_offline`
+
+Always runs the ticket path (ignores the cached DRM short-circuit that init uses). Same codes as the table above.
+
+See [Rust](/reference/rust-api#check_ownership_offline) · [C](/reference/c-abi#arcane_check_ownership_offline).
 
 ## Status vs error
 
-Successful init / checks return `OwnershipStatus`:
+Successful init / checks return `OwnershipStatus` (Rust) or `0` (C):
 
 | Value | Meaning |
 |-------|---------|
 | `Owned` | Valid ticket for this portal public key and device |
 | `DrmDisabled` | DRM is off for this title; no ticket required |
 
-## Error codes
+## Error codes (debug)
 
-| Code | Variant | Typical cause |
-|------|---------|----------------|
-| `ticket_missing` | `TicketMissing` | No ticket cache, or empty ticket while DRM is on |
-| `ticket_expired` | `TicketExpired` | JWT past `exp` (beyond skew) |
-| `ticket_invalid` | `TicketInvalid` | Bad JWT, JWKS, public key mismatch, `own=false`, corrupt file |
-| `device_mismatch` | `DeviceMismatch` | Ticket / cache fingerprint ≠ this machine |
-| `clock_rollback` | `ClockRollback` | System clock earlier than ticket or last-seen time |
-| `internal` | `Io` | Filesystem / path errors |
+| Code | Variant | Problem | What to do |
+|------|---------|---------|------------|
+| `ticket_missing` | `TicketMissing` | No ticket cache, or empty ticket while DRM is on | Launch the Arcane desktop app online once for this title so a ticket is cached |
+| `ticket_expired` | `TicketExpired` | JWT past `exp` (beyond skew) | Refresh online via the Arcane desktop app |
+| `ticket_invalid` | `TicketInvalid` | Bad JWT, missing/invalid JWKS, public key mismatch, `own=false`, corrupt file | Reconnect online; confirm you pass the portal public key for this title |
+| `device_mismatch` | `DeviceMismatch` | Ticket / cache fingerprint ≠ this machine | Ticket was issued for another device — play on the bound machine or refresh ownership there |
+| `clock_rollback` | `ClockRollback` | System clock earlier than ticket or last-seen time | Fix the system clock, then retry |
+| `internal` | `Io` | Filesystem / path errors | Check app-data permissions for the Arcane DRM directory |
 
-## C ABI mapping
+## C ABI return values
 
 `arcane_sdk_init` and `arcane_check_ownership_offline` return:
 
@@ -39,6 +64,8 @@ Successful init / checks return `OwnershipStatus`:
 ```c
 char err[256];
 if (arcane_sdk_init(PUBLIC_KEY, err, sizeof(err)) != 0) {
-  /* e.g. "ticket_missing: …" */
+  /* e.g. "ticket_missing: …" — match `code` in the table above */
 }
 ```
+
+Per-function notes: [C ABI](/reference/c-abi).
