@@ -13,7 +13,7 @@ For launch, you do two things:
 1. Link the SDK
 2. Call `arcane_init` with your **portal public key**
 
-That is the default path. `arcane_init` checks ownership at launch automatically, unless the cached `drm_enabled` flag is `false` — then it succeeds without a ticket. You do not wire a separate ownership step unless you want a custom flow.
+That is the default path. `arcane_init` checks ownership at launch automatically, unless the cached `drm_enabled` flag is `false` — then it succeeds without a ticket. When a ticket is missing or expired, init asks the Arcane desktop app to refresh (and may open Arcane). You do not wire a separate ownership step unless you want a custom flow.
 
 <Columns cols={2}>
   <Card title="Quickstart" icon="rocket" href="/quickstart">

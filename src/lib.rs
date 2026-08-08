@@ -1,10 +1,11 @@
-//! Arcane game SDK core — offline ownership ticket verification.
+//! Arcane game SDK core — ownership ticket verification.
 //!
-//! The desktop launcher issues/refreshes JWTs and writes them under the shared
-//! Arcane app-data DRM directory. Games link this crate (or the C ABI) and call
-//! [`arcane_init`] (or optionally [`check_ownership_offline`]) without talking
-//! to the network.
+//! Games call [`arcane_init`] at launch. The SDK verifies a locally cached
+//! ownership ticket when possible. If the ticket is missing or expired, it
+//! asks the Arcane desktop app (loopback `127.0.0.1:39284`) to refresh online,
+//! opening the app via deep link when needed.
 
+mod desktop;
 mod device;
 mod error;
 mod paths;
@@ -16,11 +17,22 @@ pub use ticket::check_ownership_offline;
 /// High-level init policy used by game engines.
 ///
 /// - If cached `drm_enabled` is false → Ok (no ticket required).
-/// - If true / unknown → require a valid offline ownership ticket.
+/// - If true / unknown → require a valid ownership ticket.
+/// - On `ticket_missing` / `ticket_expired`, contact Arcane desktop to refresh
+///   (may launch the app), then re-verify offline.
 pub fn arcane_init(game_id: &str) -> Result<OwnershipStatus, SdkError> {
     match paths::load_cached_drm_flag(game_id) {
-        Some(false) => Ok(OwnershipStatus::DrmDisabled),
-        _ => check_ownership_offline(game_id),
+        Some(false) => return Ok(OwnershipStatus::DrmDisabled),
+        _ => {}
+    }
+
+    match check_ownership_offline(game_id) {
+        Ok(status) => Ok(status),
+        Err(err) if err.should_refresh_via_desktop() => {
+            desktop::refresh_ownership_via_desktop(game_id)?;
+            check_ownership_offline(game_id)
+        }
+        Err(err) => Err(err),
     }
 }
 

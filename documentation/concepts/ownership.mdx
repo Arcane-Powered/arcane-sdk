@@ -6,7 +6,7 @@ keywords: ["ownership", "arcane_init", "drm", "public key", "portal"]
 
 By default, **`arcane_init` is the ownership check**. Call it once at launch with your portal public key. You do not add a second ownership step unless you need a custom flow.
 
-The game does not talk to the network for this: the Arcane desktop launcher refreshes tickets online; the SDK only reads and verifies the local cache.
+Init prefers a local ticket cache. When the ticket is missing or expired, init contacts the Arcane desktop app on loopback (`127.0.0.1:39284`) to refresh online — and may open Arcane via the `arcane-powered://` deep link if the app is not running.
 
 ## Portal public key
 
@@ -19,6 +19,11 @@ The string you pass to init is the **public key** generated for your title in th
 1. Reads `flags/{public_key}.json` for `drm_enabled`
 2. If `drm_enabled` is `false` → returns `OwnershipStatus::DrmDisabled` (no ticket required)
 3. Otherwise (flag `true` or missing) → runs the offline ownership check
+4. If the offline check fails with `ticket_missing` or `ticket_expired`:
+   - Probes the desktop health endpoint
+   - Opens `arcane-powered://sdk/ownership?game_id=…` when Arcane is not running
+   - Calls `POST /v1/games/{id}/ownership/refresh` on the desktop loopback
+   - Re-runs the offline check against the refreshed cache
 
 That is the whole default launch path.
 
@@ -32,6 +37,19 @@ When DRM is not disabled, init verifies the cached ticket:
 4. Ensures the ticket string is non-empty
 5. Compares cached `device_hash` to the local fingerprint
 6. Verifies the JWT (ES256, issuer `arcane-drm`, audience `arcane-game-sdk`)
+
+## Desktop refresh errors
+
+When init must refresh online, the desktop (and cloud) can return distinct failures that map to SDK codes:
+
+| Desktop / cloud | SDK code | Meaning |
+|-----------------|----------|---------|
+| `not_owned` | `not_owned` | Account does not own the title |
+| `offline` / cloud unreachable | `network_required` | Need internet once to mint a ticket |
+| `not_authenticated` | `not_authenticated` | Arcane is open but the user is signed out |
+| Loopback never comes up | `arcane_unavailable` | Could not open or reach Arcane |
+
+See [Errors](/concepts/errors) for the full table.
 
 ## Data layout
 
@@ -65,6 +83,6 @@ Verification keys come from `jwks.json`. The JWT `kid` selects the key when pres
 
 ## Custom check only
 
-`check_ownership_offline` always runs the ticket path (useful if you manage DRM policy yourself). Prefer `arcane_init` for normal launch.
+`check_ownership_offline` always runs the ticket path (useful if you manage DRM policy yourself). Prefer `arcane_init` for normal launch — offline check alone does **not** open Arcane or refresh.
 
 When a check fails, match the stable error code — see [Errors](/concepts/errors) (function → code → fix).
