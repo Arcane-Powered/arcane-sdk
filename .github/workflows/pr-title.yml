@@ -5,6 +5,7 @@ on:
     types: [opened, edited, synchronize, reopened]
 
 permissions:
+  contents: read
   pull-requests: read
 
 jobs:
@@ -32,3 +33,22 @@ jobs:
           subjectPatternError: |
             The subject "{subject}" must not start with an uppercase letter.
             Example: "feat: add ownership ticket verification"
+
+  version:
+    name: Validate version bump
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check Cargo.toml SemVer vs title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BASE_REF: origin/${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ github.base_ref }}"
+          chmod +x .github/scripts/semver.sh .github/scripts/check-version-bump.sh
+          .github/scripts/check-version-bump.sh "$TITLE" "$BASE_REF"
