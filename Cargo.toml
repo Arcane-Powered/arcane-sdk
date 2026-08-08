@@ -1,6 +1,6 @@
 [package]
 name = "arcane-sdk"
-version = "0.4.1"
+version = "0.3.2"
 edition = "2021"
 description = "Arcane Powered game SDK core (ownership tickets, DRM checks)"
 license = "MIT OR Apache-2.0"
