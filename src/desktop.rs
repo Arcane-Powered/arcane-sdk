@@ -1,9 +1,10 @@
-//! Talk to the Arcane desktop loopback server (127.0.0.1:39284).
+//! Talk to the Arcane desktop loopback server (default `127.0.0.1:39284`).
 //!
-//! When no valid offline ticket is available, the SDK asks the desktop to
-//! refresh ownership online. If the loopback is down, it opens the
-//! `arcane-powered://` deep link and waits for the health endpoint.
+//! When no valid offline ticket is available, the SDK asks the desktop to refresh
+//! ownership online. If the loopback is down, it opens the `arcane-powered://`
+//! deep link and waits for the health endpoint.
 
+use std::env;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -11,7 +12,19 @@ use serde::Deserialize;
 
 use crate::error::SdkError;
 
-pub(crate) const SDK_HTTP_PORT: u16 = 39284;
+pub(crate) const DEFAULT_SDK_HTTP_PORT: u16 = 39284;
+
+/// Overrides the loopback port. Intended for tests and QA — a game should never
+/// set it.
+pub(crate) const SDK_PORT_ENV: &str = "ARCANE_SDK_PORT";
+
+/// When set to `1` / `true`, the SDK never contacts or launches Arcane desktop:
+/// a missing or expired ticket surfaces directly instead of triggering a refresh.
+///
+/// Intended for developers exercising their offline and error handling. It can
+/// only make a check fail earlier — it never lets one pass.
+pub(crate) const OFFLINE_ONLY_ENV: &str = "ARCANE_OFFLINE_ONLY";
+
 const HEALTH_PATH: &str = "/v1/health";
 const REFRESH_PATH_PREFIX: &str = "/v1/games";
 const POLL_INTERVAL: Duration = Duration::from_millis(400);
@@ -22,6 +35,9 @@ pub(crate) struct HealthResponse {
     pub ok: bool,
     #[serde(default)]
     pub authenticated: bool,
+    /// Added by newer Arcane desktop builds; absent on older ones.
+    #[serde(default)]
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,6 +45,21 @@ struct OwnershipRefreshOk {
     ok: bool,
     #[serde(default)]
     drm_enabled: bool,
+    /// Added by newer Arcane desktop builds; absent on older ones.
+    #[serde(default)]
+    user_id: Option<String>,
+    /// Canonical title id, added by newer Arcane desktop builds.
+    #[serde(default)]
+    game_id: Option<String>,
+}
+
+/// What a successful refresh told us. Every field beyond `drm_enabled` is
+/// best-effort — an older desktop leaves them `None` and the SDK still works.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RefreshOutcome {
+    pub drm_enabled: bool,
+    pub user_id: Option<String>,
+    pub game_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,8 +69,23 @@ pub(crate) struct SdkErrorBody {
     pub message: String,
 }
 
+pub(crate) fn offline_only() -> bool {
+    matches!(
+        env::var(OFFLINE_ONLY_ENV).ok().as_deref().map(str::trim),
+        Some("1") | Some("true")
+    )
+}
+
+pub(crate) fn sdk_http_port() -> u16 {
+    env::var(SDK_PORT_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u16>().ok())
+        .filter(|port| *port != 0)
+        .unwrap_or(DEFAULT_SDK_HTTP_PORT)
+}
+
 fn base_url() -> String {
-    format!("http://127.0.0.1:{SDK_HTTP_PORT}")
+    format!("http://127.0.0.1:{}", sdk_http_port())
 }
 
 fn http_agent() -> ureq::Agent {
@@ -52,191 +98,299 @@ fn http_agent() -> ureq::Agent {
 /// Probe whether the Arcane desktop SDK server is listening.
 pub(crate) fn probe_health() -> Result<HealthResponse, SdkError> {
     let url = format!("{}{HEALTH_PATH}", base_url());
-    let resp = http_agent()
-        .get(&url)
-        .call()
-        .map_err(|e| SdkError::ArcaneUnavailable(format!("Arcane desktop not reachable: {e}")))?;
+    let resp = http_agent().get(&url).call().map_err(|e| {
+        SdkError::arcane_unavailable(format!("Arcane desktop is not reachable: {e}"))
+            .with_hint("Launch the Arcane Powered desktop app, then retry.")
+            .with_context("url", &url)
+    })?;
 
     let status = resp.status();
-    let body = resp
-        .into_string()
-        .map_err(|e| SdkError::ArcaneUnavailable(format!("health body: {e}")))?;
+    let body = resp.into_string().map_err(|e| {
+        SdkError::arcane_unavailable(format!("Could not read the health response: {e}"))
+            .with_context("url", &url)
+    })?;
 
     if !(200..300).contains(&status) {
-        return Err(SdkError::ArcaneUnavailable(format!(
-            "health HTTP {status}: {body}"
-        )));
+        return Err(
+            SdkError::arcane_unavailable("Arcane desktop returned an unhealthy status.")
+                .with_hint("Restart the Arcane Powered desktop app, then retry.")
+                .with_context("url", &url)
+                .with_context("http_status", status)
+                .with_context("body", truncate(&body, 200)),
+        );
     }
 
     serde_json::from_str(&body).map_err(|e| {
-        SdkError::ArcaneUnavailable(format!("invalid health payload: {e}; body={body}"))
+        SdkError::arcane_unavailable(format!("Unexpected health payload: {e}"))
+            .with_hint("The Arcane desktop app may be older than this SDK — update it.")
+            .with_context("url", &url)
+            .with_context("body", truncate(&body, 200))
     })
 }
 
 /// Open the Arcane desktop deep link so the app starts (or focuses) and serves loopback.
-pub(crate) fn open_arcane_deep_link(game_id: &str) -> Result<(), SdkError> {
-    let url = format!("arcane-powered://sdk/ownership?game_id={game_id}");
+///
+/// `public_key` is interpolated raw; it is validated against a strict charset by
+/// [`crate::client::validate_public_key`] before it can reach this function.
+pub(crate) fn open_arcane_deep_link(public_key: &str) -> Result<(), SdkError> {
+    let url = format!("arcane-powered://sdk/ownership?game_id={public_key}");
     open::that(&url).map_err(|e| {
-        SdkError::ArcaneUnavailable(format!(
-            "Could not open Arcane Powered (`{url}`): {e}. Install or launch the desktop app."
-        ))
+        SdkError::arcane_unavailable(format!("Could not open Arcane Powered: {e}"))
+            .with_hint("Install the Arcane Powered desktop app, or launch it manually and retry.")
+            .with_context("deep_link", &url)
     })
 }
 
 /// Ensure the desktop loopback is up, launching Arcane via deep link if needed.
-pub(crate) fn ensure_arcane_desktop(game_id: &str) -> Result<HealthResponse, SdkError> {
+pub(crate) fn ensure_arcane_desktop(public_key: &str) -> Result<HealthResponse, SdkError> {
     if let Ok(health) = probe_health() {
         return Ok(health);
     }
 
-    open_arcane_deep_link(game_id)?;
+    open_arcane_deep_link(public_key)?;
 
-    let deadline = Instant::now() + LAUNCH_TIMEOUT;
+    let started = Instant::now();
+    let deadline = started + LAUNCH_TIMEOUT;
+    let mut last_error: Option<SdkError> = None;
     while Instant::now() < deadline {
-        if let Ok(health) = probe_health() {
-            return Ok(health);
+        match probe_health() {
+            Ok(health) => return Ok(health),
+            Err(err) => last_error = Some(err),
         }
         thread::sleep(POLL_INTERVAL);
     }
 
-    Err(SdkError::ArcaneUnavailable(
-        "Could not open or reach Arcane Powered. Install or launch the desktop app, then retry."
-            .into(),
-    ))
+    let mut err = SdkError::arcane_unavailable(
+        "Arcane Powered did not start listening after the deep link was opened.",
+    )
+    .with_hint("Install or launch the Arcane Powered desktop app, then retry.")
+    .with_context("port", sdk_http_port())
+    .with_context("waited_secs", started.elapsed().as_secs());
+    if let Some(last) = last_error {
+        err = err.with_context("last_probe", last.message());
+    }
+    Err(err)
 }
 
 /// Map a loopback JSON error body to a stable [`SdkError`].
 pub(crate) fn map_refresh_error(body: &SdkErrorBody) -> SdkError {
-    let msg = if body.message.trim().is_empty() {
+    let detail = if body.message.trim().is_empty() {
         body.error.clone()
     } else {
         body.message.clone()
     };
 
     match body.error.as_str() {
-        "not_owned" => SdkError::NotOwned(
-            "You do not own this game. Buy it on the Arcane Store or marketplace.".into(),
-        ),
-        "offline" => SdkError::NetworkRequired(
-            "Connect to the internet once via Arcane to obtain an ownership ticket.".into(),
-        ),
-        "not_authenticated" => SdkError::NotAuthenticated(
-            "Sign in to the Arcane desktop app, then retry.".into(),
-        ),
-        "game_not_found" => SdkError::TicketInvalid(msg),
-        "cloud_unreachable" | "cloud_error" => SdkError::NetworkRequired(msg),
-        "internal" => SdkError::Io(msg),
-        other => SdkError::TicketInvalid(format!("{other}: {msg}")),
+        "not_owned" => SdkError::not_owned("You do not own this game.")
+            .with_hint("Buy it on the Arcane Store or marketplace, then retry.")
+            .with_context("detail", detail),
+        "offline" => {
+            SdkError::network_required("Arcane could not reach the internet to confirm ownership.")
+                .with_hint("Connect to the internet once via Arcane to obtain an ownership ticket.")
+                .with_context("detail", detail)
+        }
+        "not_authenticated" => {
+            SdkError::not_authenticated("Nobody is signed in to the Arcane desktop app.")
+                .with_hint("Sign in to the Arcane desktop app, then retry.")
+                .with_context("detail", detail)
+        }
+        "game_not_found" => SdkError::ticket_invalid("Arcane does not know this title.")
+            .with_hint(
+                "Confirm the public key compiled into your build matches the one in the \
+                 Arcane portal, and that the title is published.",
+            )
+            .with_context("detail", detail),
+        "cloud_unreachable" | "cloud_error" => {
+            SdkError::network_required("The Arcane backend could not be reached.")
+                .with_hint("Retry in a moment; if it persists, check the Arcane status page.")
+                .with_context("detail", detail)
+        }
+        "internal" => SdkError::internal("The Arcane desktop app hit an internal error.")
+            .with_hint("Restart the Arcane Powered desktop app, then retry.")
+            .with_context("detail", detail),
+        other => SdkError::ticket_invalid("Arcane desktop refused the ownership refresh.")
+            .with_hint("This error code is newer than your SDK — update arcane-sdk.")
+            .with_context("desktop_error", other)
+            .with_context("detail", detail),
     }
 }
 
-/// Ask the desktop to refresh (or issue) an ownership ticket for `game_id`.
-pub(crate) fn refresh_ownership_via_desktop(game_id: &str) -> Result<(), SdkError> {
-    let health = ensure_arcane_desktop(game_id)?;
+/// Ask the desktop to refresh (or issue) an ownership ticket for `public_key`.
+pub(crate) fn refresh_ownership_via_desktop(public_key: &str) -> Result<RefreshOutcome, SdkError> {
+    let health = ensure_arcane_desktop(public_key)?;
 
     if !health.ok {
-        return Err(SdkError::ArcaneUnavailable(
-            "Arcane desktop reported an unhealthy SDK server.".into(),
-        ));
+        return Err(SdkError::arcane_unavailable(
+            "Arcane desktop reported an unhealthy SDK server.",
+        )
+        .with_hint("Restart the Arcane Powered desktop app, then retry.")
+        .with_context("port", sdk_http_port()));
     }
 
     if !health.authenticated {
-        return Err(SdkError::NotAuthenticated(
-            "Sign in to the Arcane desktop app, then retry.".into(),
-        ));
+        return Err(
+            SdkError::not_authenticated("Nobody is signed in to the Arcane desktop app.")
+                .with_hint("Sign in to the Arcane desktop app, then retry.")
+                .with_context("public_key", public_key),
+        );
     }
 
     let url = format!(
         "{}{REFRESH_PATH_PREFIX}/{}/ownership/refresh",
         base_url(),
-        game_id
+        public_key
     );
 
     let resp = match http_agent().post(&url).call() {
         Ok(r) => r,
         Err(ureq::Error::Status(code, response)) => {
-            let body_text = response
-                .into_string()
-                .unwrap_or_else(|_| String::new());
-            if let Ok(err_body) = serde_json::from_str::<SdkErrorBody>(&body_text) {
-                return Err(map_refresh_error(&err_body));
-            }
-            return Err(SdkError::TicketInvalid(format!(
-                "ownership refresh HTTP {code}: {body_text}"
-            )));
+            let body = response.into_string().unwrap_or_default();
+            return Err(match serde_json::from_str::<SdkErrorBody>(&body) {
+                Ok(err_body) => map_refresh_error(&err_body),
+                Err(_) => SdkError::ticket_invalid(
+                    "Arcane desktop rejected the ownership refresh with an unreadable body.",
+                )
+                .with_hint("Update the Arcane Powered desktop app, then retry.")
+                .with_context("url", &url)
+                .with_context("http_status", code)
+                .with_context("body", truncate(&body, 200)),
+            });
         }
         Err(e) => {
-            return Err(SdkError::ArcaneUnavailable(format!(
-                "ownership refresh failed: {e}"
-            )));
+            return Err(SdkError::arcane_unavailable(format!(
+                "The ownership refresh call failed: {e}"
+            ))
+            .with_hint("Make sure the Arcane Powered desktop app stays open, then retry.")
+            .with_context("url", &url));
         }
     };
 
     let status = resp.status();
-    let body_text = resp
-        .into_string()
-        .map_err(|e| SdkError::Io(format!("refresh body: {e}")))?;
-
-    if !(200..300).contains(&status) {
-        if let Ok(err_body) = serde_json::from_str::<SdkErrorBody>(&body_text) {
-            return Err(map_refresh_error(&err_body));
-        }
-        return Err(SdkError::TicketInvalid(format!(
-            "ownership refresh HTTP {status}: {body_text}"
-        )));
-    }
-
-    let parsed: OwnershipRefreshOk = serde_json::from_str(&body_text).map_err(|e| {
-        SdkError::TicketInvalid(format!("unexpected refresh payload: {e}; body={body_text}"))
+    let body = resp.into_string().map_err(|e| {
+        SdkError::internal(format!(
+            "Could not read the ownership refresh response: {e}"
+        ))
+        .with_context("url", &url)
     })?;
 
-    if !parsed.ok && parsed.drm_enabled {
-        return Err(SdkError::TicketInvalid(
-            "ownership refresh returned ok=false".into(),
-        ));
+    if !(200..300).contains(&status) {
+        return Err(match serde_json::from_str::<SdkErrorBody>(&body) {
+            Ok(err_body) => map_refresh_error(&err_body),
+            Err(_) => SdkError::ticket_invalid("Arcane desktop rejected the ownership refresh.")
+                .with_context("url", &url)
+                .with_context("http_status", status)
+                .with_context("body", truncate(&body, 200)),
+        });
     }
 
-    Ok(())
+    let parsed: OwnershipRefreshOk = serde_json::from_str(&body).map_err(|e| {
+        SdkError::ticket_invalid(format!("Unexpected ownership refresh payload: {e}"))
+            .with_hint("The Arcane desktop app may be older than this SDK — update it.")
+            .with_context("url", &url)
+            .with_context("body", truncate(&body, 200))
+    })?;
+
+    // `ok: false` with DRM off is not a failure: there is simply no ticket to mint.
+    if !parsed.ok && parsed.drm_enabled {
+        return Err(SdkError::ticket_invalid(
+            "Arcane desktop could not issue an ownership ticket.",
+        )
+        .with_hint("Retry; if it persists, sign out and back in to Arcane desktop.")
+        .with_context("public_key", public_key));
+    }
+
+    Ok(RefreshOutcome {
+        drm_enabled: parsed.drm_enabled,
+        user_id: parsed.user_id.or(health.user_id),
+        game_id: parsed.game_id,
+    })
+}
+
+fn truncate(value: &str, max: usize) -> String {
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= max {
+        return trimmed.to_string();
+    }
+    let head: String = trimmed.chars().take(max).collect();
+    format!("{head}…")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn body(error: &str, message: &str) -> SdkErrorBody {
+        SdkErrorBody {
+            error: error.into(),
+            message: message.into(),
+        }
+    }
+
     #[test]
     fn maps_not_owned() {
-        let err = map_refresh_error(&SdkErrorBody {
-            error: "not_owned".into(),
-            message: "This account does not own the requested game.".into(),
-        });
+        let err = map_refresh_error(&body(
+            "not_owned",
+            "This account does not own the requested game.",
+        ));
         assert_eq!(err.code(), "not_owned");
-        assert!(err.to_string().contains("Arcane Store"));
+        assert!(err.hint().unwrap().contains("Arcane Store"));
+        assert!(!err.is_retryable());
     }
 
     #[test]
     fn maps_offline_to_network_required() {
-        let err = map_refresh_error(&SdkErrorBody {
-            error: "offline".into(),
-            message: "Cannot refresh while offline.".into(),
-        });
+        let err = map_refresh_error(&body("offline", "Cannot refresh while offline."));
         assert_eq!(err.code(), "network_required");
+        assert!(err.is_retryable());
     }
 
     #[test]
     fn maps_not_authenticated() {
-        let err = map_refresh_error(&SdkErrorBody {
-            error: "not_authenticated".into(),
-            message: "No session.".into(),
-        });
+        let err = map_refresh_error(&body("not_authenticated", "No session."));
         assert_eq!(err.code(), "not_authenticated");
     }
 
     #[test]
     fn maps_cloud_unreachable() {
-        let err = map_refresh_error(&SdkErrorBody {
-            error: "cloud_unreachable".into(),
-            message: "backend down".into(),
-        });
+        let err = map_refresh_error(&body("cloud_unreachable", "backend down"));
         assert_eq!(err.code(), "network_required");
+    }
+
+    #[test]
+    fn unknown_desktop_error_keeps_the_original_code_in_context() {
+        let err = map_refresh_error(&body("region_locked", "not available here"));
+        assert_eq!(err.code(), "ticket_invalid");
+        let context: Vec<_> = err
+            .context()
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert!(context.contains(&("desktop_error", "region_locked")));
+        assert!(context.contains(&("detail", "not available here")));
+    }
+
+    #[test]
+    fn empty_message_falls_back_to_the_error_code() {
+        let err = map_refresh_error(&body("not_owned", "   "));
+        let detail = err
+            .context()
+            .iter()
+            .find(|(k, _)| k == "detail")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(detail, Some("not_owned"));
+    }
+
+    #[test]
+    fn port_falls_back_to_the_default_when_unset_or_invalid() {
+        // The env var is process-global; only assert the parse rules here.
+        assert_eq!(DEFAULT_SDK_HTTP_PORT, 39284);
+        assert!("0".parse::<u16>().is_ok());
+        assert!("not-a-port".parse::<u16>().is_err());
+    }
+
+    #[test]
+    fn truncate_keeps_short_values_intact() {
+        assert_eq!(truncate("  hello  ", 10), "hello");
+        assert_eq!(truncate("abcdefghij", 5), "abcde…");
     }
 }

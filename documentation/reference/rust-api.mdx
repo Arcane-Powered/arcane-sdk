@@ -1,78 +1,112 @@
 ---
 title: "Rust API"
-description: "Public Arcane SDK functions for integrating with Arcane Powered from Rust."
-keywords: ["rust", "api", "arcane_init", "public key", "errors"]
+description: "Public Arcane SDK surface for integrating with Arcane Powered from Rust."
+keywords: ["rust", "api", "ArcaneClient", "public key", "SdkError"]
 ---
 
 Crate name: `arcane_sdk` (package `arcane-sdk`).
 
-Pass your **portal public key** into APIs whose parameter is currently named `game_id`.
+The whole public surface is one type you build at launch, plus its errors. Error codes are shared with the C ABI — see [Errors](/concepts/errors) for the full debug table.
 
-Most games only need `arcane_init`. Error codes are shared with the C ABI — see [Errors](/concepts/errors) for the full debug table.
-
-## `arcane_init`
-
-Default launch path.
+## `ArcaneClient`
 
 ```rust
-pub fn arcane_init(game_id: &str) -> Result<OwnershipStatus, SdkError>;
-```
+impl ArcaneClient {
+    pub fn init(public_key: &str) -> Result<ArcaneClient, SdkError>;
+    pub fn refresh(&mut self) -> Result<OwnershipStatus, SdkError>;
 
-Call once at launch. Checks ownership unless cached `drm_enabled` is `false` (then returns `DrmDisabled` without a ticket). On `ticket_missing` / `ticket_expired`, contacts the Arcane desktop loopback (and may open the app) to refresh, then re-verifies offline.
-
-```rust
-const PUBLIC_KEY: &str = "pk_..."; // from Arcane portal
-
-match arcane_init(PUBLIC_KEY)? {
-    OwnershipStatus::Owned | OwnershipStatus::DrmDisabled => { /* continue */ }
+    pub fn public_key(&self) -> &str;
+    pub fn game_id(&self) -> Option<&str>;
+    pub fn user_id(&self) -> Option<&str>;
+    pub fn device_hash(&self) -> &str;
+    pub fn ownership(&self) -> OwnershipStatus;
+    pub fn is_owned(&self) -> bool;
+    pub fn ticket_expires_at(&self) -> Option<i64>;
+    pub fn checked_at(&self) -> i64;
 }
 ```
 
-### Errors
+`ArcaneClient` is `Debug + Clone`, and `Send + Sync`.
 
-On failure, `Err(SdkError)` with a stable `err.code()`:
+### `init`
 
-| Code | Problem |
-|------|---------|
-| `ticket_missing` | No ticket cache, or empty ticket while DRM is on |
-| `ticket_expired` | JWT past `exp` |
-| `ticket_invalid` | Bad JWT / JWKS / public key mismatch / corrupt file |
-| `device_mismatch` | Ticket bound to another machine |
-| `clock_rollback` | System clock earlier than ticket or last-seen time |
-| `not_owned` | Cloud says this account does not own the title |
-| `network_required` | No usable ticket and refresh needs the network |
-| `not_authenticated` | Arcane is running but the user is signed out |
-| `arcane_unavailable` | Could not reach or launch Arcane desktop |
-| `internal` | Filesystem / path failure |
-
-Full causes and fixes: [Errors → by function](/concepts/errors#arcane_init--arcane_sdk_init) · [Error codes](/concepts/errors#error-codes-debug).
-
-## `check_ownership_offline`
-
-Optional. Force the offline ticket path (skips init’s DRM short-circuit). Prefer `arcane_init` for normal launch. Does **not** open Arcane or refresh.
+Build the client and check ownership. Call once at launch.
 
 ```rust
-pub fn check_ownership_offline(game_id: &str) -> Result<OwnershipStatus, SdkError>;
+use arcane_sdk::ArcaneClient;
+
+const PUBLIC_KEY: &str = "pk_..."; // from the Arcane portal
+
+let client = ArcaneClient::init(PUBLIC_KEY)?;
+# Ok::<(), arcane_sdk::SdkError>(())
 ```
 
-### Errors
+Validates the public key, short-circuits to `DrmDisabled` when the cached flag says DRM is off, otherwise verifies the cached ticket. On `ticket_missing` / `ticket_expired` it contacts the Arcane desktop loopback (and may open the app) to refresh, then re-verifies. See [Ownership model](/concepts/ownership).
 
-Offline ticket codes only (`ticket_*`, `device_mismatch`, `clock_rollback`, `internal`) — see [Errors → by function](/concepts/errors#check_ownership_offline--arcane_check_ownership_offline).
+**Errors:** `invalid_public_key`, `ticket_missing`, `ticket_expired`, `ticket_invalid`, `device_mismatch`, `clock_rollback`, `not_owned`, `network_required`, `not_authenticated`, `arcane_unavailable`, `ambiguous_session`, `internal`. Full causes and fixes: [Errors](/concepts/errors#error-codes).
+
+### `refresh`
+
+Re-run the check against Arcane desktop and update the client in place. Nothing calls this for you — there is no background revalidation.
+
+```rust
+let mut client = ArcaneClient::init(PUBLIC_KEY)?;
+// … hours later …
+let status = client.refresh()?;
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+On failure the client keeps its previous state.
+
+**Errors:** same as `init` minus `invalid_public_key`.
+
+### Accessors
+
+All read cached state — no I/O, no failure.
+
+`game_id` and `user_id` are `Option` because an older Arcane desktop build may not report them, and because a DRM-disabled title may have no ticket file to read them from.
+
+## `SdkError`
+
+```rust
+impl SdkError {
+    pub fn code(&self) -> &'static str;       // stable, e.g. "not_owned"
+    pub fn error_code(&self) -> ErrorCode;    // typed, for exhaustive matching
+    pub fn message(&self) -> &str;            // player-facing
+    pub fn hint(&self) -> Option<&str>;       // developer-facing next step
+    pub fn context(&self) -> &[(String, String)];
+    pub fn is_retryable(&self) -> bool;
+    pub fn to_json(&self) -> String;
+}
+```
+
+Implements `Display` (all four fields on one line), `std::error::Error`, `Debug`, `Clone`, `PartialEq`.
+
+Match on `code()` for a stable string contract, or on `error_code()` for the typed enum. `ErrorCode` is `#[non_exhaustive]` — new codes can appear in a minor release, so keep a `_` arm.
+
+```rust
+match err.code() {
+    "not_owned" => show_store_prompt(err.message()),
+    "network_required" | "not_authenticated" => show_retry(err.message()),
+    _ => show_generic_error(err.message()),
+}
+```
 
 ## Types
 
 ```rust
 pub enum OwnershipStatus {
-    Owned,
-    DrmDisabled,
+    Owned,        // valid ticket for this key, account, and device
+    DrmDisabled,  // DRM off for this title; no ticket required
 }
 
-pub enum SdkError { /* … */ }
+#[non_exhaustive]
+pub enum ErrorCode { /* one variant per code in the Errors table */ }
 
-impl SdkError {
-    pub fn code(&self) -> &'static str;
-}
+pub const MAX_PUBLIC_KEY_LEN: usize = 256;
 ```
+
+`OwnershipStatus` implements `Display` (`"owned"` / `"drm_disabled"`).
 
 ## Crate types
 
@@ -81,3 +115,11 @@ crate-type = ["cdylib", "rlib", "staticlib"]
 ```
 
 Use `rlib` from Rust games; link `cdylib` / `staticlib` for the [C ABI](/reference/c-abi).
+
+## Try it
+
+```bash
+cargo run --example client_init -- pk_your_portal_key
+```
+
+Prints every client field on success, or the full error breakdown (code, message, hint, context, JSON) on failure.

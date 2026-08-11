@@ -11,13 +11,18 @@ The **Arcane SDK** is how your game talks to **Arcane Powered**. Link it once (R
 For launch, you do two things:
 
 1. Link the SDK
-2. Call `arcane_init` with your **portal public key**
+2. Build an `ArcaneClient` with your **portal public key**
 
-That is the default path. `arcane_init` checks ownership at launch automatically, unless the cached `drm_enabled` flag is `false` — then it succeeds without a ticket. When a ticket is missing or expired, init asks the Arcane desktop app to refresh (and may open Arcane). You do not wire a separate ownership step unless you want a custom flow.
+That is the default path. Building the client *is* the ownership check — unless the cached `drm_enabled` flag is `false`, in which case it succeeds without a ticket. When a ticket is missing or expired, init asks the Arcane desktop app to refresh (and may open Arcane). You do not wire a separate ownership step.
+
+The client then holds what your game needs for the rest of the session — the signed-in `user_id`, the title's `game_id`, the ownership status, the device fingerprint — so nothing downstream has to pass the public key around again.
 
 <Columns cols={2}>
   <Card title="Quickstart" icon="rocket" href="/quickstart">
-    Link the SDK and call `arcane_init` at launch.
+    Link the SDK and build a client at launch.
+  </Card>
+  <Card title="Client" icon="id-card" href="/concepts/client">
+    Lifecycle, what is cached, and when to refresh.
   </Card>
   <Card title="Ownership" icon="shield" href="/concepts/ownership">
     What init does by default, and when DRM is skipped.
@@ -38,7 +43,7 @@ That is the default path. `arcane_init` checks ownership at launch automatically
 
 ## Portal public key
 
-Each title gets a **public key** generated in the Arcane portal. Pass that value to `arcane_init` (and related APIs). It identifies your game to Arcane Powered — it is not a hand-picked slug or package name.
+Each title gets a **public key** generated in the Arcane portal. Pass that value to `ArcaneClient::init`. It identifies your game to Arcane Powered — it is not a hand-picked slug or package name.
 
 ## Shipped today
 

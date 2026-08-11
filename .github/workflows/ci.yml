@@ -26,6 +26,9 @@ jobs:
       - name: cargo check
         run: cargo check --locked
 
+      - name: cargo test
+        run: cargo test --locked
+
       - name: Verify C header (pinned cbindgen)
         run: |
           set -euo pipefail

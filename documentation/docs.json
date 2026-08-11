@@ -2,7 +2,7 @@
   "$schema": "https://mintlify.com/docs.json",
   "theme": "maple",
   "name": "Arcane SDK",
-  "description": "Native SDK that connects your game to Arcane Powered. Call arcane_init at launch with your portal public key.",
+  "description": "Native SDK that connects your game to Arcane Powered. Build an ArcaneClient at launch with your portal public key.",
   "colors": {
     "primary": "#0F766E",
     "light": "#2DD4BF",
@@ -17,7 +17,7 @@
       },
       {
         "group": "Concepts",
-        "pages": ["concepts/ownership", "concepts/errors"]
+        "pages": ["concepts/client", "concepts/ownership", "concepts/errors"]
       },
       {
         "group": "Reference",

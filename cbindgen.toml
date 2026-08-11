@@ -13,8 +13,32 @@ documentation_style = "c99"
 style = "both"
 
 [export]
-include = ["arcane_sdk_init", "arcane_check_ownership_offline"]
-item_types = ["functions"]
+include = [
+  "ARCANE_OK",
+  "ARCANE_ERR_ARGUMENT",
+  "ARCANE_ERR_SDK",
+  "ARCANE_ERR_NOT_INITIALIZED",
+  "ARCANE_ERR_BAD_BUFFER",
+  "ARCANE_ERR_BUFFER_TOO_SMALL",
+  "ARCANE_ERR_UNAVAILABLE",
+  "ARCANE_OWNERSHIP_OWNED",
+  "ARCANE_OWNERSHIP_DRM_DISABLED",
+  "arcane_sdk_init",
+  "arcane_sdk_refresh",
+  "arcane_sdk_shutdown",
+  "arcane_sdk_is_initialized",
+  "arcane_sdk_ownership",
+  "arcane_sdk_ticket_expires_at",
+  "arcane_sdk_checked_at",
+  "arcane_sdk_user_id",
+  "arcane_sdk_game_id",
+  "arcane_sdk_public_key",
+  "arcane_sdk_device_hash",
+  "arcane_sdk_last_error_json",
+]
+item_types = ["constants", "functions"]
+# Rust-only; an unprefixed macro of this name would collide in a C project.
+exclude = ["MAX_PUBLIC_KEY_LEN"]
 
 [fn]
 prefix = ""

@@ -1,39 +1,35 @@
-//! Arcane game SDK core — ownership ticket verification.
+//! Arcane game SDK core.
 //!
-//! Games call [`arcane_init`] at launch. The SDK verifies a locally cached
-//! ownership ticket when possible. If the ticket is missing or expired, it
-//! asks the Arcane desktop app (loopback `127.0.0.1:39284`) to refresh online,
-//! opening the app via deep link when needed.
+//! Games build one [`ArcaneClient`] at launch with their Arcane portal public
+//! key. The client verifies ownership once and then holds the result in memory —
+//! the signed-in `user_id`, the title's `game_id`, the ownership status and the
+//! device fingerprint — so nothing downstream needs the public key again.
+//!
+//! ```no_run
+//! use arcane_sdk::ArcaneClient;
+//!
+//! let client = ArcaneClient::init("pk_...")?;
+//! println!("user={:?} owned={}", client.user_id(), client.is_owned());
+//! # Ok::<(), arcane_sdk::SdkError>(())
+//! ```
+//!
+//! Ownership is checked against a locally cached ticket when possible. If the
+//! ticket is missing or expired, the SDK asks the Arcane desktop app (loopback
+//! `127.0.0.1:39284`) to refresh online, opening the app via deep link when
+//! needed.
+//!
+//! Failures are [`SdkError`], carrying a stable [`code`](SdkError::code), a
+//! player-facing [`message`](SdkError::message), a developer-facing
+//! [`hint`](SdkError::hint) and a [`context`](SdkError::context) key/value list.
 
+mod client;
 mod desktop;
 mod device;
 mod error;
 mod paths;
 mod ticket;
 
-pub use error::{OwnershipStatus, SdkError};
-pub use ticket::check_ownership_offline;
-
-/// High-level init policy used by game engines.
-///
-/// - If cached `drm_enabled` is false → Ok (no ticket required).
-/// - If true / unknown → require a valid ownership ticket.
-/// - On `ticket_missing` / `ticket_expired`, contact Arcane desktop to refresh
-///   (may launch the app), then re-verify offline.
-pub fn arcane_init(game_id: &str) -> Result<OwnershipStatus, SdkError> {
-    match paths::load_cached_drm_flag(game_id) {
-        Some(false) => return Ok(OwnershipStatus::DrmDisabled),
-        _ => {}
-    }
-
-    match check_ownership_offline(game_id) {
-        Ok(status) => Ok(status),
-        Err(err) if err.should_refresh_via_desktop() => {
-            desktop::refresh_ownership_via_desktop(game_id)?;
-            check_ownership_offline(game_id)
-        }
-        Err(err) => Err(err),
-    }
-}
+pub use client::{ArcaneClient, MAX_PUBLIC_KEY_LEN};
+pub use error::{ErrorCode, OwnershipStatus, SdkError};
 
 pub mod ffi;

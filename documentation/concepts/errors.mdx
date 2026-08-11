@@ -1,80 +1,126 @@
 ---
 title: "Errors"
-description: "Which Arcane SDK function returns which error — and what each code means when debugging."
-keywords: ["errors", "SdkError", "ticket_missing", "not_owned", "debug"]
+description: "Every Arcane SDK error code — what it means, and what to do about it."
+keywords: ["errors", "SdkError", "ticket_missing", "not_owned", "hint", "debug"]
 ---
 
-All ownership failures map to `SdkError`. Use `err.code()` (Rust) or the `code:` prefix in the C error buffer for stable machine-readable codes.
+Every failure is an `SdkError`. It carries four things, and each answers a different question:
 
-When something fails at launch, start from **the function you called**, then match the **code**. Full detail for each code is below.
+| Field | Question it answers | Audience |
+|-------|--------------------|----------|
+| `code()` | Which failure is this? | your `match` |
+| `message()` | What happened? | safe to show a player |
+| `hint()` | What do I do about it? | you, in the logs |
+| `context()` | Which values were involved? | you, debugging |
+
+`Display` renders all four, so a single log line is usually enough:
+
+```
+ticket_invalid: The cached ticket was issued for a different title.
+  — Confirm the public key compiled into your build matches the one in the
+    Arcane portal. (expected=pk_abc, ticket_gid=pk_xyz)
+```
+
+```rust
+match ArcaneClient::init(PUBLIC_KEY) {
+    Ok(client) => start_game(client),
+    Err(err) => {
+        eprintln!("{err}");                    // full detail for your logs
+        show_player(err.message());            // just the human sentence
+        if err.is_retryable() { offer_retry(); }
+    }
+}
+```
+
+`is_retryable()` is `true` when retrying the same call could succeed once something outside your code changes — the network returns, Arcane opens, the player signs in. It is `false` when nothing will change without a code, account, or machine change.
+
+## Error codes
+
+| Code | Problem | What to do | Retryable |
+|------|---------|------------|-----------|
+| `invalid_public_key` | Empty, over 256 bytes, or a character outside `A–Z a–z 0–9 _ - .` | Check the value you compiled in — the context names the bad character and its index | no |
+| `ticket_missing` | No ticket cached for the signed-in account, or an empty ticket while DRM is on | Open Arcane desktop once while online. `init` normally refreshes this for you | yes |
+| `ticket_expired` | JWT past `exp` (beyond ±5 min skew) | `init` normally refreshes this for you; otherwise reconnect online via Arcane | yes |
+| `ticket_invalid` | Bad JWT, missing/unreadable JWKS, unknown `kid`, wrong title, `own=false`, corrupt file | Refresh via Arcane. If `expected` ≠ `ticket_gid` in the context, your public key is wrong | no |
+| `device_mismatch` | Ticket bound to another machine | Refresh ownership on this machine while online. Context shows both fingerprints | no |
+| `clock_rollback` | System clock earlier than the ticket or the last-seen time | Enable automatic date & time, then retry | no |
+| `not_owned` | Cloud confirmed this account does not own the title | Send the player to the Arcane Store or marketplace | no |
+| `network_required` | No usable offline ticket and the refresh needs the network | Connect to the internet, open Arcane, retry | yes |
+| `not_authenticated` | Nobody is signed in — either Arcane says so, or `session.json` records a signed-out state | Sign in to the Arcane desktop app, then retry | yes |
+| `arcane_unavailable` | Could not reach or launch the Arcane desktop app | Install or launch Arcane Powered. Context shows the port and how long the SDK waited | yes |
+| `ambiguous_session` | Several accounts hold a ticket for this title and Arcane has not recorded which is signed in | Open Arcane desktop once so it records the session. Needs a build that writes `session.json` | no |
+| `not_initialized` | A C ABI getter was called before `arcane_sdk_init` | Call `arcane_sdk_init` once at launch first | no |
+| `internal` | Filesystem / path failure | Check permissions on the Arcane DRM directory — context names the path | no |
 
 ## By function
 
-### `arcane_init` / `arcane_sdk_init`
+### `ArcaneClient::init` / `arcane_sdk_init`
 
-Default launch path. Same offline error set as the offline check, **unless** cached `drm_enabled` is `false` — then it succeeds with `DrmDisabled` and never hits ticket errors.
+Can return any code in the table except `not_initialized`.
 
-When the offline check returns `ticket_missing` or `ticket_expired`, init contacts Arcane desktop (and may open it). Refresh failures add the desktop-mapped codes below.
+If the cached `drm_enabled` flag is `false`, init succeeds with `DrmDisabled` and never reaches the ticket codes. When the offline check returns `ticket_missing` or `ticket_expired`, init contacts Arcane desktop (and may open it), which adds `not_owned`, `network_required`, `not_authenticated` and `arcane_unavailable` to the possible outcomes.
 
-| Code | Typical problem |
-|------|-----------------|
-| `ticket_missing` | No ticket cache, or empty ticket while DRM is on (before a successful refresh) |
-| `ticket_expired` | JWT past `exp` (before a successful refresh) |
-| `ticket_invalid` | Bad JWT / JWKS / public key mismatch / corrupt file |
-| `device_mismatch` | Ticket bound to another machine |
-| `clock_rollback` | System clock earlier than ticket or last-seen time |
-| `not_owned` | Arcane is online; cloud says this account does not own the title |
-| `network_required` | No usable ticket and Arcane/cloud cannot refresh while offline |
-| `not_authenticated` | Arcane is running but the user is not signed in |
-| `arcane_unavailable` | Could not reach or launch the Arcane desktop app |
-| `internal` | Filesystem / path failure |
+### `ArcaneClient::refresh` / `arcane_sdk_refresh`
 
-See [Rust `arcane_init`](/reference/rust-api#arcane_init) · [C `arcane_sdk_init`](/reference/c-abi#arcane_sdk_init).
+Same codes as init, minus `invalid_public_key` (the key was already validated). Always contacts the desktop app, so it never returns a purely offline result. On failure the client keeps its previous state.
 
-### `check_ownership_offline` / `arcane_check_ownership_offline`
+Under `ARCANE_OFFLINE_ONLY` it returns `network_required` immediately.
 
-Always runs the ticket path (ignores the cached DRM short-circuit that init uses). Offline-only — does **not** open Arcane or refresh. Codes: `ticket_*`, `device_mismatch`, `clock_rollback`, `internal`.
+### C ABI getters
 
-See [Rust](/reference/rust-api#check_ownership_offline) · [C](/reference/c-abi#check_ownership_offline).
+`not_initialized` before `arcane_sdk_init` succeeds. See the return-code tables below.
 
 ## Status vs error
 
-Successful init / checks return `OwnershipStatus` (Rust) or `0` (C):
+A successful check returns `OwnershipStatus`:
 
 | Value | Meaning |
 |-------|---------|
-| `Owned` | Valid ticket for this portal public key and device |
+| `Owned` | Valid ticket for this public key, this account, and this device |
 | `DrmDisabled` | DRM is off for this title; no ticket required |
 
-## Error codes (debug)
-
-| Code | Variant | Problem | What to do |
-|------|---------|---------|------------|
-| `ticket_missing` | `TicketMissing` | No ticket cache, or empty ticket while DRM is on | Prefer `arcane_init` so the SDK can refresh via Arcane; or launch Arcane online once for this title |
-| `ticket_expired` | `TicketExpired` | JWT past `exp` (beyond skew) | Prefer `arcane_init` so the SDK refreshes; or reconnect online via Arcane |
-| `ticket_invalid` | `TicketInvalid` | Bad JWT, missing/invalid JWKS, public key mismatch, `own=false`, corrupt file | Reconnect online; confirm you pass the portal public key for this title |
-| `device_mismatch` | `DeviceMismatch` | Ticket / cache fingerprint ≠ this machine | Ticket was issued for another device — play on the bound machine or refresh ownership there |
-| `clock_rollback` | `ClockRollback` | System clock earlier than ticket or last-seen time | Fix the system clock, then retry |
-| `not_owned` | `NotOwned` | Cloud confirmed the signed-in account does not own this title | Buy the game on the Arcane Store or marketplace |
-| `network_required` | `NetworkRequired` | No usable offline ticket and refresh needs the network | Connect to the internet, open Arcane, then retry |
-| `not_authenticated` | `NotAuthenticated` | Arcane desktop is up but there is no signed-in session | Sign in to the Arcane desktop app, then retry |
-| `arcane_unavailable` | `ArcaneUnavailable` | Loopback never became reachable after deep-link launch | Install or launch Arcane Powered, then retry |
-| `internal` | `Io` | Filesystem / path errors | Check app-data permissions for the Arcane DRM directory |
+Both mean **launch the game**. `is_owned()` distinguishes them if you need to.
 
 ## C ABI return values
 
-`arcane_sdk_init` and `arcane_check_ownership_offline` return:
+Two conventions, by function kind.
+
+### Actions — `arcane_sdk_init`, `arcane_sdk_refresh`
 
 | Return | Meaning |
 |--------|---------|
-| `0` | Success (`Owned` or `DrmDisabled`) |
-| `1` | Null / invalid public key argument |
-| `2` | `SdkError` — message written to `err_buf` as `code: message` |
+| `0` | Success |
+| `1` | Bad argument (null / non-UTF-8 key, or not initialised for `refresh`) |
+| `2` | `SdkError` — rendered into `err_buf` as `code: message — hint (context…)` |
+
+### Getters — `arcane_sdk_user_id`, `arcane_sdk_game_id`, `arcane_sdk_public_key`, `arcane_sdk_device_hash`, `arcane_sdk_last_error_json`
+
+| Return | Meaning |
+|--------|---------|
+| `>= 0` | Bytes written, excluding the NUL terminator |
+| `-1` | Not initialised |
+| `-2` | Null buffer or zero length |
+| `-3` | Buffer too small — the buffer is left as an empty string, never truncated |
+| `-4` | Value not available (for example no `game_id` reported yet) |
+
+`arcane_sdk_ownership` returns `0` (owned), `1` (DRM disabled) or `-1` (not initialised). `arcane_sdk_ticket_expires_at` and `arcane_sdk_checked_at` return a Unix timestamp or `-1`.
+
+### Structured errors in C
+
+`arcane_sdk_last_error_json` gives the full error for engines that want to render it:
 
 ```c
-char err[256];
+char json[1024];
+if (arcane_sdk_last_error_json(json, sizeof(json)) > 0) {
+  /* {"code":"not_owned","message":"…","hint":"…","retryable":false,
+      "context":{"detail":"…"}} */
+}
+```
+
+```c
+char err[512];
 if (arcane_sdk_init(PUBLIC_KEY, err, sizeof(err)) != 0) {
-  /* e.g. "not_owned: …" or "network_required: …" — match `code` in the table above */
+  /* err starts with the code: "not_owned: …", "network_required: …" */
 }
 ```
 

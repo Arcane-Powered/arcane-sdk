@@ -2,6 +2,21 @@
 
 Native SDK for integrating Arcane Powered — ownership, achievements, cloud saves, friends. Rust core, multi-engine bindings.
 
+```rust
+use arcane_sdk::ArcaneClient;
+
+// Once, at launch. Building the client is the ownership check.
+let client = ArcaneClient::init("pk_your_portal_key")?;
+
+client.user_id();   // signed-in Arcane account
+client.game_id();   // canonical title id
+client.is_owned();  // ownership as of the last check
+```
+
+Native engines get the same client as a C ABI singleton — see [`include/arcane_sdk.h`](./include/arcane_sdk.h).
+
+The desktop-app side of the wire (endpoints, `session.json`, error bodies) is specified in [`DESKTOP_CONTRACT.md`](./DESKTOP_CONTRACT.md).
+
 Docs live in [`documentation/`](./documentation). Preview with `bunx mint dev` from that folder. Contributor workflow (PRs, SemVer, merge queue, releases): [`documentation/contributing.mdx`](./documentation/contributing.mdx).
 
 Production Ready Documentation can be accessed here [Arcane Powered SDK Documentation](https://docs.arcane-powered.com/sdk)
@@ -22,7 +37,7 @@ Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT l
 |---|---|
 | `feat: ...` / `feat(scope): ...` | minor |
 | `fix: ...` / `perf: ...` | patch |
-| `feat!: ...` / `fix(api)!: ...` | major |
+| `feat!: ...` / `fix(api)!: ...` | major — but while on `0.x`, breaking bumps the **minor** (`0.3.2` → `0.4.0`), per [SemVer §4](https://semver.org/#spec-item-4) |
 | `chore:` / `docs:` / `ci:` / `test:` / `refactor:` / `build:` / `revert:` | unchanged |
 
 ```bash

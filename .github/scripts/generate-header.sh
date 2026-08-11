@@ -28,7 +28,7 @@ cbindgen --config cbindgen.toml --crate arcane-sdk --output include/arcane_sdk.h
 
 # cbindgen sometimes prefixes declarations with a stray space after block comments.
 tmp="$(mktemp)"
-sed -E 's/^ int /int /g' include/arcane_sdk.h >"$tmp"
+sed -E 's/^ (int|void|long|char|bool|size_t|const|unsigned) /\1 /g' include/arcane_sdk.h >"$tmp"
 mv "$tmp" include/arcane_sdk.h
 
 echo "Wrote include/arcane_sdk.h"

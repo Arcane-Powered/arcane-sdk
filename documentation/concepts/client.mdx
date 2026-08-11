@@ -1,0 +1,93 @@
+---
+title: "Client"
+description: "One client built at launch, holding the state your game reads all session."
+keywords: ["ArcaneClient", "init", "user_id", "game_id", "refresh", "lifecycle"]
+---
+
+`ArcaneClient` is the SDK's entry point. You build one at launch with your portal public key, and read from it for the rest of the session.
+
+## Why a client
+
+Before 0.4 every call was a free function taking the public key, and every call redid the whole job: resolve paths, read the ticket from disk, parse the JWKS, verify the JWT, sometimes talk to the desktop app over loopback. Nothing was kept.
+
+The client does that work **once** and holds the result:
+
+| What | Accessor | Source |
+|------|----------|--------|
+| Portal public key | `public_key()` | what you passed to `init` |
+| Canonical title id | `game_id()` | the ticket file, or the desktop refresh response |
+| Signed-in account | `user_id()` | the ticket file, `session.json`, or the desktop |
+| Ownership | `ownership()` / `is_owned()` | the ownership check |
+| Device fingerprint | `device_hash()` | this machine |
+| Ticket expiry | `ticket_expires_at()` | the ticket's `exp` claim |
+| Last check | `checked_at()` | when `init` or `refresh` last succeeded |
+
+More Arcane surfaces will hang off this client as they ship — that is the point of having it.
+
+## Lifecycle
+
+```rust
+use arcane_sdk::ArcaneClient;
+
+// Once, at launch.
+let mut client = ArcaneClient::init("pk_...")?;
+
+// For the rest of the session — free, reads memory.
+if client.is_owned() {
+    println!("player {:?}", client.user_id());
+}
+
+// Only when you decide to re-confirm.
+client.refresh()?;
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+<Warning>
+  The client does **not** revalidate on its own. There is no background thread and no timer: `ownership()` reflects the last `init` or `refresh`. A session running for hours keeps whatever `init` decided until you call `refresh()`.
+</Warning>
+
+`refresh()` contacts the Arcane desktop app, re-runs the ownership check, and updates the client in place. On failure the client keeps its previous state, so a failed refresh never silently downgrades a player mid-session.
+
+## Which account's ticket
+
+Several Arcane accounts can have tickets cached on one machine. The client resolves **the signed-in one**, in this order:
+
+1. `session.json` names a user → read exactly that account's ticket. If it is not there, the result is `ticket_missing` — another account's ticket is never substituted.
+2. `session.json` records a signed-out state → `not_authenticated`.
+3. No `session.json` (an Arcane desktop build that predates it) → scan the ticket directories. Exactly one match is used; several matches give [`ambiguous_session`](/concepts/errors) rather than a guess.
+
+This is why `user_id` matters beyond being nice to display. Picking the wrong account's ticket is not a cosmetic bug: it lets one player run on another's entitlement on a shared machine.
+
+## C ABI: a process-wide singleton
+
+Native engines get the same client as a singleton, so nothing has to carry a handle through C# or Blueprint:
+
+```c
+char err[512];
+if (arcane_sdk_init("pk_...", err, sizeof(err)) != 0) { /* handle */ }
+
+char user_id[64];
+int written = arcane_sdk_user_id(user_id, sizeof(user_id));
+
+arcane_sdk_shutdown();  /* optional — useful for editor play-mode reloads */
+```
+
+Calling a getter before `arcane_sdk_init` returns `not_initialized` rather than a null or an empty string. Full signatures: [C ABI](/reference/c-abi).
+
+## Public key validation
+
+`init` validates the public key **before any filesystem or network work**. Empty, longer than 256 bytes, or containing anything outside ASCII letters, digits, `_`, `-` and `.` gives `invalid_public_key` immediately, naming the offending character and its index.
+
+That turns a whole class of confusing downstream failures — a stray quote, trailing whitespace from a config file, a path pasted instead of a key — into one obvious error at the call site.
+
+## Developer overrides
+
+Environment variables the SDK reads. **Never set these in a shipped game**; they exist for local testing and QA.
+
+| Variable | Effect |
+|----------|--------|
+| `ARCANE_DRM_ROOT` | Point the SDK at a throwaway DRM directory instead of the OS app-data path. |
+| `ARCANE_SDK_PORT` | Talk to a stub server or a non-default loopback port. |
+| `ARCANE_OFFLINE_ONLY` | `1` or `true`: never contact or launch the Arcane desktop app. A missing or expired ticket surfaces directly instead of triggering a refresh. |
+
+`ARCANE_OFFLINE_ONLY` is the one to reach for when testing your error handling — it can only make a check fail earlier, never let one pass.

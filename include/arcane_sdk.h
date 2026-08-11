@@ -13,19 +13,109 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+// Action return codes.
+#define ARCANE_OK 0
+
+#define ARCANE_ERR_ARGUMENT 1
+
+#define ARCANE_ERR_SDK 2
+
+// Getter return codes (negative).
+#define ARCANE_ERR_NOT_INITIALIZED -1
+
+#define ARCANE_ERR_BAD_BUFFER -2
+
+#define ARCANE_ERR_BUFFER_TOO_SMALL -3
+
+#define ARCANE_ERR_UNAVAILABLE -4
+
+// `arcane_sdk_ownership` results.
+#define ARCANE_OWNERSHIP_OWNED 0
+
+#define ARCANE_OWNERSHIP_DRM_DISABLED 1
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
 
-// Force offline ownership check. Returns 0 on success, 1 on bad args, 2 on SdkError.
-//
-// `game_id` must be a valid NUL-terminated UTF-8 C string (portal public key).
-int arcane_check_ownership_offline(const char *game_id, char *err_buf, size_t err_len);
+// Unix timestamp of the last successful check, or -1 when not initialised.
+long long arcane_sdk_checked_at(void);
 
-// Default launch check (portal public key). Returns 0 on success, 1 on bad args, 2 on SdkError.
+// Write this machine's device fingerprint into `buf`.
 //
-// `game_id` must be a valid NUL-terminated UTF-8 C string (portal public key).
-int arcane_sdk_init(const char *game_id, char *err_buf, size_t err_len);
+// # Safety
+//
+// `buf` must be null or point to at least `len` writable bytes.
+int arcane_sdk_device_hash(char *buf, size_t len);
+
+// Write the canonical title id into `buf`.
+//
+// # Safety
+//
+// `buf` must be null or point to at least `len` writable bytes.
+int arcane_sdk_game_id(char *buf, size_t len);
+
+// Verify ownership and build the process-wide client. Call once at launch.
+//
+// `public_key` must be a NUL-terminated UTF-8 string — the public key generated
+// for this title in the Arcane portal.
+//
+// Returns 0 on success, 1 if `public_key` is null or not UTF-8, 2 on an SDK
+// error written to `err_buf` as `"code: message"`.
+//
+// # Safety
+//
+// `public_key` must be a valid NUL-terminated C string. `err_buf` must be null
+// or point to at least `err_len` writable bytes.
+int arcane_sdk_init(const char *public_key, char *err_buf, size_t err_len);
+
+// Whether a client is currently initialised. Returns 1 or 0.
+int arcane_sdk_is_initialized(void);
+
+// Write the last error as JSON into `buf`:
+// `{"code","message","hint","retryable","context"}`.
+//
+// Returns -4 when no error has been recorded since the last success.
+//
+// # Safety
+//
+// `buf` must be null or point to at least `len` writable bytes.
+int arcane_sdk_last_error_json(char *buf, size_t len);
+
+// Ownership as of the last check.
+//
+// Returns 0 (owned), 1 (DRM disabled for this title), or -1 if not initialised.
+int arcane_sdk_ownership(void);
+
+// Write the public key this client was initialised with into `buf`.
+//
+// # Safety
+//
+// `buf` must be null or point to at least `len` writable bytes.
+int arcane_sdk_public_key(char *buf, size_t len);
+
+// Re-run the ownership check against Arcane desktop and update the client.
+//
+// Returns 0 on success, 1 if the client is not initialised, 2 on an SDK error.
+// On failure the client keeps its previous state.
+//
+// # Safety
+//
+// `err_buf` must be null or point to at least `err_len` writable bytes.
+int arcane_sdk_refresh(char *err_buf, size_t err_len);
+
+// Drop the client. Optional — mostly useful for editor play-mode reloads.
+void arcane_sdk_shutdown(void);
+
+// Unix timestamp of the ownership ticket's expiry, or -1 when unknown.
+long long arcane_sdk_ticket_expires_at(void);
+
+// Write the signed-in Arcane account id into `buf`.
+//
+// # Safety
+//
+// `buf` must be null or point to at least `len` writable bytes.
+int arcane_sdk_user_id(char *buf, size_t len);
 
 #ifdef __cplusplus
 }  // extern "C"
