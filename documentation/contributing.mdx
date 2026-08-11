@@ -35,8 +35,12 @@ flowchart LR
 |---|---|
 | `feat: …` / `feat(scope): …` | minor bump |
 | `fix: …` / `perf: …` | patch bump |
-| `feat!: …` / `fix(api)!: …` | major bump |
+| `feat!: …` / `fix(api)!: …` | major bump — but see the pre-1.0 rule below |
 | `chore:` / `docs:` / `ci:` / `test:` / `refactor:` / `build:` / `revert:` | leave version unchanged |
+
+<Note>
+  **While the crate is on `0.x`**, a breaking change bumps the **minor**, not the major: `0.3.2` → `0.4.0`, never `1.0.0`. That is [SemVer §4](https://semver.org/#spec-item-4), and cargo already treats `0.3` → `0.4` as an incompatible upgrade, so consumers are protected. Reaching `1.0.0` stays a deliberate decision, not a side effect of a `feat!:` title.
+</Note>
 
 ```bash
 # From the repo root — bumps Cargo.toml + Cargo.lock to match the title

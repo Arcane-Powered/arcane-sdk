@@ -1,46 +1,60 @@
 ---
 title: "Ownership model"
-description: "Default launch ownership check via arcane_init, and when DRM is skipped."
-keywords: ["ownership", "arcane_init", "drm", "public key", "portal"]
+description: "How ArcaneClient::init checks ownership, and when DRM is skipped."
+keywords: ["ownership", "ArcaneClient", "drm", "public key", "portal", "session"]
 ---
 
-By default, **`arcane_init` is the ownership check**. Call it once at launch with your portal public key. You do not add a second ownership step unless you need a custom flow.
+**Building the client is the ownership check.** `ArcaneClient::init` runs it once at launch with your portal public key; you do not add a second ownership step.
 
-Init prefers a local ticket cache. When the ticket is missing or expired, init contacts the Arcane desktop app on loopback (`127.0.0.1:39284`) to refresh online — and may open Arcane via the `arcane-powered://` deep link if the app is not running.
+Init prefers a local ticket cache. When the ticket is missing or expired, it contacts the Arcane desktop app on loopback (`127.0.0.1:39284`) to refresh online — and may open Arcane via the `arcane-powered://` deep link if the app is not running.
 
 ## Portal public key
 
-The string you pass to init is the **public key** generated for your title in the Arcane portal. In the current crate API the parameter is still named `game_id` — pass the portal public key there. The same value keys local flag and ticket files, and must match the ticket `gid` claim.
+The string you pass to `init` is the **public key** generated for your title in the Arcane portal. It keys the local flag and ticket files, and must match the ticket's `gid` claim.
+
+It is validated before any I/O: ASCII letters, digits, `_`, `-`, `.`, at most 256 bytes. Anything else is `invalid_public_key`.
 
 ## Default init policy
 
-`arcane_init(public_key)`:
+`ArcaneClient::init(public_key)`:
 
-1. Reads `flags/{public_key}.json` for `drm_enabled`
-2. If `drm_enabled` is `false` → returns `OwnershipStatus::DrmDisabled` (no ticket required)
-3. Otherwise (flag `true` or missing) → runs the offline ownership check
-4. If the offline check fails with `ticket_missing` or `ticket_expired`:
+1. Validates the public key
+2. Reads `flags/{public_key}.json` for `drm_enabled`
+3. If `drm_enabled` is `false` → `OwnershipStatus::DrmDisabled` (no ticket required)
+4. Otherwise (flag `true` or missing) → runs the offline ownership check
+5. If the offline check fails with `ticket_missing` or `ticket_expired`:
    - Probes the desktop health endpoint
    - Opens `arcane-powered://sdk/ownership?game_id=…` when Arcane is not running
-   - Calls `POST /v1/games/{id}/ownership/refresh` on the desktop loopback
+   - Calls the desktop's ownership refresh
    - Re-runs the offline check against the refreshed cache
+   - If the desktop reported DRM is off for this title and no ticket appeared, resolves to `DrmDisabled` rather than failing
 
-That is the whole default launch path.
+Everything learned along the way — `user_id`, `game_id`, ticket expiry — is kept on the client. See [Client](/concepts/client).
 
 ## Offline check (what init runs when DRM is on)
 
-When DRM is not disabled, init verifies the cached ticket:
-
-1. Loads a ticket file for the public key (scans `tickets/{user_id}/`)
+1. Resolves the ticket for the **signed-in account** (see below)
 2. Rejects clock rollback vs `last_seen_wall_time`
 3. If `drm_enabled` on the ticket file is false → `DrmDisabled`
 4. Ensures the ticket string is non-empty
-5. Compares cached `device_hash` to the local fingerprint
+5. Compares the cached `device_hash` to the local fingerprint
 6. Verifies the JWT (ES256, issuer `arcane-drm`, audience `arcane-game-sdk`)
+
+## Which account's ticket
+
+`session.json` — written by the Arcane desktop app on sign-in and sign-out — is the offline source of truth for who is signed in.
+
+| `session.json` | Result |
+|---|---|
+| Names a user | Reads exactly `tickets/{user_id}/{public_key}.ticket`. No fallback. |
+| Records a signed-out state | `not_authenticated` |
+| Absent (older Arcane desktop) | Scans ticket directories: one match is used, several give `ambiguous_session` |
+
+The no-fallback rule matters on shared machines. A ticket belonging to a different account is correctly signed and correctly bound to the device, so nothing else would reject it — only the account check does.
 
 ## Desktop refresh errors
 
-When init must refresh online, the desktop (and cloud) can return distinct failures that map to SDK codes:
+When init must refresh online, the desktop (and cloud) can return distinct failures:
 
 | Desktop / cloud | SDK code | Meaning |
 |-----------------|----------|---------|
@@ -49,7 +63,7 @@ When init must refresh online, the desktop (and cloud) can return distinct failu
 | `not_authenticated` | `not_authenticated` | Arcane is open but the user is signed out |
 | Loopback never comes up | `arcane_unavailable` | Could not open or reach Arcane |
 
-See [Errors](/concepts/errors) for the full table.
+An unrecognised desktop error code becomes `ticket_invalid` with the original string preserved in the error's `context.desktop_error`, so a newer launcher never produces a silent failure. See [Errors](/concepts/errors) for the full table.
 
 ## Data layout
 
@@ -57,6 +71,7 @@ See [Errors](/concepts/errors) for the full table.
 {app_data}/Arcane Powered/drm/
 ├── machine_id
 ├── jwks.json
+├── session.json
 ├── flags/{public_key}.json
 └── tickets/{user_id}/{public_key}.ticket
 ```
@@ -75,14 +90,12 @@ See [Errors](/concepts/errors) for the full table.
 
 ## Device fingerprint
 
-`machine_id` is a UUID written once under the DRM root (mode `0600` on Unix). `device_hash` is the first 16 bytes of SHA-256(`machine_id`), hex-encoded. Tickets are bound to that hash so they cannot be copied to another machine.
+`machine_id` is a UUID written once under the DRM root (mode `0600` on Unix). `device_hash` is the first 16 bytes of SHA-256(`machine_id`), hex-encoded, and is readable from the client as `device_hash()`. Tickets are bound to that hash so they cannot be copied to another machine.
 
 ## JWKS
 
-Verification keys come from `jwks.json`. The JWT `kid` selects the key when present. If JWKS is missing, the SDK returns `ticket_invalid` — refresh via the desktop app.
+Verification keys come from `jwks.json`. The JWT `kid` selects the key when present. If JWKS is missing or the `kid` is unknown, the SDK returns `ticket_invalid` naming the resolved path — refresh via the desktop app.
 
-## Custom check only
+## What ownership does not prove
 
-`check_ownership_offline` always runs the ticket path (useful if you manage DRM policy yourself). Prefer `arcane_init` for normal launch — offline check alone does **not** open Arcane or refresh.
-
-When a check fails, match the stable error code — see [Errors](/concepts/errors) (function → code → fix).
+The SDK verifies that *this machine, for this account, holds a valid signed entitlement for this title*. It does not — and cannot — prove that the process making the call is genuinely your game. Any secret compiled into a game binary is extractable, and the init call itself can be patched out. Treat ownership as a platform integration, not as anti-tamper; enforcement that must hold against a determined attacker belongs on the server.

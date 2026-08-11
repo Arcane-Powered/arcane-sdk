@@ -29,6 +29,15 @@ semver_bump_version() {
   local major minor patch
 
   IFS=. read -r major minor patch <<<"$current"
+
+  # SemVer §4: while the major version is 0, anything may change in a minor
+  # release. Cargo agrees — it already treats 0.3 → 0.4 as an incompatible
+  # upgrade — so a breaking change bumps the minor instead of declaring 1.0.
+  # Reaching 1.0 stays a deliberate act, not a side effect of a `feat!:` title.
+  if [[ "$major" -eq 0 && "$bump" == "major" ]]; then
+    bump="minor"
+  fi
+
   case "$bump" in
     major)
       major=$((major + 1))

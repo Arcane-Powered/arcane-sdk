@@ -1,10 +1,10 @@
 ---
 title: "Quickstart"
-description: "Link the Arcane SDK and call arcane_init at launch."
-keywords: ["install", "quickstart", "arcane_init", "public key", "portal"]
+description: "Link the Arcane SDK and build a client at launch."
+keywords: ["install", "quickstart", "ArcaneClient", "init", "public key", "portal"]
 ---
 
-Link the SDK, pass your portal public key, call `arcane_init` at launch. That is the full default integration for ownership.
+Link the SDK, build one client at launch with your portal public key, keep it for the session. That is the full default integration.
 
 ## Prerequisites
 
@@ -20,7 +20,7 @@ Link the SDK, pass your portal public key, call `arcane_init` at launch. That is
 
     ```toml Cargo.toml
     [dependencies]
-    arcane-sdk = "0.1"
+    arcane-sdk = "0.4"
     ```
 
     Engines (Unity / Unreal / C++): build the shared library, include `include/arcane_sdk.h`, and load the [C ABI](/reference/c-abi).
@@ -29,48 +29,84 @@ Link the SDK, pass your portal public key, call `arcane_init` at launch. That is
     cargo build --release
     ```
   </Step>
-  <Step title="Call init at launch">
-    Pass the public key from the portal. Init checks ownership by default. If `drm_enabled` is `false` in the local cache, init returns success and skips the ticket check — nothing else to configure in your game.
+  <Step title="Build the client at launch">
+    Pass the public key from the portal. `init` checks ownership as part of building the client — there is no separate ownership call.
 
     ```rust
-    use arcane_sdk::{arcane_init, OwnershipStatus, SdkError};
+    use arcane_sdk::{ArcaneClient, SdkError};
 
     // Public key generated in the Arcane portal for this title
     const PUBLIC_KEY: &str = "pk_...";
 
-    fn boot() -> Result<(), SdkError> {
-        match arcane_init(PUBLIC_KEY)? {
-            OwnershipStatus::Owned | OwnershipStatus::DrmDisabled => Ok(()),
-        }
+    fn boot() -> Result<ArcaneClient, SdkError> {
+        let client = ArcaneClient::init(PUBLIC_KEY)?;
+        // Owned, or DRM is disabled for this title — either way, launch.
+        Ok(client)
     }
     ```
 
     ```c
-    char err[256];
-    int rc = arcane_sdk_init("pk_...", err, sizeof(err));
-    if (rc != 0) {
-      // err is "code: message" — see Errors
+    char err[512];
+    if (arcane_sdk_init("pk_...", err, sizeof(err)) != 0) {
+      /* err is "code: message — hint (context…)" — see Errors */
     }
     ```
+  </Step>
+  <Step title="Read state from the client, not from new calls">
+    The client holds the result in memory. Nothing downstream needs the public key again.
 
-    If init fails, match the code (`not_owned`, `network_required`, `ticket_expired`, …) in [Errors](/concepts/errors): each function lists which codes it can return and what they mean.
+    ```rust
+    client.user_id();          // Option<&str> — the signed-in Arcane account
+    client.game_id();          // Option<&str> — canonical title id
+    client.is_owned();         // bool
+    client.ownership();        // Owned | DrmDisabled
+    client.device_hash();      // this machine's fingerprint
+    client.ticket_expires_at() // Option<i64>
+    ```
+
+    ```c
+    char user_id[64];
+    int written = arcane_sdk_user_id(user_id, sizeof(user_id));
+    /* written >= 0 on success; negative values are errors — see C ABI */
+    ```
   </Step>
 </Steps>
 
 <Check>
-  You are done for the default launch path. No extra ownership API call is required.
+  You are done for the default launch path. Store the client (or rely on the C ABI singleton) and read from it.
 </Check>
 
 <Note>
-  Need to force a ticket check yourself (bypass init’s DRM short-circuit)? Use `check_ownership_offline` — see [Ownership model](/concepts/ownership). Most games never need this.
+  The client never revalidates on its own — no background thread, no timer. A session that runs for hours and wants to re-confirm ownership calls `refresh()` explicitly. See [Client](/concepts/client).
 </Note>
 
-<Tip>
-  Init may open Arcane and refresh a ticket automatically. Handle `not_owned` (buy on Store/marketplace), `network_required` (go online), and `not_authenticated` (sign in). Other codes: [Errors](/concepts/errors#error-codes-debug).
-</Tip>
+## Handle failures
+
+Every failure is an `SdkError` with a stable `code`, a player-facing `message`, a developer-facing `hint`, and a `context` naming the values involved.
+
+```rust
+match ArcaneClient::init(PUBLIC_KEY) {
+    Ok(client) => start_game(client),
+    Err(err) => {
+        // One log line is enough to debug:
+        // not_owned: You do not own this game. — Buy it on the Arcane Store
+        //   or marketplace, then retry. (detail=…)
+        eprintln!("{err}");
+
+        match err.code() {
+            "not_owned" => show_store_prompt(err.message()),
+            "network_required" | "not_authenticated" => show_retry(err.message()),
+            _ => show_generic_error(err.message()),
+        }
+    }
+}
+```
+
+Use `err.is_retryable()` to decide whether a retry button makes sense. The full table is in [Errors](/concepts/errors).
 
 ## Next steps
 
+- [Client](/concepts/client) — lifecycle, what is cached, when to refresh
 - [Ownership model](/concepts/ownership) — what init does under the hood
-- [Errors](/concepts/errors) — this function → these codes → how to fix
+- [Errors](/concepts/errors) — this code → this problem → this fix
 - [Rust API](/reference/rust-api) · [C ABI](/reference/c-abi)
