@@ -34,6 +34,15 @@ pub enum ErrorCode {
     /// The Arcane desktop app knows the route but not the achievement the game
     /// asked to unlock.
     UnknownAchievement,
+    /// No open lobby with that id or join code.
+    LobbyNotFound,
+    /// The lobby already holds `max_players`.
+    LobbyFull,
+    /// The lobby was closed by its host, or its host's session expired.
+    LobbyClosed,
+    /// The lobby is visible to the host's friends only, and this player is not
+    /// one of them.
+    NotFriends,
     /// The public key argument is empty, oversized, or has forbidden characters.
     InvalidPublicKey,
     /// An argument other than the public key is empty, oversized, or has
@@ -63,6 +72,10 @@ impl ErrorCode {
             Self::ArcaneUnavailable => "arcane_unavailable",
             Self::FeatureUnavailable => "feature_unavailable",
             Self::UnknownAchievement => "unknown_achievement",
+            Self::LobbyNotFound => "lobby_not_found",
+            Self::LobbyFull => "lobby_full",
+            Self::LobbyClosed => "lobby_closed",
+            Self::NotFriends => "not_friends",
             Self::InvalidPublicKey => "invalid_public_key",
             Self::InvalidArgument => "invalid_argument",
             Self::AmbiguousSession => "ambiguous_session",
@@ -243,6 +256,22 @@ impl SdkError {
         Self::new(ErrorCode::UnknownAchievement, message)
     }
 
+    pub(crate) fn lobby_not_found(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::LobbyNotFound, message)
+    }
+
+    pub(crate) fn lobby_full(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::LobbyFull, message)
+    }
+
+    pub(crate) fn lobby_closed(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::LobbyClosed, message)
+    }
+
+    pub(crate) fn not_friends(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::NotFriends, message)
+    }
+
     pub(crate) fn invalid_public_key(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::InvalidPublicKey, message)
     }
@@ -344,6 +373,18 @@ mod tests {
         assert!(!SdkError::invalid_argument("x").is_retryable());
         assert!(!SdkError::feature_unavailable("x").is_retryable());
         assert!(!SdkError::unknown_achievement("x").is_retryable());
+        assert!(!SdkError::lobby_not_found("x").is_retryable());
+        assert!(!SdkError::lobby_full("x").is_retryable());
+        assert!(!SdkError::lobby_closed("x").is_retryable());
+        assert!(!SdkError::not_friends("x").is_retryable());
+    }
+
+    #[test]
+    fn the_lobby_codes_are_stable() {
+        assert_eq!(SdkError::lobby_not_found("x").code(), "lobby_not_found");
+        assert_eq!(SdkError::lobby_full("x").code(), "lobby_full");
+        assert_eq!(SdkError::lobby_closed("x").code(), "lobby_closed");
+        assert_eq!(SdkError::not_friends("x").code(), "not_friends");
     }
 
     #[test]

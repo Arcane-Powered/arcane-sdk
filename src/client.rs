@@ -7,6 +7,7 @@ use crate::desktop::{offline_only, refresh_ownership_via_desktop, OFFLINE_ONLY_E
 use crate::device::{device_hash, now_unix};
 use crate::error::{OwnershipStatus, SdkError};
 use crate::friends::Friends;
+use crate::p2p::{P2p, P2pState};
 use crate::paths::{load_cached_drm_flag, load_session, SessionState};
 use crate::session::{Session, SessionSnapshot, TrackingState};
 use crate::ticket::{check_ownership_offline, OwnershipCheck};
@@ -59,9 +60,9 @@ pub(crate) fn validate_public_key(public_key: &str) -> Result<(), SdkError> {
 /// client does run one background thread for the play session — playtime and
 /// FPS sampling — described in [`SessionSnapshot`].
 ///
-/// Cloning shares that session, and the achievement cache filled by
-/// [`Achievements::list`]. The session ends when the last clone is dropped, or
-/// on [`shutdown`](ArcaneClient::shutdown).
+/// Cloning shares that session, the achievement cache filled by
+/// [`Achievements::list`], and the lobby state behind [`P2p`]. The session ends
+/// when the last clone is dropped, or on [`shutdown`](ArcaneClient::shutdown).
 #[derive(Debug, Clone)]
 pub struct ArcaneClient {
     public_key: String,
@@ -73,6 +74,7 @@ pub struct ArcaneClient {
     checked_at: i64,
     session: Arc<Session>,
     achievements: Arc<AchievementCache>,
+    p2p: Arc<P2pState>,
 }
 
 impl ArcaneClient {
@@ -175,6 +177,7 @@ impl ArcaneClient {
         next.game_id = next.game_id.or(outcome.game_id).or(self.game_id.clone());
         next.session = Arc::clone(&self.session);
         next.achievements = Arc::clone(&self.achievements);
+        next.p2p = Arc::clone(&self.p2p);
 
         let status = next.ownership.clone();
         *self = next;
@@ -279,6 +282,30 @@ impl ArcaneClient {
         Friends::new(self.game_id())
     }
 
+    /// P2P lobbies for this title: create one, join by code or by id, invite a
+    /// friend, and read what happened.
+    ///
+    /// Arcane hosts the lobby and carries each member's opaque connection
+    /// blob; your game keeps its own netcode. Every call but
+    /// [`P2p::poll_events`] and [`P2p::launch_join_code`] makes one synchronous
+    /// loopback round trip — call them off the render thread.
+    ///
+    /// **Calling this arms lobby event polling** on the `arcane-session`
+    /// thread: from here on it asks the Arcane desktop app for events on every
+    /// tick, and every 5 seconds while this client is in an open lobby. A game
+    /// that never calls `p2p()` pays nothing for any of it.
+    ///
+    /// ```no_run
+    /// # use arcane_sdk::Visibility;
+    /// # let client = arcane_sdk::ArcaneClient::init("pk_...")?;
+    /// # let my_endpoint = b"udp://203.0.113.7:7777";
+    /// let lobby = client.p2p().create_lobby(4, Visibility::FriendsAndCode, my_endpoint)?;
+    /// # Ok::<(), arcane_sdk::SdkError>(())
+    /// ```
+    pub fn p2p(&self) -> P2p<'_> {
+        P2p::new(&self.public_key, &self.p2p)
+    }
+
     /// A copy of the current play session state: tracking, playtime, FPS
     /// samples. Reads memory only.
     pub fn session(&self) -> SessionSnapshot {
@@ -297,6 +324,7 @@ impl ArcaneClient {
     }
 
     fn from_check(public_key: &str, check: OwnershipCheck) -> Self {
+        let p2p = Arc::new(P2pState::new());
         Self {
             public_key: public_key.to_string(),
             game_id: check.game_id,
@@ -305,12 +333,14 @@ impl ArcaneClient {
             ownership: check.status,
             ticket_expires_at: check.ticket_expires_at,
             checked_at: now_unix(),
-            session: Arc::new(Session::dormant(public_key)),
+            session: Arc::new(Session::dormant(public_key, Arc::clone(&p2p))),
             achievements: Arc::new(AchievementCache::new()),
+            p2p,
         }
     }
 
     fn drm_disabled(public_key: &str) -> Result<Self, SdkError> {
+        let p2p = Arc::new(P2pState::new());
         Ok(Self {
             public_key: public_key.to_string(),
             game_id: None,
@@ -322,8 +352,9 @@ impl ArcaneClient {
             ownership: OwnershipStatus::DrmDisabled,
             ticket_expires_at: None,
             checked_at: now_unix(),
-            session: Arc::new(Session::dormant(public_key)),
+            session: Arc::new(Session::dormant(public_key, Arc::clone(&p2p))),
             achievements: Arc::new(AchievementCache::new()),
+            p2p,
         })
     }
 }

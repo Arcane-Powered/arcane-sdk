@@ -34,6 +34,13 @@
 
 #define ARCANE_OWNERSHIP_DRM_DISABLED 1
 
+// `arcane_sdk_lobby_create` visibility values.
+#define ARCANE_LOBBY_FRIENDS 0
+
+#define ARCANE_LOBBY_CODE 1
+
+#define ARCANE_LOBBY_FRIENDS_AND_CODE 2
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -150,6 +157,125 @@ int arcane_sdk_is_initialized(void);
 //
 // `buf` must be null or point to at least `len` writable bytes.
 int arcane_sdk_last_error_json(char *buf, size_t len);
+
+// Write the join code this game was launched with into `buf`.
+//
+// Set when the player started the game from a friend's "Join" in the
+// launcher. Read from the Arcane desktop app on the first call and cached for
+// the process; `-4` when there is none, when the desktop app predates the
+// route, or in offline-only mode. 8 bytes is enough.
+//
+// # Safety
+//
+// `buf` must be null or point to at least `len` writable bytes.
+int arcane_sdk_launch_join_code(char *buf, size_t len);
+
+// Close a lobby this player hosts. Its members get a `lobby_closed` event.
+//
+// Same return values as `arcane_sdk_lobby_invite`.
+//
+// # Safety
+//
+// `lobby_id` must be a valid NUL-terminated C string. `err_buf` must be null
+// or point to at least `err_len` writable bytes.
+int arcane_sdk_lobby_close(const char *lobby_id, char *err_buf, size_t err_len);
+
+// Open a lobby with this player as its host and write it as JSON into `buf`.
+//
+// `visibility` is `ARCANE_LOBBY_FRIENDS` (0), `ARCANE_LOBBY_CODE` (1) or
+// `ARCANE_LOBBY_FRIENDS_AND_CODE` (2). `payload_b64` is your connection blob,
+// base64-encoded, at most 4096 raw bytes — null means no payload. The JSON is
+// `{"lobby_id","join_code","host_user_id","host_payload","members":[{"user_id",
+// "pseudo","payload"}],"max_players"}`, payloads base64.
+//
+// One synchronous loopback call — never from the render loop. Returns the
+// bytes written, or `-1` when not initialised, `-2` on a bad argument or
+// buffer, `-3` when the buffer is too small, `-4` when the call failed — then
+// readable with `arcane_sdk_last_error_json`.
+//
+// # Safety
+//
+// `payload_b64` must be null or a valid NUL-terminated C string. `buf` must be
+// null or point to at least `len` writable bytes.
+
+int arcane_sdk_lobby_create(uint8_t max_players,
+                            int visibility,
+                            const char *payload_b64,
+                            char *buf,
+                            size_t len);
+
+// Write the lobby events collected since the last call as JSON into `buf`, and
+// drop them:
+// `{"events":[{"type":"invite|member_joined|member_left|lobby_closed","lobby_id",…}]}`.
+//
+// Reads memory only — the `arcane-session` thread does the polling, armed by
+// the first lobby call. Payloads are base64. `member_joined` carries
+// `user_id`, `pseudo` and `payload`; `invite` carries `join_code`,
+// `from_user_id` and `pseudo`; `member_left` carries `user_id`.
+//
+// The queue is drained **only** once the JSON is safely in `buf`: a `-3` keeps
+// every event so you can retry with a larger buffer.
+//
+// # Safety
+//
+// `buf` must be null or point to at least `len` writable bytes.
+int arcane_sdk_lobby_events_json(char *buf, size_t len);
+
+// Invite one friend to a lobby.
+//
+// Both ids are NUL-terminated UTF-8. One synchronous loopback call. Returns 0
+// on success, 1 on a null / non-UTF-8 argument or before init, 2 on an SDK
+// error written to `err_buf` as `"code: message"` — `not_friends` when that
+// account is not a friend.
+//
+// # Safety
+//
+// `lobby_id` and `to_user_id` must be valid NUL-terminated C strings.
+// `err_buf` must be null or point to at least `err_len` writable bytes.
+
+int arcane_sdk_lobby_invite(const char *lobby_id,
+                            const char *to_user_id,
+                            char *err_buf,
+                            size_t err_len);
+
+// Join a lobby by id — what an invite event carries — and write it as JSON
+// into `buf`.
+//
+// Same JSON, return values and threading rules as `arcane_sdk_lobby_create`.
+//
+// # Safety
+//
+// `lobby_id` and `payload_b64` must be null or valid NUL-terminated C strings.
+// `buf` must be null or point to at least `len` writable bytes.
+int arcane_sdk_lobby_join(const char *lobby_id, const char *payload_b64, char *buf, size_t len);
+
+// Join the lobby a six-character code points at, and write it as JSON into
+// `buf`.
+//
+// The code is uppercased before it is checked. Same JSON, return values and
+// threading rules as `arcane_sdk_lobby_create`; a malformed code gives `-4`
+// with `invalid_argument` in `arcane_sdk_last_error_json`, raised before any
+// call.
+//
+// # Safety
+//
+// `join_code` and `payload_b64` must be null or valid NUL-terminated C
+// strings. `buf` must be null or point to at least `len` writable bytes.
+
+int arcane_sdk_lobby_join_code(const char *join_code,
+                               const char *payload_b64,
+                               char *buf,
+                               size_t len);
+
+// Leave a lobby. For the host this ends it — there is no host migration.
+//
+// Same return values as `arcane_sdk_lobby_invite`.
+//
+// # Safety
+//
+// `lobby_id` must be a valid NUL-terminated C string. `err_buf` must be null
+// or point to at least `err_len` writable bytes.
+int arcane_sdk_lobby_leave(const char *lobby_id, char *err_buf, size_t err_len);
 
 // Ownership as of the last check.
 //

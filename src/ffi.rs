@@ -24,6 +24,7 @@ use crate::achievements;
 use crate::client::ArcaneClient;
 use crate::error::{OwnershipStatus, SdkError};
 use crate::friends;
+use crate::p2p::{self, Visibility};
 
 /// Action return codes.
 pub const ARCANE_OK: c_int = 0;
@@ -39,6 +40,11 @@ pub const ARCANE_ERR_UNAVAILABLE: c_int = -4;
 /// `arcane_sdk_ownership` results.
 pub const ARCANE_OWNERSHIP_OWNED: c_int = 0;
 pub const ARCANE_OWNERSHIP_DRM_DISABLED: c_int = 1;
+
+/// `arcane_sdk_lobby_create` visibility values.
+pub const ARCANE_LOBBY_FRIENDS: c_int = 0;
+pub const ARCANE_LOBBY_CODE: c_int = 1;
+pub const ARCANE_LOBBY_FRIENDS_AND_CODE: c_int = 2;
 
 static CLIENT: RwLock<Option<ArcaneClient>> = RwLock::new(None);
 static LAST_ERROR: RwLock<Option<SdkError>> = RwLock::new(None);
@@ -407,6 +413,367 @@ pub unsafe extern "C" fn arcane_sdk_friends_json(buf: *mut c_char, len: usize) -
             ARCANE_ERR_UNAVAILABLE
         }
     }
+}
+
+/// Read a NUL-terminated C string, treating null as absent.
+///
+/// # Safety
+///
+/// `value` must be null or a valid NUL-terminated C string.
+unsafe fn c_str<'a>(value: *const c_char) -> Option<Option<&'a str>> {
+    if value.is_null() {
+        return Some(None);
+    }
+    match CStr::from_ptr(value).to_str() {
+        Ok(value) => Some(Some(value)),
+        Err(_) => None,
+    }
+}
+
+/// Decode a base64 payload argument. A null pointer is an empty payload; a
+/// string that is not base64 is a bad argument.
+///
+/// # Safety
+///
+/// `payload_b64` must be null or a valid NUL-terminated C string.
+unsafe fn payload_arg(payload_b64: *const c_char) -> Option<Vec<u8>> {
+    let raw = c_str(payload_b64)?.unwrap_or_default();
+    p2p::decode_payload_arg(raw)
+}
+
+fn visibility_arg(visibility: c_int) -> Option<Visibility> {
+    match visibility {
+        ARCANE_LOBBY_FRIENDS => Some(Visibility::Friends),
+        ARCANE_LOBBY_CODE => Some(Visibility::Code),
+        ARCANE_LOBBY_FRIENDS_AND_CODE => Some(Visibility::FriendsAndCode),
+        _ => None,
+    }
+}
+
+fn bad_lobby_argument(detail: &str) -> c_int {
+    let err = SdkError::invalid_argument(detail)
+        .with_hint("Pass a base64 payload of at most 4096 raw bytes, and a known visibility.");
+    store_error(&err);
+    ARCANE_ERR_BAD_BUFFER
+}
+
+fn lobby_result(lobby: Result<crate::p2p::Lobby, SdkError>, buf: *mut c_char, len: usize) -> c_int {
+    match lobby {
+        Ok(lobby) => {
+            clear_error();
+            write_str(&p2p::to_json(&lobby), buf, len)
+        }
+        Err(err) => {
+            store_error(&err);
+            ARCANE_ERR_UNAVAILABLE
+        }
+    }
+}
+
+fn lobby_client(action: &str) -> Result<ArcaneClient, SdkError> {
+    client_snapshot().ok_or_else(|| {
+        SdkError::not_initialized("The Arcane SDK client is not initialised.").with_hint(format!(
+            "Call arcane_sdk_init once at launch before {action}."
+        ))
+    })
+}
+
+/// Open a lobby with this player as its host and write it as JSON into `buf`.
+///
+/// `visibility` is `ARCANE_LOBBY_FRIENDS` (0), `ARCANE_LOBBY_CODE` (1) or
+/// `ARCANE_LOBBY_FRIENDS_AND_CODE` (2). `payload_b64` is your connection blob,
+/// base64-encoded, at most 4096 raw bytes — null means no payload. The JSON is
+/// `{"lobby_id","join_code","host_user_id","host_payload","members":[{"user_id",
+/// "pseudo","payload"}],"max_players"}`, payloads base64.
+///
+/// One synchronous loopback call — never from the render loop. Returns the
+/// bytes written, or `-1` when not initialised, `-2` on a bad argument or
+/// buffer, `-3` when the buffer is too small, `-4` when the call failed — then
+/// readable with `arcane_sdk_last_error_json`.
+///
+/// # Safety
+///
+/// `payload_b64` must be null or a valid NUL-terminated C string. `buf` must be
+/// null or point to at least `len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_lobby_create(
+    max_players: u8,
+    visibility: c_int,
+    payload_b64: *const c_char,
+    buf: *mut c_char,
+    len: usize,
+) -> c_int {
+    let Some(payload) = payload_arg(payload_b64) else {
+        return bad_lobby_argument("The lobby payload is null-terminated but not base64.");
+    };
+    let Some(visibility) = visibility_arg(visibility) else {
+        return bad_lobby_argument("That is not an Arcane lobby visibility.");
+    };
+    let client = match lobby_client("arcane_sdk_lobby_create") {
+        Ok(client) => client,
+        Err(err) => {
+            store_error(&err);
+            return ARCANE_ERR_NOT_INITIALIZED;
+        }
+    };
+
+    lobby_result(
+        client.p2p().create_lobby(max_players, visibility, &payload),
+        buf,
+        len,
+    )
+}
+
+/// Join the lobby a six-character code points at, and write it as JSON into
+/// `buf`.
+///
+/// The code is uppercased before it is checked. Same JSON, return values and
+/// threading rules as `arcane_sdk_lobby_create`; a malformed code gives `-4`
+/// with `invalid_argument` in `arcane_sdk_last_error_json`, raised before any
+/// call.
+///
+/// # Safety
+///
+/// `join_code` and `payload_b64` must be null or valid NUL-terminated C
+/// strings. `buf` must be null or point to at least `len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_lobby_join_code(
+    join_code: *const c_char,
+    payload_b64: *const c_char,
+    buf: *mut c_char,
+    len: usize,
+) -> c_int {
+    let Some(Some(join_code)) = c_str(join_code) else {
+        return bad_lobby_argument("The join code is null or not UTF-8.");
+    };
+    let Some(payload) = payload_arg(payload_b64) else {
+        return bad_lobby_argument("The lobby payload is null-terminated but not base64.");
+    };
+    let client = match lobby_client("arcane_sdk_lobby_join_code") {
+        Ok(client) => client,
+        Err(err) => {
+            store_error(&err);
+            return ARCANE_ERR_NOT_INITIALIZED;
+        }
+    };
+
+    lobby_result(client.p2p().join_by_code(join_code, &payload), buf, len)
+}
+
+/// Join a lobby by id — what an invite event carries — and write it as JSON
+/// into `buf`.
+///
+/// Same JSON, return values and threading rules as `arcane_sdk_lobby_create`.
+///
+/// # Safety
+///
+/// `lobby_id` and `payload_b64` must be null or valid NUL-terminated C strings.
+/// `buf` must be null or point to at least `len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_lobby_join(
+    lobby_id: *const c_char,
+    payload_b64: *const c_char,
+    buf: *mut c_char,
+    len: usize,
+) -> c_int {
+    let Some(Some(lobby_id)) = c_str(lobby_id) else {
+        return bad_lobby_argument("The lobby id is null or not UTF-8.");
+    };
+    let Some(payload) = payload_arg(payload_b64) else {
+        return bad_lobby_argument("The lobby payload is null-terminated but not base64.");
+    };
+    let client = match lobby_client("arcane_sdk_lobby_join") {
+        Ok(client) => client,
+        Err(err) => {
+            store_error(&err);
+            return ARCANE_ERR_NOT_INITIALIZED;
+        }
+    };
+
+    lobby_result(client.p2p().join(lobby_id, &payload), buf, len)
+}
+
+/// Invite one friend to a lobby.
+///
+/// Both ids are NUL-terminated UTF-8. One synchronous loopback call. Returns 0
+/// on success, 1 on a null / non-UTF-8 argument or before init, 2 on an SDK
+/// error written to `err_buf` as `"code: message"` — `not_friends` when that
+/// account is not a friend.
+///
+/// # Safety
+///
+/// `lobby_id` and `to_user_id` must be valid NUL-terminated C strings.
+/// `err_buf` must be null or point to at least `err_len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_lobby_invite(
+    lobby_id: *const c_char,
+    to_user_id: *const c_char,
+    err_buf: *mut c_char,
+    err_len: usize,
+) -> c_int {
+    let (Some(Some(lobby_id)), Some(Some(to_user_id))) = (c_str(lobby_id), c_str(to_user_id))
+    else {
+        return ARCANE_ERR_ARGUMENT;
+    };
+    let client = match lobby_client("arcane_sdk_lobby_invite") {
+        Ok(client) => client,
+        Err(err) => {
+            write_err(&err, err_buf, err_len);
+            return ARCANE_ERR_ARGUMENT;
+        }
+    };
+
+    match client.p2p().invite(lobby_id, to_user_id) {
+        Ok(()) => {
+            clear_error();
+            ARCANE_OK
+        }
+        Err(err) => {
+            write_err(&err, err_buf, err_len);
+            ARCANE_ERR_SDK
+        }
+    }
+}
+
+/// Leave a lobby. For the host this ends it — there is no host migration.
+///
+/// Same return values as `arcane_sdk_lobby_invite`.
+///
+/// # Safety
+///
+/// `lobby_id` must be a valid NUL-terminated C string. `err_buf` must be null
+/// or point to at least `err_len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_lobby_leave(
+    lobby_id: *const c_char,
+    err_buf: *mut c_char,
+    err_len: usize,
+) -> c_int {
+    lobby_action(
+        lobby_id,
+        err_buf,
+        err_len,
+        "arcane_sdk_lobby_leave",
+        |client, id| client.p2p().leave(id),
+    )
+}
+
+/// Close a lobby this player hosts. Its members get a `lobby_closed` event.
+///
+/// Same return values as `arcane_sdk_lobby_invite`.
+///
+/// # Safety
+///
+/// `lobby_id` must be a valid NUL-terminated C string. `err_buf` must be null
+/// or point to at least `err_len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_lobby_close(
+    lobby_id: *const c_char,
+    err_buf: *mut c_char,
+    err_len: usize,
+) -> c_int {
+    lobby_action(
+        lobby_id,
+        err_buf,
+        err_len,
+        "arcane_sdk_lobby_close",
+        |client, id| client.p2p().close(id),
+    )
+}
+
+/// # Safety
+///
+/// `lobby_id` must be a valid NUL-terminated C string. `err_buf` must be null
+/// or point to at least `err_len` writable bytes.
+unsafe fn lobby_action<F>(
+    lobby_id: *const c_char,
+    err_buf: *mut c_char,
+    err_len: usize,
+    action: &str,
+    call: F,
+) -> c_int
+where
+    F: FnOnce(&ArcaneClient, &str) -> Result<(), SdkError>,
+{
+    let Some(Some(lobby_id)) = c_str(lobby_id) else {
+        return ARCANE_ERR_ARGUMENT;
+    };
+    let client = match lobby_client(action) {
+        Ok(client) => client,
+        Err(err) => {
+            write_err(&err, err_buf, err_len);
+            return ARCANE_ERR_ARGUMENT;
+        }
+    };
+
+    match call(&client, lobby_id) {
+        Ok(()) => {
+            clear_error();
+            ARCANE_OK
+        }
+        Err(err) => {
+            write_err(&err, err_buf, err_len);
+            ARCANE_ERR_SDK
+        }
+    }
+}
+
+/// Write the join code this game was launched with into `buf`.
+///
+/// Set when the player started the game from a friend's "Join" in the
+/// launcher. Read from the Arcane desktop app on the first call and cached for
+/// the process; `-4` when there is none, when the desktop app predates the
+/// route, or in offline-only mode. 8 bytes is enough.
+///
+/// # Safety
+///
+/// `buf` must be null or point to at least `len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_launch_join_code(buf: *mut c_char, len: usize) -> c_int {
+    let client = match lobby_client("arcane_sdk_launch_join_code") {
+        Ok(client) => client,
+        Err(err) => {
+            store_error(&err);
+            return ARCANE_ERR_NOT_INITIALIZED;
+        }
+    };
+    match client.p2p().launch_join_code() {
+        Some(code) => write_str(&code, buf, len),
+        None => ARCANE_ERR_UNAVAILABLE,
+    }
+}
+
+/// Write the lobby events collected since the last call as JSON into `buf`, and
+/// drop them:
+/// `{"events":[{"type":"invite|member_joined|member_left|lobby_closed","lobby_id",…}]}`.
+///
+/// Reads memory only — the `arcane-session` thread does the polling, armed by
+/// the first lobby call. Payloads are base64. `member_joined` carries
+/// `user_id`, `pseudo` and `payload`; `invite` carries `join_code`,
+/// `from_user_id` and `pseudo`; `member_left` carries `user_id`.
+///
+/// The queue is drained **only** once the JSON is safely in `buf`: a `-3` keeps
+/// every event so you can retry with a larger buffer.
+///
+/// # Safety
+///
+/// `buf` must be null or point to at least `len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_lobby_events_json(buf: *mut c_char, len: usize) -> c_int {
+    let client = match lobby_client("arcane_sdk_lobby_events_json") {
+        Ok(client) => client,
+        Err(err) => {
+            store_error(&err);
+            return ARCANE_ERR_NOT_INITIALIZED;
+        }
+    };
+
+    let (rendered, count) = client.p2p().events_json();
+    let written = write_str(&rendered, buf, len);
+    if written >= 0 {
+        client.p2p().discard(count);
+    }
+    written
 }
 
 /// Whether a client is currently initialised. Returns 1 or 0.

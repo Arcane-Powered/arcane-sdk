@@ -243,6 +243,15 @@ pub(crate) fn get_json<T: DeserializeOwned>(
     call_json(request, None, url)
 }
 
+pub(crate) fn delete_json<T: DeserializeOwned>(
+    path: &str,
+    read_timeout: Duration,
+) -> Result<T, DesktopCall> {
+    let url = format!("{}{path}", base_url());
+    let request = http_agent(read_timeout).delete(&url);
+    call_json(request, None, url)
+}
+
 pub(crate) fn post_json<T: DeserializeOwned>(
     path: &str,
     body: Option<Value>,
@@ -368,6 +377,25 @@ fn map_known_desktop_error(body: &SdkErrorBody) -> Option<SdkError> {
                 )
                 .with_context("detail", detail)
         }
+        "lobby_not_found" => {
+            SdkError::lobby_not_found("Arcane has no open lobby with that id or join code.")
+                .with_hint(
+                    "The code may be mistyped or the lobby may have ended — ask the host for a \
+                 fresh one.",
+                )
+                .with_context("detail", detail)
+        }
+        "lobby_full" => SdkError::lobby_full("That lobby is already full.")
+            .with_hint("Wait for a member to leave, or host a lobby of your own.")
+            .with_context("detail", detail),
+        "lobby_closed" => SdkError::lobby_closed("That lobby has been closed by its host.")
+            .with_hint("Ask the host to open a new lobby, or host one yourself.")
+            .with_context("detail", detail),
+        "not_friends" => SdkError::not_friends(
+            "That lobby is open to the host's friends, and this account is not one of them.",
+        )
+        .with_hint("Ask the host for a join code, or become friends on Arcane first.")
+        .with_context("detail", detail),
         "game_not_found" => SdkError::ticket_invalid("Arcane does not know this title.")
             .with_hint(
                 "Confirm the public key compiled into your build matches the one in the \
@@ -514,6 +542,21 @@ mod tests {
         assert_eq!(err.code(), "unknown_achievement");
         assert!(err.hint().unwrap().contains("Arcane portal"));
         assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn maps_the_lobby_codes() {
+        for (wire, code) in [
+            ("lobby_not_found", "lobby_not_found"),
+            ("lobby_full", "lobby_full"),
+            ("lobby_closed", "lobby_closed"),
+            ("not_friends", "not_friends"),
+        ] {
+            let err = map_desktop_error(&body(wire, "nope"));
+            assert_eq!(err.code(), code);
+            assert!(err.hint().is_some());
+            assert!(!err.is_retryable());
+        }
     }
 
     #[test]

@@ -1,0 +1,193 @@
+---
+title: "Lobbies"
+description: "Create a lobby, share a join code, invite friends, and exchange connection blobs — your netcode does the rest."
+keywords: ["p2p", "lobby", "join code", "invite", "multiplayer", "matchmaking", "launch"]
+---
+
+Arcane gives you the **meeting point**. Your game keeps its netcode.
+
+Steam, Epic Online Services and Discord all start from the same idea: the platform hosts a *lobby* — a party object with a host, members and a capacity — players get in by friend invitation, by code, or by hitting "Join" on a friend, and the platform acts as a mailbox so members can swap connection details. The heavy half is the transport (Steam Datagram Relay, EOS P2P with relays), and it is optional: plenty of shipped games use a Steam lobby with their own netcode.
+
+Arcane ships that first half only.
+
+<Note>
+  **No transport, no NAT traversal, no relay, no host migration, no public matchmaking.** Arcane carries an opaque `payload` for each member — an address, a ticket from your own netcode, whatever you want, up to 4 KiB — and never reads it. Connecting is yours.
+</Note>
+
+## The scenario
+
+```rust
+use arcane_sdk::{ArcaneClient, LobbyEvent, Visibility};
+
+let client = ArcaneClient::init(PUBLIC_KEY)?;
+
+// Host: open a lobby and put my endpoint in it.
+let lobby = client.p2p().create_lobby(4, Visibility::FriendsAndCode, my_endpoint())?;
+show_code(lobby.join_code.as_deref());                 // "K7P3QX" on screen
+
+client.p2p().invite(&lobby.lobby_id, friend_id)?;      // or the player does it from the launcher
+
+// Once a second is plenty — this only reads memory.
+for event in client.p2p().poll_events() {
+    match event {
+        LobbyEvent::MemberJoined { payload, .. } => connect_to(&payload),
+        LobbyEvent::MemberLeft { user_id, .. } => drop_peer(&user_id),
+        LobbyEvent::LobbyClosed { .. } => back_to_menu(),
+        LobbyEvent::Invite { lobby_id, .. } => offer_to_join(&lobby_id),
+    }
+}
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+And the other side, including the player who launched the game from a friend's "Join":
+
+```rust
+if let Some(code) = client.p2p().launch_join_code() {
+    let lobby = client.p2p().join_by_code(&code, my_endpoint())?;
+    connect_to(&lobby.host_payload);
+}
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+## The lobby
+
+```rust
+pub struct Lobby {
+    pub lobby_id: String,
+    pub join_code: Option<String>,
+    pub host_user_id: String,
+    pub host_payload: Vec<u8>,
+    pub members: Vec<LobbyMember>,   // user_id, pseudo, payload
+    pub max_players: u8,
+}
+```
+
+`create_lobby` and both `join` calls return the same object, filled in as of that moment. It is a **snapshot**: whoever arrives afterwards comes through `poll_events()` as a `MemberJoined`.
+
+| Visibility | Who gets in |
+|---|---|
+| `Visibility::Friends` | The host's friends, from the launcher. No code is issued |
+| `Visibility::Code` | Whoever has the six-character code |
+| `Visibility::FriendsAndCode` | Both |
+
+Arcane never lists lobbies publicly — there is no browser of open games.
+
+## Join codes
+
+Six characters from `A–Z` without `I` and `O`, and `2–9` — no character a player can mistype into another. Uppercase them or don't; the SDK does it before checking:
+
+```rust
+client.p2p().join_by_code("k7p3qx", my_endpoint())?;   // fine
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+Anything that is not six of those characters is `invalid_argument`, raised **before any call** — so a player pasting a whole URL costs you nothing.
+
+`join_code` is `None` on a friends-only lobby, and for a member who is not the host.
+
+## Payloads
+
+`payload` is your connection blob: up to `MAX_LOBBY_PAYLOAD_LEN` (4096) raw bytes, base64 on the wire, never interpreted by Arcane. Over that limit is `invalid_argument` before any call.
+
+```rust
+let endpoint = format!("{}:{}", public_ip, port);
+let lobby = client.p2p().create_lobby(4, Visibility::Code, endpoint.as_bytes())?;
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+Put a *reference* in it — an address, a session ticket your own netcode understands — not game data.
+
+## Events
+
+`poll_events()` drains a queue the `arcane-session` thread fills. It reads memory only: no callback, no extra thread, no I/O, no failure. Each event is delivered exactly once, oldest first.
+
+| Event | Carries |
+|---|---|
+| `Invite` | `lobby_id`, `join_code`, `from_user_id`, `pseudo` |
+| `MemberJoined` | `lobby_id`, `user_id`, `pseudo`, `payload` |
+| `MemberLeft` | `lobby_id`, `user_id` |
+| `LobbyClosed` | `lobby_id` |
+
+The polling behind it is **armed by your first call to `client.p2p()`** and not before — a game that never touches lobbies never pays for any of this. Once armed, the session thread asks the Arcane desktop app for events on every tick: every 5 seconds while you are in an open lobby, every 60 seconds otherwise. Heartbeats keep their own 60-second schedule regardless.
+
+```rust
+client.session().lobby_events;   // Off | Active | Unavailable
+```
+
+`Unavailable` means the Arcane desktop app predates the lobby routes: polling stopped silently and will not restart for this client. It is reported there rather than raised, because nothing the game did caused it.
+
+If you arm polling and then never call `poll_events()`, the queue keeps the 256 most recent events and drops the oldest.
+
+## Launching from "Join"
+
+When a player hits "Join" on a friend in the launcher, Arcane starts the game and stashes the join code for that launch. `launch_join_code()` reads it on the first call and caches it for the client's lifetime — the desktop app clears it once served, so it belongs to this launch and no other.
+
+```rust
+match client.p2p().launch_join_code() {
+    Some(code) => join_flow(&code),   // started from "Join"
+    None => main_menu(),              // started normally
+}
+```
+
+It never fails: `None` covers "started normally", an older desktop app, and offline-only mode. If the friend is already playing, they get an `Invite` event instead of a launch.
+
+## Ending a lobby
+
+```rust
+client.p2p().leave(&lobby.lobby_id)?;   // any member
+client.p2p().close(&lobby.lobby_id)?;   // the host
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+A lobby also ends when the host's play session expires. **There is no host migration** — the members get `LobbyClosed`, and somebody opens a new lobby.
+
+<Warning>
+  Every call here except `poll_events()` and a cached `launch_join_code()` is **synchronous**: one loopback round trip to the Arcane desktop app, on your thread, around a millisecond. Call them from menus and lobby flows, never per frame.
+</Warning>
+
+## Errors
+
+| Code | When |
+|------|------|
+| `invalid_argument` | Payload over 4096 bytes, a malformed join code, or a malformed id — all raised before any call |
+| `lobby_not_found` | No open lobby with that id or code |
+| `lobby_full` | The lobby already holds `max_players` |
+| `lobby_closed` | The host closed it, or their session expired |
+| `not_friends` | The lobby is friends-only and this account is not one |
+| `not_authenticated` | Nobody is signed in to the Arcane desktop app |
+| `feature_unavailable` | The Arcane desktop app predates the lobby routes — update it |
+| `arcane_unavailable` | The desktop app is not running |
+| `network_required` | `ARCANE_OFFLINE_ONLY` is set — raised before any call |
+
+Full table and what to do about each: [Errors](/concepts/errors).
+
+## In C
+
+```c
+char json[8192], err[512];
+
+int n = arcane_sdk_lobby_create(4, ARCANE_LOBBY_FRIENDS_AND_CODE, "dWRwOi8v...", json, sizeof(json));
+/* {"lobby_id":"…","join_code":"K7P3QX","host_user_id":"…","host_payload":"…",
+    "members":[{"user_id":"…","pseudo":"…","payload":"…"}],"max_players":4} */
+
+arcane_sdk_lobby_invite("lobby-1", "user-b", err, sizeof(err));
+
+if (arcane_sdk_lobby_events_json(json, sizeof(json)) > 0) {
+  /* {"events":[{"type":"member_joined","lobby_id":"…","user_id":"…",
+      "pseudo":"…","payload":"…"}]} */
+}
+
+char code[8];
+if (arcane_sdk_launch_join_code(code, sizeof(code)) > 0) {
+  arcane_sdk_lobby_join_code(code, "dWRwOi8v...", json, sizeof(json));
+}
+```
+
+Payloads are base64 in **both** directions in C: you pass one in, you get them back in the JSON. `arcane_sdk_lobby_events_json` drains the queue only once the JSON is safely in your buffer — a `-3` leaves every event where it was, so you can retry with a bigger buffer. Details: [C ABI](/reference/c-abi).
+
+## Next steps
+
+- [Friends](/concepts/friends) — who to invite, and who is in your game right now
+- [Session](/concepts/session) — the thread that polls events, and what else it does
+- [Errors](/concepts/errors) — every code, and its fix
+- [Rust API](/reference/rust-api) · [C ABI](/reference/c-abi)
