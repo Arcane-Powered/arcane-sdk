@@ -16,8 +16,9 @@ les FPS sans autre appel du jeu.
 let client = ArcaneClient::init("pk_...")?;
 ```
 
-C'est tout pour : propriété, temps de jeu, FPS (si le jeu appelle `frame()`), présence
-« en jeu » pour les amis. Le reste est opt-in, une ligne par usage :
+C'est tout pour : propriété, temps de jeu, échantillons FPS de temps en temps (si le
+jeu appelle `frame()` et si le joueur n'a pas désactivé l'option dans le desktop),
+présence « en jeu » pour les amis. Le reste est opt-in, une ligne par usage :
 
 ```rust
 client.frame();                                   // dans la boucle de rendu → FPS
@@ -48,7 +49,9 @@ arcane_sdk_friends_json(buf, sizeof buf);
 |---|---|
 | Le tracking est-il bloquant pour `init` ? | **Non.** `init` réussit dès que la propriété est confirmée. Le démarrage de session est tenté en arrière-plan et réessayé à chaque tick. |
 | Horloge du temps de jeu | `Instant` (monotone). Jamais l'horloge murale, donc insensible à `clock_rollback`. |
-| Comptage FPS | `frame()` = `AtomicU64::fetch_add(1, Relaxed)`. Aucun lock, aucune allocation. Sans appel à `frame()`, le heartbeat envoie `fps: null` et le desktop ne remonte pas d'échantillon. |
+| FPS : échantillonnage, pas comptage continu | Le thread de session ouvre une **fenêtre de 30 s toutes les 5 min** (la première 60 s après le start, pour sauter le chargement). Pendant une fenêtre `frame()` incrémente un compteur ; en dehors, c'est un seul `AtomicBool::load`. Chaque fenêtre donne un échantillon `{ fps_avg, window_seconds, frames }` envoyé au heartbeat suivant. Sans appel à `frame()`, aucun échantillon. |
+| FPS : option joueur | Activable / désactivable par le joueur dans **Arcane Powered desktop** (réglage « Share performance data », défaut activé). Le SDK ne décide rien : `session/start` et chaque réponse de heartbeat portent `fps_sampling: bool` ; à `false`, aucune fenêtre n'est ouverte et `frame()` reste un load. Le changement en cours de partie est pris en compte au heartbeat suivant. |
+| FPS : usage | Moyenne par configuration matérielle, affichée sur la page store (déjà en place côté desktop : « fps average on this pc » / « similar PCs »). Le SDK ne fait que produire les échantillons. |
 | Perte de données | Si le desktop n'est jamais joignable pendant toute la session, le temps de jeu de cette session est perdu. Pas de fichier tampon côté SDK : `sdk_server.rs` interdit les fichiers comme bus d'API. |
 | `ARCANE_OFFLINE_ONLY` | Désactive aussi le thread de session et tous les appels achievements / amis (`network_required`). |
 | Anti-triche | **Hors périmètre.** Un unlock est une requête loopback qu'un process local peut forger (cf. `DESKTOP_CONTRACT.md` §6). La validation de forme et de plausibilité est côté backend. |
@@ -61,7 +64,7 @@ Le tracking est actif par défaut, donc il doit être invisible pour le jeu :
 
 | Chemin | Coût | Règle |
 |---|---|---|
-| `frame()` | un `fetch_add` relaxed sur un `AtomicU64` | pas de lock, pas d'allocation, pas de lecture d'horloge |
+| `frame()` | un `AtomicBool::load(Relaxed)` ; pendant une fenêtre d'échantillonnage (30 s / 5 min), un `fetch_add` relaxed en plus | pas de lock, pas d'allocation, pas de lecture d'horloge ; 90 % du temps c'est un seul load |
 | `set_graphics()` | un `Mutex` court, appelé rarement | jamais dans la boucle de rendu |
 | thread `arcane-session` | endormi sur `Condvar::wait_timeout(60 s)`, réveil ~1/min, un `POST` loopback de ~200 octets | aucune boucle active, aucun `sleep` fin, pile 64 KiB |
 | `p2p` events | polling loopback à chaque tick **uniquement** si `p2p()` a été appelé | zéro coût pour un jeu qui ne s'en sert pas |
@@ -95,25 +98,32 @@ corps JSON (route inconnue, desktop trop ancien) vers `feature_unavailable`.
 
 ```
 POST /v1/games/{public_key}/session/start
-→ 200 { "session_id": "uuid", "user_id": "…", "game_id": "…" }
+→ 200 { "session_id": "uuid", "user_id": "…", "game_id": "…", "fps_sampling": true }
 → 401 not_authenticated · 403 not_owned · 404 game_not_found
 
 POST /v1/games/{public_key}/session/heartbeat
-{ "session_id": "uuid", "seconds": 120, "frames": 7180, "fps_avg": 59.8,
-  "resolution": "2560x1440", "graphics_preset": "high" }
-→ 200 { "ok": true }
+{ "session_id": "uuid", "seconds": 120,
+  "samples": [ { "sample_id": "uuid", "taken_at": 1786480000, "fps_avg": 59.8,
+                 "window_seconds": 30, "frames": 1794,
+                 "resolution": "2560x1440", "graphics_preset": "high" } ] }
+→ 200 { "ok": true, "fps_sampling": true }
 → 404 unknown_session (le desktop a expiré la session → le SDK redémarre une session)
 
 POST /v1/games/{public_key}/session/end
-{ "session_id": "uuid", "seconds": 1830, "frames": …, "fps_avg": … }
+{ "session_id": "uuid", "seconds": 1830, "samples": [ … ] }
 → 200 { "ok": true }
 ```
 
 - `seconds` est **cumulé depuis le début de session** (pas un delta) : un heartbeat
   perdu ou rejoué ne change rien, le desktop garde le max.
-- `frames` et `fps_avg` sont cumulés sur la session ; `fps_avg` = frames / secondes
-  pendant lesquelles `frame()` a été appelé au moins une fois. `null` si jamais appelé.
-- `resolution` / `graphics_preset` : optionnels, posés par `set_graphics()`.
+- `samples` : les fenêtres closes depuis le dernier heartbeat **acquitté** (en général
+  0 ou 1). Chaque échantillon a un `sample_id` généré par le SDK pour que le desktop
+  et le backend dédoublonnent un renvoi. `[]` si `frame()` n'est jamais appelé ou si
+  `fps_sampling` est `false`.
+- `resolution` / `graphics_preset` : optionnels, valeur courante de `set_graphics()`
+  au moment de la fenêtre.
+- `fps_sampling` reflète le réglage du joueur dans le desktop ; le SDK l'applique dès
+  la réponse.
 - Le desktop expire une session après 3 heartbeats manqués (180 s) et flush ce qu'il a.
 
 ### §9 Achievements (phase 2)
@@ -192,8 +202,9 @@ pub struct SessionSnapshot {
     pub session_id: Option<String>,
     pub tracking: TrackingState,
     pub played_seconds: u64,
-    pub frames: u64,
-    pub fps_avg: Option<f32>,
+    pub fps_sampling: bool,
+    pub samples_taken: u32,
+    pub last_fps_avg: Option<f32>,
 }
 
 pub enum TrackingState { Active, Pending, Disabled }
@@ -218,7 +229,7 @@ int  arcane_sdk_session_json(char *buf, size_t len);
 
 | Fichier | Changement |
 |---|---|
-| `src/session.rs` (nouveau) | `SessionInner { frames: AtomicU64, started: Instant, state: Mutex<…>, stop: Condvar }`, thread `arcane-session` : tick 60 s → start si nécessaire, sinon heartbeat ; calcul `fps_avg` ; gestion `unknown_session` (redémarrage) ; `end()` |
+| `src/session.rs` (nouveau) | `SessionInner { sampling: AtomicBool, frames: AtomicU64, started: Instant, state: Mutex<…>, stop: Condvar }`, thread `arcane-session` : tick 60 s → start si nécessaire, sinon heartbeat ; planification des fenêtres (ouvre à T+60 s puis toutes les 5 min si `fps_sampling`, ferme après 30 s, produit un échantillon) ; file `pending_samples` vidée à l'acquittement ; gestion `unknown_session` (redémarrage) ; `end()` |
 | `src/desktop.rs` | Factoriser `post_json<T>` / `get_json<T>` + mapping d'erreur commun (`SdkErrorBody` → `SdkError`, 404 sans JSON → `feature_unavailable`). `refresh_ownership_via_desktop` réécrit dessus. |
 | `src/client.rs` | `session: Arc<SessionInner>` ; `init` démarre le thread après la vérification de propriété ; `frame`, `set_graphics`, `session`, `shutdown` ; `Clone` partage l'`Arc` |
 | `src/error.rs` | `ErrorCode::FeatureUnavailable` (`feature_unavailable`, retryable = false, hint « update Arcane desktop ») |
@@ -228,7 +239,7 @@ int  arcane_sdk_session_json(char *buf, size_t len);
 | `examples/client_init.rs` | ajoute `frame()` dans une boucle factice et `shutdown()` |
 | `documentation/quickstart.mdx` | étape « boucle de rendu : `client.frame()` » ; `Note` mise à jour (un thread de session, pas de revalidation de propriété) |
 | `documentation/concepts/client.mdx` | tableau des accesseurs + section « Session » ; `Warning` réécrit |
-| `documentation/concepts/session.mdx` (nouveau) | temps joué, FPS, états `Active/Pending/Disabled`, ce qui est perdu hors ligne |
+| `documentation/concepts/session.mdx` (nouveau) | temps joué ; FPS : fenêtres de 30 s / 5 min, option joueur côté desktop, ce que la page store en fait ; états `Active/Pending/Disabled` ; ce qui est perdu hors ligne |
 | `documentation/concepts/errors.mdx`, `reference/rust-api.mdx`, `reference/c-abi.mdx`, `docs.json` | nouveaux codes, nouvelles fonctions, nouvelle page dans la nav |
 | `DESKTOP_CONTRACT.md` | §8 |
 | `Cargo.toml` | `0.5.0` |
@@ -239,8 +250,11 @@ int  arcane_sdk_session_json(char *buf, size_t len);
   que `init` réussit quand `session/start` renvoie 500 (tracking `Pending`), que
   `unknown_session` redéclenche un `start`, que `shutdown` envoie `end` avec les
   `seconds` cumulés.
-- `src/session.rs` : `fps_avg` sur fenêtre partielle, `frames == 0 → None`, secondes
-  monotones après un `Instant` simulé.
+- `src/session.rs` : une fenêtre produit un échantillon avec `fps_avg = frames /
+  window_seconds`, `frames == 0 → pas d'échantillon`, `fps_sampling: false` → aucune
+  fenêtre et `frame()` n'incrémente pas, bascule `true → false` au heartbeat ferme la
+  fenêtre en cours sans échantillon, échantillons non acquittés renvoyés avec le même
+  `sample_id`, secondes monotones après un `Instant` simulé.
 - Test de non-régression existant : `init` sans desktop et ticket valide → toujours
   `Ok`, thread en `Pending`, aucun deep link ouvert.
 
