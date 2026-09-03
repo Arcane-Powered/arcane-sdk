@@ -550,3 +550,191 @@ fn await_active(client: &ArcaneClient) -> arcane_sdk::SessionSnapshot {
         thread::sleep(Duration::from_millis(20));
     }
 }
+
+const ACHIEVEMENTS: Reply = Reply {
+    status: "200 OK",
+    body: r#"{"achievements":[
+        {"key":"first_blood","title":"First blood","description":"Win a duel.",
+         "icon_url":"https://cdn.arcane/first.png","hidden":false,
+         "unlocked_at":"2026-05-01T12:34:56Z"},
+        {"key":"boss.01","title":"The gatekeeper","description":"Beat the first boss.",
+         "icon_url":null,"hidden":true,"unlocked_at":null}
+    ]}"#,
+};
+
+/// Serve the achievement routes; everything else follows the ownership path.
+fn achievement_stub(unlock: Reply, list: Reply) -> Stub {
+    Stub::start_with(move |request| {
+        if request.line.contains("/v1/health") {
+            HEALTHY
+        } else if request.line.contains("/unlock") {
+            unlock
+        } else if request.line.contains("/achievements") {
+            list
+        } else {
+            DRM_OFF
+        }
+    })
+}
+
+const UNLOCK_OK: Reply = Reply {
+    status: "200 OK",
+    body: r#"{"key":"first_blood","unlocked_at":"2026-05-01T12:34:56Z",
+              "already_unlocked":false,"queued":false}"#,
+};
+
+#[test]
+fn listing_achievements_fills_the_cache_that_is_unlocked_reads() {
+    let stub = achievement_stub(UNLOCK_OK, ACHIEVEMENTS);
+
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+    assert_eq!(
+        client.achievements().is_unlocked("first_blood"),
+        None,
+        "nothing is known before list()"
+    );
+
+    let list = client.achievements().list().expect("list");
+
+    assert_eq!(list.len(), 2);
+    assert_eq!(list[0].key, "first_blood");
+    assert_eq!(list[0].title, "First blood");
+    assert_eq!(
+        list[0].icon_url.as_deref(),
+        Some("https://cdn.arcane/first.png")
+    );
+    assert_eq!(list[0].unlocked_at, Some(1_777_638_896));
+    assert!(list[1].hidden);
+    assert_eq!(list[1].unlocked_at, None);
+
+    assert_eq!(client.achievements().is_unlocked("first_blood"), Some(true));
+    assert_eq!(client.achievements().is_unlocked("boss.01"), Some(false));
+    assert_eq!(client.achievements().is_unlocked("never_defined"), None);
+    assert_eq!(
+        client.clone().achievements().is_unlocked("first_blood"),
+        Some(true),
+        "clones share the cache"
+    );
+
+    let listed = stub.matching("/achievements");
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0]
+        .line
+        .starts_with("GET /v1/games/pk_test_title/achievements"));
+}
+
+#[test]
+fn unlocking_reports_an_already_unlocked_achievement_as_a_success() {
+    let stub = achievement_stub(
+        Reply {
+            status: "200 OK",
+            body: r#"{"key":"first_blood","unlocked_at":"2026-05-01T12:34:56Z",
+                      "already_unlocked":true,"queued":false}"#,
+        },
+        ACHIEVEMENTS,
+    );
+
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+    let unlock = client.achievements().unlock("first_blood").expect("unlock");
+
+    assert_eq!(unlock.key, "first_blood");
+    assert_eq!(unlock.unlocked_at, 1_777_638_896);
+    assert!(unlock.already_unlocked);
+    assert!(!unlock.queued);
+
+    let posted = stub.matching("/unlock");
+    assert_eq!(posted.len(), 1);
+    assert!(posted[0]
+        .line
+        .starts_with("POST /v1/games/pk_test_title/achievements/first_blood/unlock"));
+}
+
+#[test]
+fn a_queued_unlock_is_a_success_and_updates_the_cache() {
+    let _stub = achievement_stub(
+        Reply {
+            status: "200 OK",
+            body: r#"{"key":"boss.01","unlocked_at":"2026-05-01T12:34:56Z",
+                      "already_unlocked":false,"queued":true}"#,
+        },
+        ACHIEVEMENTS,
+    );
+
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+    client.achievements().list().expect("list");
+    assert_eq!(client.achievements().is_unlocked("boss.01"), Some(false));
+
+    let unlock = client
+        .achievements()
+        .unlock("boss.01")
+        .expect("queued unlock");
+
+    assert!(unlock.queued);
+    assert!(!unlock.already_unlocked);
+    assert_eq!(unlock.unlocked_at, 1_777_638_896);
+    assert_eq!(client.achievements().is_unlocked("boss.01"), Some(true));
+}
+
+#[test]
+fn an_unknown_achievement_is_its_own_error_code() {
+    let _stub = achievement_stub(
+        Reply {
+            status: "404 Not Found",
+            body: r#"{"error":"unknown_achievement","message":"no such key for this title"}"#,
+        },
+        ACHIEVEMENTS,
+    );
+
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+    let err = client
+        .achievements()
+        .unlock("not_in_the_portal")
+        .expect_err("unknown achievement");
+
+    assert_eq!(err.code(), "unknown_achievement");
+    assert!(!err.is_retryable());
+    assert!(err
+        .context()
+        .iter()
+        .any(|(k, v)| k == "achievement_key" && v == "not_in_the_portal"));
+}
+
+#[test]
+fn a_desktop_without_the_achievement_routes_degrades_to_feature_unavailable() {
+    let bare_404 = Reply {
+        status: "404 Not Found",
+        body: "Not Found",
+    };
+    let _stub = achievement_stub(bare_404, bare_404);
+
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+
+    let listed = client.achievements().list().expect_err("no route");
+    assert_eq!(listed.code(), "feature_unavailable");
+    assert_eq!(client.achievements().is_unlocked("first_blood"), None);
+
+    let unlocked = client
+        .achievements()
+        .unlock("first_blood")
+        .expect_err("no route");
+    assert_eq!(unlocked.code(), "feature_unavailable");
+    assert!(unlocked.hint().expect("hint").contains("Update"));
+}
+
+#[test]
+fn an_invalid_key_fails_before_any_request_is_sent() {
+    let stub = achievement_stub(UNLOCK_OK, ACHIEVEMENTS);
+
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+    let too_long = "a".repeat(65);
+    for key in ["", "first blood", "first/../blood", too_long.as_str()] {
+        let err = client.achievements().unlock(key).expect_err("invalid key");
+        assert_eq!(err.code(), "invalid_argument", "accepted {key:?}");
+    }
+
+    assert!(
+        stub.matching("/achievements").is_empty(),
+        "an invalid key must not reach the desktop: {:?}",
+        stub.requests()
+    );
+}

@@ -339,6 +339,14 @@ pub(crate) fn map_desktop_error(body: &SdkErrorBody) -> SdkError {
                 .with_hint("Sign in to the Arcane desktop app, then retry.")
                 .with_context("detail", detail)
         }
+        "unknown_achievement" => {
+            SdkError::unknown_achievement("Arcane does not know this achievement for this title.")
+                .with_hint(
+                    "Check the achievement key against the Arcane portal, and that the \
+                     achievement is published for this title.",
+                )
+                .with_context("detail", detail)
+        }
         "game_not_found" => SdkError::ticket_invalid("Arcane does not know this title.")
             .with_hint(
                 "Confirm the public key compiled into your build matches the one in the \
@@ -465,6 +473,14 @@ mod tests {
         let err = map_desktop_error(&body("offline", "Cannot refresh while offline."));
         assert_eq!(err.code(), "network_required");
         assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn maps_unknown_achievement() {
+        let err = map_desktop_error(&body("unknown_achievement", "no such key for this game"));
+        assert_eq!(err.code(), "unknown_achievement");
+        assert!(err.hint().unwrap().contains("Arcane portal"));
+        assert!(!err.is_retryable());
     }
 
     #[test]

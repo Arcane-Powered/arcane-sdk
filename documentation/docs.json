@@ -21,6 +21,7 @@
           "concepts/client",
           "concepts/ownership",
           "concepts/session",
+          "concepts/achievements",
           "concepts/errors"
         ]
       },

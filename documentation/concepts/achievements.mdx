@@ -1,0 +1,134 @@
+---
+title: "Achievements"
+description: "Unlock an achievement in one line, list them, and read what is unlocked."
+keywords: ["achievements", "unlock", "is_unlocked", "idempotent", "queued", "portal"]
+---
+
+One line unlocks an achievement:
+
+```rust
+client.achievements().unlock("first_blood")?;
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+```c
+char err[512];
+arcane_sdk_achievement_unlock("first_blood", err, sizeof(err));
+```
+
+Keys come from the **Arcane portal**: you define each achievement there — key, title, description, icon, hidden or not — and the game only ever passes the key. Nothing is declared in code.
+
+## Unlocking is idempotent
+
+Call it every time the condition holds. Unlocking something the player already has is a success, not an error: the answer carries `already_unlocked: true` and the original timestamp. You do not need a guard, a flag in your save file, or a check before the call.
+
+```rust
+if boss_defeated {
+    client.achievements().unlock("boss.01")?;   // fine on every frame the boss stays dead
+}
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+<Warning>
+  `unlock` and `list` are **synchronous**: each is one loopback round trip to the Arcane desktop app, on your thread, on the order of a millisecond. Call them when something happens — not once per frame. `is_unlocked` is the one that only reads memory.
+</Warning>
+
+## Listing and the cache
+
+`list()` returns everything the title defines, with this player's state, and fills a cache inside the client:
+
+```rust
+for achievement in client.achievements().list()? {
+    println!(
+        "{} — {} {}",
+        achievement.title,
+        achievement.description,
+        if achievement.unlocked_at.is_some() { "✓" } else { "" }
+    );
+}
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `key` | `String` | What you pass to `unlock` |
+| `title` | `String` | Display name from the portal |
+| `description` | `String` | Display description |
+| `icon_url` | `Option<String>` | When the title provides one |
+| `hidden` | `bool` | Hidden until unlocked, per the portal |
+| `unlocked_at` | `Option<i64>` | Unix timestamp, or `None` while locked |
+
+`is_unlocked` reads that cache — no I/O, no failure, safe to call from anywhere:
+
+```rust
+match client.achievements().is_unlocked("first_blood") {
+    Some(true) => show_badge(),
+    Some(false) => show_locked(),
+    None => {}     // list() has never succeeded, or the key is not in the list
+}
+```
+
+`None` is not "locked": it means the SDK has nothing to answer with. Call `list()` once — at launch, or when the achievements screen opens — and the answers become `Some`. Clones of the client share one cache, and `unlock` keeps it up to date.
+
+## Offline: `queued`
+
+When the Arcane desktop app has no connection, it stores the unlock and answers `queued: true`. That is still `Ok`:
+
+```rust
+let unlock = client.achievements().unlock("first_blood")?;
+if unlock.queued {
+    // Recorded locally, synchronised when Arcane reconnects. Show the toast anyway.
+}
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+| Field of `Unlock` | Type | Meaning |
+|-------------------|------|---------|
+| `key` | `String` | The achievement that was unlocked |
+| `unlocked_at` | `i64` | Unix timestamp Arcane recorded |
+| `already_unlocked` | `bool` | The player already had it |
+| `queued` | `bool` | Desktop app offline; stored and synchronised later |
+
+The one thing that is genuinely lost is a call made while the **desktop app is not running at all** — that returns `arcane_unavailable`, and the SDK buffers nothing on disk. Under `ARCANE_OFFLINE_ONLY` both calls return `network_required` immediately, without touching the network.
+
+## Errors
+
+| Code | When |
+|------|------|
+| `invalid_argument` | The key is empty, over 64 bytes, or has a character outside `A–Z a–z 0–9 _ - .` — raised before any network call |
+| `unknown_achievement` | The title does not define that key. Check the portal |
+| `not_owned` | The signed-in account does not own the title |
+| `feature_unavailable` | The Arcane desktop app predates the achievement routes — update it |
+| `arcane_unavailable` | The desktop app is not running |
+| `network_required` | `ARCANE_OFFLINE_ONLY` is set |
+
+Full table and what to do about each: [Errors](/concepts/errors).
+
+## In C
+
+```c
+char json[4096];
+if (arcane_sdk_achievements_json(json, sizeof(json)) > 0) {
+  /* {"achievements":[{"key":"first_blood","title":"…","description":"…",
+      "icon_url":"…","hidden":false,"unlocked_at":1777638896}]} */
+}
+
+char err[512];
+if (arcane_sdk_achievement_unlock("first_blood", err, sizeof(err)) != 0) {
+  /* err is "code: message — hint (context…)" */
+}
+
+int unlocked = arcane_sdk_achievement_is_unlocked("first_blood");  /* 1, 0, or -4 */
+```
+
+`arcane_sdk_achievements_json` is the C form of `list()` — it makes the same call and fills the same cache, so `arcane_sdk_achievement_is_unlocked` returns `-4` until it has succeeded once. Details: [C ABI](/reference/c-abi).
+
+## Not in scope
+
+Progress-based achievements (`set_progress`) and leaderboards are not part of this SDK yet. An unlock is a loopback request that any local process could forge — validation of shape and plausibility belongs to the Arcane backend, not to the client.
+
+## Next steps
+
+- [Session](/concepts/session) — playtime and FPS, opened by `init`
+- [Errors](/concepts/errors) — every code, and its fix
+- [Rust API](/reference/rust-api) · [C ABI](/reference/c-abi)

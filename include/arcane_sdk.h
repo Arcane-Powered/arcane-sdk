@@ -38,6 +38,52 @@
 extern "C" {
 #endif // __cplusplus
 
+// Whether an achievement is unlocked, from the cache the last
+// `arcane_sdk_achievements_json` call filled.
+//
+// Reads memory only. Returns 1 (unlocked), 0 (locked), `-1` when the client is
+// not initialised, `-2` when `key` is null or not UTF-8, and `-4` when the SDK
+// has nothing to answer with: the list was never loaded, or it did not carry
+// this key.
+//
+// # Safety
+//
+// `key` must be a valid NUL-terminated C string.
+int arcane_sdk_achievement_is_unlocked(const char *key);
+
+// Unlock an achievement for the signed-in player.
+//
+// `key` is the achievement key from the Arcane portal, NUL-terminated UTF-8.
+// Idempotent — call it every time the condition holds. One synchronous loopback
+// call, so never call it from the render loop.
+//
+// Returns 0 on success (including an already-unlocked or queued answer), 1 if
+// `key` is null or not UTF-8 or the client is not initialised, 2 on an SDK
+// error written to `err_buf` as `"code: message"`.
+//
+// # Safety
+//
+// `key` must be a valid NUL-terminated C string. `err_buf` must be null or
+// point to at least `err_len` writable bytes.
+int arcane_sdk_achievement_unlock(const char *key, char *err_buf, size_t err_len);
+
+// Write every achievement of this title as JSON into `buf`:
+// `{"achievements":[{"key","title","description","icon_url","hidden","unlocked_at"}]}`.
+//
+// `unlocked_at` is a Unix timestamp, or `null` while the achievement is locked.
+// This makes one synchronous loopback call — call it on a loading screen or the
+// achievements screen, never from the render loop. It also fills the cache
+// `arcane_sdk_achievement_is_unlocked` reads.
+//
+// Returns the bytes written, or `-1` when not initialised, `-2` / `-3` for the
+// buffer, `-4` when the call failed — the failure is then readable with
+// `arcane_sdk_last_error_json`.
+//
+// # Safety
+//
+// `buf` must be null or point to at least `len` writable bytes.
+int arcane_sdk_achievements_json(char *buf, size_t len);
+
 // Unix timestamp of the last successful check, or -1 when not initialised.
 long long arcane_sdk_checked_at(void);
 

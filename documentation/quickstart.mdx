@@ -20,7 +20,7 @@ Link the SDK, build one client at launch with your portal public key, keep it fo
 
     ```toml Cargo.toml
     [dependencies]
-    arcane-sdk = "0.5"
+    arcane-sdk = "0.6"
     ```
 
     Engines (Unity / Unreal / C++): build the shared library, include `include/arcane_sdk.h`, and load the [C ABI](/reference/c-abi).
@@ -124,6 +124,7 @@ Use `err.is_retryable()` to decide whether a retry button makes sense. The full 
 
 - [Client](/concepts/client) — lifecycle, what is cached, when to refresh
 - [Session](/concepts/session) — playtime, FPS sampling, `shutdown`
+- [Achievements](/concepts/achievements) — `client.achievements().unlock("first_blood")?`, one line, idempotent
 - [Ownership model](/concepts/ownership) — what init does under the hood
 - [Errors](/concepts/errors) — this code → this problem → this fix
 - [Rust API](/reference/rust-api) · [C ABI](/reference/c-abi)

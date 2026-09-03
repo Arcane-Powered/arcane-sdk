@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::achievements::{AchievementCache, Achievements};
 use crate::desktop::{offline_only, refresh_ownership_via_desktop, OFFLINE_ONLY_ENV};
 use crate::device::{device_hash, now_unix};
 use crate::error::{OwnershipStatus, SdkError};
@@ -57,8 +58,9 @@ pub(crate) fn validate_public_key(public_key: &str) -> Result<(), SdkError> {
 /// client does run one background thread for the play session — playtime and
 /// FPS sampling — described in [`SessionSnapshot`].
 ///
-/// Cloning shares that session. It ends when the last clone is dropped, or on
-/// [`shutdown`](ArcaneClient::shutdown).
+/// Cloning shares that session, and the achievement cache filled by
+/// [`Achievements::list`]. The session ends when the last clone is dropped, or
+/// on [`shutdown`](ArcaneClient::shutdown).
 #[derive(Debug, Clone)]
 pub struct ArcaneClient {
     public_key: String,
@@ -69,6 +71,7 @@ pub struct ArcaneClient {
     ticket_expires_at: Option<i64>,
     checked_at: i64,
     session: Arc<Session>,
+    achievements: Arc<AchievementCache>,
 }
 
 impl ArcaneClient {
@@ -170,6 +173,7 @@ impl ArcaneClient {
         next.user_id = next.user_id.or(outcome.user_id).or(self.user_id.clone());
         next.game_id = next.game_id.or(outcome.game_id).or(self.game_id.clone());
         next.session = Arc::clone(&self.session);
+        next.achievements = Arc::clone(&self.achievements);
 
         let status = next.ownership.clone();
         *self = next;
@@ -237,6 +241,21 @@ impl ArcaneClient {
         self.session.set_graphics(resolution, preset);
     }
 
+    /// Achievements for this title: list them, unlock one, read the cache.
+    ///
+    /// [`Achievements::list`] and [`Achievements::unlock`] each make one
+    /// synchronous loopback call, so call them off the render thread — never per
+    /// frame. [`Achievements::is_unlocked`] only reads memory.
+    ///
+    /// ```no_run
+    /// # let client = arcane_sdk::ArcaneClient::init("pk_...")?;
+    /// client.achievements().unlock("first_blood")?;
+    /// # Ok::<(), arcane_sdk::SdkError>(())
+    /// ```
+    pub fn achievements(&self) -> Achievements<'_> {
+        Achievements::new(&self.public_key, &self.achievements)
+    }
+
     /// A copy of the current play session state: tracking, playtime, FPS
     /// samples. Reads memory only.
     pub fn session(&self) -> SessionSnapshot {
@@ -264,6 +283,7 @@ impl ArcaneClient {
             ticket_expires_at: check.ticket_expires_at,
             checked_at: now_unix(),
             session: Arc::new(Session::dormant(public_key)),
+            achievements: Arc::new(AchievementCache::new()),
         }
     }
 
@@ -280,6 +300,7 @@ impl ArcaneClient {
             ticket_expires_at: None,
             checked_at: now_unix(),
             session: Arc::new(Session::dormant(public_key)),
+            achievements: Arc::new(AchievementCache::new()),
         })
     }
 }

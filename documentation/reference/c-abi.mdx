@@ -27,7 +27,7 @@ cargo install cbindgen --version 0.29.4 --locked
 
 Two conventions, by function kind. Both are in the header as named constants.
 
-**Actions** — `arcane_sdk_init`, `arcane_sdk_refresh`, `arcane_sdk_set_graphics`:
+**Actions** — `arcane_sdk_init`, `arcane_sdk_refresh`, `arcane_sdk_set_graphics`, `arcane_sdk_achievement_unlock`:
 
 | Return | Constant | Meaning |
 |--------|----------|---------|
@@ -91,6 +91,24 @@ int arcane_sdk_set_graphics(const char *resolution, const char *preset);
 
 Records the current display settings — for example `"2560x1440"` and `"high"` — attached to the FPS samples that follow. Empty strings clear them. Returns `1` on a null / non-UTF-8 argument or before init. Takes a short lock, so never call it per frame.
 
+### `arcane_sdk_achievement_unlock`
+
+```c
+int arcane_sdk_achievement_unlock(const char *key, char *err_buf, size_t err_len);
+```
+
+Unlocks an achievement for the signed-in player. `key` is the key from the Arcane portal (NUL-terminated UTF-8). Idempotent — call it every time the condition holds; an already-unlocked or `queued` (desktop app offline) answer returns `0`.
+
+One synchronous loopback call, so never call it from the render loop. Returns `1` on a null / non-UTF-8 key or before init, `2` on an SDK error written to `err_buf` — `invalid_argument` for a malformed key (raised before any call), `unknown_achievement` when the title does not define it. See [Achievements](/concepts/achievements).
+
+### `arcane_sdk_achievement_is_unlocked`
+
+```c
+int arcane_sdk_achievement_is_unlocked(const char *key);   /* 1, 0, or -4 */
+```
+
+Reads the cache the last `arcane_sdk_achievements_json` filled — memory only, no call. Returns `1` (unlocked), `0` (locked), `-1` (not initialised), `-2` (null / non-UTF-8 key), or `-4` when the list has never been loaded or did not carry that key.
+
 ## Getters
 
 ```c
@@ -104,6 +122,7 @@ int  arcane_sdk_game_id(char *buf, size_t len);
 int  arcane_sdk_public_key(char *buf, size_t len);
 int  arcane_sdk_device_hash(char *buf, size_t len);
 int  arcane_sdk_session_json(char *buf, size_t len);
+int  arcane_sdk_achievements_json(char *buf, size_t len);
 int  arcane_sdk_last_error_json(char *buf, size_t len);
 ```
 
@@ -123,7 +142,19 @@ if (arcane_sdk_session_json(json, sizeof(json)) > 0) {
 
 `tracking` is `"active"`, `"pending"` or `"disabled"`.
 
-Buffer sizing: user ids and device hashes fit comfortably in 64 bytes; allow 256 for the session JSON, 512 for `err_buf` and 1024 for the error JSON. A short buffer is never a silent truncation — you get `-3` and an empty string.
+`arcane_sdk_achievements_json` is the C form of the Rust `list()`: it makes one synchronous loopback call, writes every [achievement](/concepts/achievements) of the title, and fills the cache `arcane_sdk_achievement_is_unlocked` reads. Call it on a loading or achievements screen, never per frame.
+
+```c
+char json[4096];
+if (arcane_sdk_achievements_json(json, sizeof(json)) > 0) {
+  /* {"achievements":[{"key":"first_blood","title":"…","description":"…",
+      "icon_url":"…","hidden":false,"unlocked_at":1777638896}]} */
+}
+```
+
+`unlocked_at` is a Unix timestamp, or `null` while locked. A `-4` here means the call failed — read `arcane_sdk_last_error_json` for the code.
+
+Buffer sizing: user ids and device hashes fit comfortably in 64 bytes; allow 256 for the session JSON, 512 for `err_buf`, 1024 for the error JSON, and size the achievement JSON to your title (a few hundred bytes per achievement). A short buffer is never a silent truncation — you get `-3` and an empty string.
 
 ## Example
 
@@ -155,6 +186,11 @@ int boot(void) {
 
   arcane_sdk_set_graphics("2560x1440", "high");
   return 1;                        /* Owned or DrmDisabled — launch */
+}
+
+void on_boss_defeated(void) {
+  char err[512];
+  arcane_sdk_achievement_unlock("boss.01", err, sizeof(err));   /* idempotent */
 }
 
 void render_frame(void) {
