@@ -21,6 +21,7 @@ The client does that work **once** and holds the result:
 | Device fingerprint | `device_hash()` | this machine |
 | Ticket expiry | `ticket_expires_at()` | the ticket's `exp` claim |
 | Last check | `checked_at()` | when `init` or `refresh` last succeeded |
+| Play session | `session()` | the [session](/concepts/session) opened by `init` |
 
 More Arcane surfaces will hang off this client as they ship — that is the point of having it.
 
@@ -43,10 +44,23 @@ client.refresh()?;
 ```
 
 <Warning>
-  The client does **not** revalidate on its own. There is no background thread and no timer: `ownership()` reflects the last `init` or `refresh`. A session running for hours keeps whatever `init` decided until you call `refresh()`.
+  **Ownership** is never revalidated on its own: `ownership()` reflects the last `init` or `refresh`, and a session running for hours keeps whatever `init` decided until you call `refresh()`. The one background thread the client runs — `arcane-session` — only reports playtime and FPS. It never re-checks ownership and never opens the Arcane desktop app.
 </Warning>
 
 `refresh()` contacts the Arcane desktop app, re-runs the ownership check, and updates the client in place. On failure the client keeps its previous state, so a failed refresh never silently downgrades a player mid-session.
+
+## Session
+
+`init` also opens a play session. It costs one thread that is asleep about 59 seconds out of 60, and it never blocks or fails `init` — if the Arcane desktop app is not reachable, tracking stays `Pending` and retries quietly.
+
+```rust
+client.frame();                              // once per rendered frame, for FPS
+client.set_graphics("2560x1440", "high");    // when display settings change
+client.session();                            // tracking, playtime, samples
+client.shutdown();                           // end it now, 2-second timeout
+```
+
+Cloning the client **shares** that session: it ends when the last clone is dropped, or on `shutdown()`. Full behaviour — sampling windows, the player's setting, what is lost offline — is in [Session](/concepts/session).
 
 ## Which account's ticket
 
@@ -69,7 +83,8 @@ if (arcane_sdk_init("pk_...", err, sizeof(err)) != 0) { /* handle */ }
 char user_id[64];
 int written = arcane_sdk_user_id(user_id, sizeof(user_id));
 
-arcane_sdk_shutdown();  /* optional — useful for editor play-mode reloads */
+arcane_sdk_frame();     /* once per rendered frame */
+arcane_sdk_shutdown();  /* ends the play session, then drops the client */
 ```
 
 Calling a getter before `arcane_sdk_init` returns `not_initialized` rather than a null or an empty string. Full signatures: [C ABI](/reference/c-abi).
@@ -88,6 +103,7 @@ Environment variables the SDK reads. **Never set these in a shipped game**; they
 |----------|--------|
 | `ARCANE_DRM_ROOT` | Point the SDK at a throwaway DRM directory instead of the OS app-data path. |
 | `ARCANE_SDK_PORT` | Talk to a stub server or a non-default loopback port. |
-| `ARCANE_OFFLINE_ONLY` | `1` or `true`: never contact or launch the Arcane desktop app. A missing or expired ticket surfaces directly instead of triggering a refresh. |
+| `ARCANE_OFFLINE_ONLY` | `1` or `true`: never contact or launch the Arcane desktop app. A missing or expired ticket surfaces directly instead of triggering a refresh, and the play session is disabled. |
+| `ARCANE_SESSION_TICK_MS` | Shorten the 60-second session heartbeat so a test does not have to wait for it. |
 
 `ARCANE_OFFLINE_ONLY` is the one to reach for when testing your error handling — it can only make a check fail earlier, never let one pass.

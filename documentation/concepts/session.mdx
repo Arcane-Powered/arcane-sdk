@@ -1,0 +1,107 @@
+---
+title: "Session"
+description: "Playtime and FPS sampling, opened by init and reported in the background."
+keywords: ["session", "playtime", "fps", "frame", "tracking", "heartbeat", "shutdown"]
+---
+
+`ArcaneClient::init` opens a **play session** alongside the ownership check. It measures how long the player plays and, when they allow it, samples the frame rate. You do not call anything to start it.
+
+```rust
+let client = ArcaneClient::init("pk_...")?;   // playtime starts here
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+Add one line to your render loop and you also get FPS:
+
+```rust
+client.frame();   // once per rendered frame
+```
+
+## What runs in the background
+
+One thread, named `arcane-session`. It sleeps on a condition variable, wakes about once a minute, posts a heartbeat of roughly 200 bytes to the Arcane desktop app on `127.0.0.1:39284`, and goes back to sleep. There is no busy loop, no fine-grained timer, and no second thread.
+
+| Path | What it costs |
+|------|---------------|
+| `frame()` | One relaxed atomic load. Inside a sampling window, one relaxed increment as well. No lock, no allocation, no clock read |
+| `set_graphics()` | A short lock. Call it when settings change, never per frame |
+| `arcane-session` thread | Asleep ~59 s out of 60, 64 KiB stack, one small loopback POST per wake |
+| `shutdown()` | One synchronous POST, 2-second timeout — the only blocking call of the lifecycle |
+
+The session never opens the `arcane-powered://` deep link. If the desktop app is not running, tracking degrades quietly; it never interrupts the player.
+
+## Playtime
+
+Playtime is the wall of time between `init` and the end of the session, measured with a **monotonic clock** (`Instant`). Changing the system clock cannot inflate or rewind it. It is not paused when the player alt-tabs or opens a menu — session time is process time.
+
+Every heartbeat carries the **cumulative** seconds since `init`, not a delta, so a lost or replayed heartbeat cannot corrupt the total.
+
+## FPS sampling
+
+Frame rate is **sampled**, not counted continuously. While sampling is on, the session thread opens a 30-second window 60 seconds after the session starts — long enough to skip loading — and then every 5 minutes. Each closed window becomes one sample:
+
+```json
+{ "sample_id": "…", "taken_at": 1786480000, "fps_avg": 59.8,
+  "window_seconds": 30, "frames": 1794,
+  "resolution": "2560x1440", "graphics_preset": "high" }
+```
+
+- Outside a window, `frame()` is a single atomic load — the counter does not even move.
+- A window with **no frames** produces no sample. A game that never calls `frame()` reports nothing.
+- Each sample keeps its `sample_id` until a heartbeat is acknowledged, so a retry is deduplicated rather than double-counted.
+- `resolution` and `graphics_preset` are whatever you last passed to `set_graphics`, and are omitted when you never call it.
+
+```rust
+client.set_graphics("2560x1440", "high");   // at startup, and on every change
+```
+
+Arcane averages the samples per hardware configuration and shows them on the store page. The SDK only produces the numbers.
+
+<Note>
+  Sampling is the **player's** choice, not yours. The Arcane desktop app has a "Share performance data" setting (on by default), and its answer travels in the `session/start` and heartbeat responses. When it is off, no window is opened at all. A player toggling it mid-game takes effect on the next heartbeat.
+</Note>
+
+## Tracking states
+
+```rust
+let session = client.session();
+println!("{} · {}s", session.tracking, session.played_seconds);
+```
+
+| State | Meaning |
+|-------|---------|
+| `Active` | The desktop app acknowledged the session. Playtime and samples are being reported |
+| `Pending` | A local session is open and seconds are accumulating, but the desktop app has not acknowledged it yet. Retried every 60 seconds |
+| `Disabled` | Nothing is tracked: `ARCANE_OFFLINE_ONLY` is set, or DRM is off for the title and no Arcane account is known, so there is nobody to attribute playtime to |
+
+`session()` returns a `SessionSnapshot` — a copy of the state, taken from memory:
+
+| Field | Type |
+|-------|------|
+| `session_id` | `Option<String>` — issued by the desktop app |
+| `tracking` | `Active` / `Pending` / `Disabled` |
+| `played_seconds` | `u64`, cumulative since `init` |
+| `fps_sampling` | `bool` — the player's setting |
+| `samples_taken` | `u32` |
+| `last_fps_avg` | `Option<f32>` |
+
+## Ending the session
+
+```rust
+client.shutdown();   // posts the final playtime, 2-second timeout
+```
+
+`shutdown` consumes the client. Dropping the last clone does the same thing best-effort, so it is optional — it just makes the moment explicit and gives the report a deadline you control. `ArcaneClient` is `Clone` and the clones **share** one session: it ends when the last one goes away.
+
+In C, `arcane_sdk_shutdown()` does exactly this.
+
+## What is lost offline
+
+If the Arcane desktop app is never reachable during the whole session, that session's playtime is lost. The SDK keeps no buffer on disk — the loopback API is the only bus. Heartbeats missed in the middle of a session cost nothing: the next one carries the cumulative total, and unacknowledged FPS samples are re-sent with the same `sample_id`.
+
+If the desktop app stops answering entirely, it expires the session on its side after three missed heartbeats (180 seconds) and keeps what it already had.
+
+## Next steps
+
+- [Client](/concepts/client) — lifecycle and what else the client holds
+- [Rust API](/reference/rust-api) · [C ABI](/reference/c-abi)

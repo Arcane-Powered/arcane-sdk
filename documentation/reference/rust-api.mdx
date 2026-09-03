@@ -23,10 +23,15 @@ impl ArcaneClient {
     pub fn is_owned(&self) -> bool;
     pub fn ticket_expires_at(&self) -> Option<i64>;
     pub fn checked_at(&self) -> i64;
+
+    pub fn frame(&self);
+    pub fn set_graphics(&self, resolution: &str, preset: &str);
+    pub fn session(&self) -> SessionSnapshot;
+    pub fn shutdown(self);
 }
 ```
 
-`ArcaneClient` is `Debug + Clone`, and `Send + Sync`.
+`ArcaneClient` is `Debug + Clone`, and `Send + Sync`. Clones share one play session — it ends when the last one is dropped, or on `shutdown`.
 
 ### `init`
 
@@ -42,6 +47,8 @@ let client = ArcaneClient::init(PUBLIC_KEY)?;
 ```
 
 Validates the public key, short-circuits to `DrmDisabled` when the cached flag says DRM is off, otherwise verifies the cached ticket. On `ticket_missing` / `ticket_expired` it contacts the Arcane desktop loopback (and may open the app) to refresh, then re-verifies. See [Ownership model](/concepts/ownership).
+
+It then opens the play session and starts the `arcane-session` thread. That never blocks init and never fails it: if the desktop app is unreachable, tracking stays `Pending` and retries every 60 seconds, without ever opening the deep link. See [Session](/concepts/session).
 
 **Errors:** `invalid_public_key`, `ticket_missing`, `ticket_expired`, `ticket_invalid`, `device_mismatch`, `clock_rollback`, `not_owned`, `network_required`, `not_authenticated`, `arcane_unavailable`, `ambiguous_session`, `internal`. Full causes and fixes: [Errors](/concepts/errors#error-codes).
 
@@ -65,6 +72,42 @@ On failure the client keeps its previous state.
 All read cached state — no I/O, no failure.
 
 `game_id` and `user_id` are `Option` because an older Arcane desktop build may not report them, and because a DRM-disabled title may have no ticket file to read them from.
+
+### `frame`
+
+```rust
+loop {
+    render();
+    client.frame();
+}
+```
+
+Counts one rendered frame. Outside an FPS sampling window it is a single relaxed atomic load; inside one it adds a relaxed increment. No lock, no allocation, no clock read — call it every frame at any frame rate. A game that never calls it reports no FPS samples.
+
+### `set_graphics`
+
+```rust
+client.set_graphics("2560x1440", "high");
+```
+
+Records the current display settings, attached to the FPS samples that follow. Both strings are free-form; empty strings clear them. Takes a short lock — call it at startup and when settings change, never per frame.
+
+### `session`
+
+```rust
+let session = client.session();
+println!("{} · {}s · {:?}", session.tracking, session.played_seconds, session.last_fps_avg);
+```
+
+A copy of the session state, read from memory. Never fails.
+
+### `shutdown`
+
+```rust
+client.shutdown();
+```
+
+Ends the play session, reporting the final playtime to the Arcane desktop app with a 2-second timeout, and consumes the client. Dropping the last clone does the same best-effort, so this is optional.
 
 ## `SdkError`
 
@@ -100,13 +143,28 @@ pub enum OwnershipStatus {
     DrmDisabled,  // DRM off for this title; no ticket required
 }
 
+pub struct SessionSnapshot {
+    pub session_id: Option<String>,   // issued by the Arcane desktop app
+    pub tracking: TrackingState,
+    pub played_seconds: u64,          // cumulative since init, monotonic clock
+    pub fps_sampling: bool,           // the player's setting, from the desktop app
+    pub samples_taken: u32,
+    pub last_fps_avg: Option<f32>,
+}
+
+pub enum TrackingState {
+    Active,       // the desktop app acknowledged the session
+    Pending,      // local session open, desktop app not reachable yet
+    Disabled,     // offline-only mode, or nobody to attribute playtime to
+}
+
 #[non_exhaustive]
 pub enum ErrorCode { /* one variant per code in the Errors table */ }
 
 pub const MAX_PUBLIC_KEY_LEN: usize = 256;
 ```
 
-`OwnershipStatus` implements `Display` (`"owned"` / `"drm_disabled"`).
+`OwnershipStatus` implements `Display` (`"owned"` / `"drm_disabled"`), and `TrackingState` does too (`"active"` / `"pending"` / `"disabled"`). `SessionSnapshot` is `Debug + Clone`.
 
 ## Crate types
 
@@ -122,4 +180,4 @@ Use `rlib` from Rust games; link `cdylib` / `staticlib` for the [C ABI](/referen
 cargo run --example client_init -- pk_your_portal_key
 ```
 
-Prints every client field on success, or the full error breakdown (code, message, hint, context, JSON) on failure.
+Prints every client field, renders a fake loop calling `frame()`, prints the session snapshot and ends with `shutdown()` — or the full error breakdown (code, message, hint, context, JSON) on failure.

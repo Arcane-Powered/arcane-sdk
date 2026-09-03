@@ -48,6 +48,7 @@ match ArcaneClient::init(PUBLIC_KEY) {
 | `network_required` | No usable offline ticket and the refresh needs the network | Connect to the internet, open Arcane, retry | yes |
 | `not_authenticated` | Nobody is signed in — either Arcane says so, or `session.json` records a signed-out state | Sign in to the Arcane desktop app, then retry | yes |
 | `arcane_unavailable` | Could not reach or launch the Arcane desktop app | Install or launch Arcane Powered. Context shows the port and how long the SDK waited | yes |
+| `feature_unavailable` | The Arcane desktop app does not know the route the SDK asked for — it predates the feature | Update the Arcane Powered desktop app. Never returned by `init`: an older desktop only degrades the [play session](/concepts/session) to `Pending` | no |
 | `ambiguous_session` | Several accounts hold a ticket for this title and Arcane has not recorded which is signed in | Open Arcane desktop once so it records the session. Needs a build that writes `session.json` | no |
 | `not_initialized` | A C ABI getter was called before `arcane_sdk_init` | Call `arcane_sdk_init` once at launch first | no |
 | `internal` | Filesystem / path failure | Check permissions on the Arcane DRM directory — context names the path | no |
@@ -60,11 +61,17 @@ Can return any code in the table except `not_initialized`.
 
 If the cached `drm_enabled` flag is `false`, init succeeds with `DrmDisabled` and never reaches the ticket codes. When the offline check returns `ticket_missing` or `ticket_expired`, init contacts Arcane desktop (and may open it), which adds `not_owned`, `network_required`, `not_authenticated` and `arcane_unavailable` to the possible outcomes.
 
+The play session opened by `init` never surfaces an error. When the desktop app is missing, older than the session routes (`feature_unavailable`), or simply unhappy, tracking stays `Pending` and the SDK retries every 60 seconds. Read `client.session().tracking` if you want to know.
+
 ### `ArcaneClient::refresh` / `arcane_sdk_refresh`
 
 Same codes as init, minus `invalid_public_key` (the key was already validated). Always contacts the desktop app, so it never returns a purely offline result. On failure the client keeps its previous state.
 
 Under `ARCANE_OFFLINE_ONLY` it returns `network_required` immediately.
+
+### `ArcaneClient::frame`, `set_graphics`, `session`, `shutdown`
+
+Never fail and never return a `Result`. Before the desktop app acknowledges the session they are simply no-ops that keep counting locally.
 
 ### C ABI getters
 
@@ -85,15 +92,17 @@ Both mean **launch the game**. `is_owned()` distinguishes them if you need to.
 
 Two conventions, by function kind.
 
-### Actions — `arcane_sdk_init`, `arcane_sdk_refresh`
+### Actions — `arcane_sdk_init`, `arcane_sdk_refresh`, `arcane_sdk_set_graphics`
 
 | Return | Meaning |
 |--------|---------|
 | `0` | Success |
-| `1` | Bad argument (null / non-UTF-8 key, or not initialised for `refresh`) |
+| `1` | Bad argument (null / non-UTF-8 string, or not initialised) |
 | `2` | `SdkError` — rendered into `err_buf` as `code: message — hint (context…)` |
 
-### Getters — `arcane_sdk_user_id`, `arcane_sdk_game_id`, `arcane_sdk_public_key`, `arcane_sdk_device_hash`, `arcane_sdk_last_error_json`
+`arcane_sdk_frame` and `arcane_sdk_shutdown` return nothing and cannot fail.
+
+### Getters — `arcane_sdk_user_id`, `arcane_sdk_game_id`, `arcane_sdk_public_key`, `arcane_sdk_device_hash`, `arcane_sdk_session_json`, `arcane_sdk_last_error_json`
 
 | Return | Meaning |
 |--------|---------|
