@@ -28,6 +28,9 @@ pub enum ErrorCode {
     NotAuthenticated,
     /// Could not reach or launch the Arcane desktop loopback server.
     ArcaneUnavailable,
+    /// The Arcane desktop app does not know this route yet — it predates the
+    /// feature the SDK asked for.
+    FeatureUnavailable,
     /// The public key argument is empty, oversized, or has forbidden characters.
     InvalidPublicKey,
     /// Several accounts hold a ticket for this title and Arcane has not recorded
@@ -52,6 +55,7 @@ impl ErrorCode {
             Self::NetworkRequired => "network_required",
             Self::NotAuthenticated => "not_authenticated",
             Self::ArcaneUnavailable => "arcane_unavailable",
+            Self::FeatureUnavailable => "feature_unavailable",
             Self::InvalidPublicKey => "invalid_public_key",
             Self::AmbiguousSession => "ambiguous_session",
             Self::NotInitialized => "not_initialized",
@@ -223,6 +227,10 @@ impl SdkError {
         Self::new(ErrorCode::ArcaneUnavailable, message)
     }
 
+    pub(crate) fn feature_unavailable(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::FeatureUnavailable, message)
+    }
+
     pub(crate) fn invalid_public_key(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::InvalidPublicKey, message)
     }
@@ -317,6 +325,15 @@ mod tests {
         assert!(!SdkError::not_owned("x").is_retryable());
         assert!(!SdkError::device_mismatch("x").is_retryable());
         assert!(!SdkError::invalid_public_key("x").is_retryable());
+        assert!(!SdkError::feature_unavailable("x").is_retryable());
+    }
+
+    #[test]
+    fn feature_unavailable_is_a_stable_code() {
+        assert_eq!(
+            SdkError::feature_unavailable("x").code(),
+            "feature_unavailable"
+        );
     }
 
     #[test]

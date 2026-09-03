@@ -1,34 +1,66 @@
 //! The desktop loopback path, against a stub HTTP server on `ARCANE_SDK_PORT`.
 //!
-//! No ticket is ever written, so `init` always falls through to the refresh
-//! branch — which is exactly the path under test.
+//! Ownership tests write no ticket, so `init` always falls through to the
+//! refresh branch — which is exactly the path under test. Session tests drive
+//! the `arcane-session` thread with a short `ARCANE_SESSION_TICK_MS`.
 
-use std::io::{BufRead, BufReader, Write};
+use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Mutex, MutexGuard};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
+use std::time::{Duration, Instant};
 
-use arcane_sdk::{ArcaneClient, OwnershipStatus};
+use arcane_sdk::{ArcaneClient, OwnershipStatus, TrackingState};
 use tempfile::TempDir;
 
 const PUBLIC_KEY: &str = "pk_test_title";
+const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// `ARCANE_SDK_PORT` and `ARCANE_DRM_ROOT` are process-global.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+#[derive(Clone, Copy)]
 struct Reply {
     status: &'static str,
     body: &'static str,
 }
 
+#[derive(Clone, Debug)]
+struct Request {
+    line: String,
+    body: String,
+}
+
+impl Request {
+    fn json(&self) -> serde_json::Value {
+        serde_json::from_str(&self.body).expect("request body is json")
+    }
+}
+
 struct Stub {
-    _dir: TempDir,
+    dir: TempDir,
     _guard: MutexGuard<'static, ()>,
+    log: Arc<Mutex<Vec<Request>>>,
 }
 
 impl Stub {
-    /// Serve `health` on `GET /v1/health` and `refresh` on the ownership POST.
+    /// Serve `health` on `GET /v1/health` and `refresh` on everything else.
     fn start(health: Reply, refresh: Reply) -> Self {
+        Self::start_with(move |request| {
+            if request.line.contains("/v1/health") {
+                health
+            } else {
+                refresh
+            }
+        })
+    }
+
+    fn start_with<F>(handler: F) -> Self
+    where
+        F: Fn(&Request) -> Reply + Send + Sync + 'static,
+    {
         let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = TempDir::new().expect("temp dir");
 
@@ -38,17 +70,77 @@ impl Stub {
         std::env::set_var("ARCANE_DRM_ROOT", dir.path());
         std::env::set_var("ARCANE_SDK_PORT", port.to_string());
         std::env::remove_var("ARCANE_OFFLINE_ONLY");
+        std::env::remove_var("ARCANE_SESSION_TICK_MS");
 
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let served = Arc::clone(&log);
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                serve(stream, &health, &refresh);
+                serve(stream, &handler, &served);
             }
         });
 
         Self {
-            _dir: dir,
+            dir,
             _guard: guard,
+            log,
         }
+    }
+
+    fn drm_root(&self) -> &Path {
+        self.dir.path()
+    }
+
+    fn requests(&self) -> Vec<Request> {
+        self.log.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn matching(&self, fragment: &str) -> Vec<Request> {
+        self.requests()
+            .into_iter()
+            .filter(|request| request.line.contains(fragment))
+            .collect()
+    }
+
+    fn wait_for(&self, fragment: &str, count: usize) -> Vec<Request> {
+        let deadline = Instant::now() + WAIT_TIMEOUT;
+        loop {
+            let matching = self.matching(fragment);
+            if matching.len() >= count {
+                return matching;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {count} × {fragment}, saw {:?}",
+                self.requests()
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn write_drm_off_ticket(&self, user_id: &str) {
+        write_file(
+            &self.drm_root().join("session.json"),
+            &format!(r#"{{"user_id":"{user_id}","updated_at":1}}"#),
+        );
+        write_file(
+            &self
+                .drm_root()
+                .join("tickets")
+                .join(user_id)
+                .join(format!("{PUBLIC_KEY}.ticket")),
+            &format!(
+                r#"{{
+                    "ticket": "",
+                    "cached_at": "2026-01-01T00:00:00Z",
+                    "expires_at": "2027-01-01T00:00:00Z",
+                    "game_id": "game-canonical-id",
+                    "user_id": "{user_id}",
+                    "device_hash": "",
+                    "drm_enabled": false
+                }}"#
+            ),
+        );
     }
 }
 
@@ -56,32 +148,53 @@ impl Drop for Stub {
     fn drop(&mut self) {
         std::env::remove_var("ARCANE_DRM_ROOT");
         std::env::remove_var("ARCANE_SDK_PORT");
+        std::env::remove_var("ARCANE_SESSION_TICK_MS");
     }
 }
 
-fn serve(mut stream: TcpStream, health: &Reply, refresh: &Reply) {
+fn write_file(path: &PathBuf, body: &str) {
+    fs::create_dir_all(path.parent().expect("parent")).expect("create dirs");
+    fs::write(path, body).expect("write file");
+}
+
+fn serve<F>(mut stream: TcpStream, handler: &F, log: &Arc<Mutex<Vec<Request>>>)
+where
+    F: Fn(&Request) -> Reply,
+{
     let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
 
     let mut request_line = String::new();
     if reader.read_line(&mut request_line).is_err() {
         return;
     }
-    // Drain headers so the client sees a clean request/response pair.
+
+    let mut content_length = 0usize;
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line) {
             Ok(0) => break,
             Ok(_) if line == "\r\n" || line == "\n" => break,
-            Ok(_) => continue,
+            Ok(_) => {
+                let lowered = line.to_ascii_lowercase();
+                if let Some(value) = lowered.strip_prefix("content-length:") {
+                    content_length = value.trim().parse().unwrap_or(0);
+                }
+            }
             Err(_) => return,
         }
     }
 
-    let reply = if request_line.contains("/v1/health") {
-        health
-    } else {
-        refresh
+    let mut body = vec![0u8; content_length];
+    if content_length > 0 && reader.read_exact(&mut body).is_err() {
+        return;
+    }
+
+    let request = Request {
+        line: request_line,
+        body: String::from_utf8_lossy(&body).to_string(),
     };
+    let reply = handler(&request);
+    log.lock().unwrap_or_else(|e| e.into_inner()).push(request);
 
     let response = format!(
         "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -92,6 +205,16 @@ fn serve(mut stream: TcpStream, health: &Reply, refresh: &Reply) {
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
 }
+
+const HEALTHY: Reply = Reply {
+    status: "200 OK",
+    body: r#"{"ok":true,"authenticated":true,"user_id":"user-from-health"}"#,
+};
+
+const DRM_OFF: Reply = Reply {
+    status: "200 OK",
+    body: r#"{"ok":true,"drm_enabled":false,"game_id":"game-canonical-id"}"#,
+};
 
 #[test]
 fn a_refresh_that_reports_drm_off_succeeds_without_a_ticket() {
@@ -231,4 +354,199 @@ fn an_unreadable_error_body_still_names_the_status_and_url() {
     assert!(keys.contains(&"http_status"));
     assert!(keys.contains(&"url"));
     assert!(keys.contains(&"body"));
+}
+
+#[test]
+fn a_session_that_cannot_start_never_fails_init() {
+    let stub = Stub::start_with(|request| {
+        if request.line.contains("/v1/health") {
+            HEALTHY
+        } else if request.line.contains("/session/start") {
+            Reply {
+                status: "500 Internal Server Error",
+                body: r#"{"error":"internal","message":"session store down"}"#,
+            }
+        } else {
+            DRM_OFF
+        }
+    });
+
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init succeeds on ownership alone");
+    stub.wait_for("/session/start", 1);
+
+    let session = client.session();
+    assert_eq!(session.tracking, TrackingState::Pending);
+    assert_eq!(session.session_id, None);
+    assert!(!session.fps_sampling);
+    assert_eq!(session.samples_taken, 0);
+}
+
+#[test]
+fn a_desktop_without_the_session_routes_leaves_init_alone() {
+    let stub = Stub::start_with(|request| {
+        if request.line.contains("/v1/health") {
+            HEALTHY
+        } else if request.line.contains("/session/") {
+            Reply {
+                status: "404 Not Found",
+                body: "Not Found",
+            }
+        } else {
+            DRM_OFF
+        }
+    });
+
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+    stub.wait_for("/session/start", 1);
+
+    assert_eq!(client.session().tracking, TrackingState::Pending);
+}
+
+#[test]
+fn a_started_session_reports_active_and_the_player_sampling_setting() {
+    let stub = Stub::start_with(|request| {
+        if request.line.contains("/v1/health") {
+            HEALTHY
+        } else if request.line.contains("/session/start") {
+            Reply {
+                status: "200 OK",
+                body: r#"{"session_id":"session-1","user_id":"user-from-health","game_id":"game-canonical-id","fps_sampling":true}"#,
+            }
+        } else {
+            DRM_OFF
+        }
+    });
+
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+    stub.wait_for("/session/start", 1);
+    let session = await_active(&client);
+
+    assert_eq!(session.session_id.as_deref(), Some("session-1"));
+    assert!(session.fps_sampling);
+
+    client.frame();
+    client.set_graphics("2560x1440", "high");
+    assert_eq!(client.session().samples_taken, 0);
+}
+
+#[test]
+fn an_unknown_session_triggers_a_new_start() {
+    let stub = Stub::start_with(|request| {
+        if request.line.contains("/v1/health") {
+            HEALTHY
+        } else if request.line.contains("/session/start") {
+            Reply {
+                status: "200 OK",
+                body: r#"{"session_id":"session-1","fps_sampling":false}"#,
+            }
+        } else if request.line.contains("/session/heartbeat") {
+            Reply {
+                status: "404 Not Found",
+                body: r#"{"error":"unknown_session","message":"the desktop expired it"}"#,
+            }
+        } else {
+            DRM_OFF
+        }
+    });
+    std::env::set_var("ARCANE_SESSION_TICK_MS", "150");
+
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+    stub.wait_for("/session/heartbeat", 1);
+    let starts = stub.wait_for("/session/start", 2);
+
+    assert!(starts.len() >= 2);
+    assert_eq!(client.session().session_id.as_deref(), Some("session-1"));
+}
+
+#[test]
+fn shutdown_ends_the_session_with_the_cumulative_seconds() {
+    let stub = Stub::start_with(|request| {
+        if request.line.contains("/v1/health") {
+            HEALTHY
+        } else if request.line.contains("/session/start") {
+            Reply {
+                status: "200 OK",
+                body: r#"{"session_id":"session-1","fps_sampling":false}"#,
+            }
+        } else if request.line.contains("/session/heartbeat") {
+            Reply {
+                status: "200 OK",
+                body: r#"{"ok":true,"fps_sampling":false}"#,
+            }
+        } else if request.line.contains("/session/end") {
+            Reply {
+                status: "200 OK",
+                body: r#"{"ok":true}"#,
+            }
+        } else {
+            DRM_OFF
+        }
+    });
+    std::env::set_var("ARCANE_SESSION_TICK_MS", "150");
+
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+    stub.wait_for("/session/heartbeat", 1);
+
+    let heartbeat = stub.matching("/session/heartbeat")[0].json();
+    assert_eq!(heartbeat["session_id"], "session-1");
+    assert_eq!(heartbeat["samples"], serde_json::json!([]));
+
+    thread::sleep(Duration::from_millis(1_100));
+    client.shutdown();
+
+    let ends = stub.matching("/session/end");
+    assert_eq!(ends.len(), 1, "shutdown sends exactly one end");
+    let body = ends[0].json();
+    assert_eq!(body["session_id"], "session-1");
+    assert!(
+        body["seconds"].as_u64().expect("seconds") >= 1,
+        "end carries the cumulative seconds, got {}",
+        body["seconds"]
+    );
+}
+
+#[test]
+fn a_cached_ticket_starts_a_session_without_ever_contacting_the_desktop_for_ownership() {
+    let stub = Stub::start_with(|request| {
+        if request.line.contains("/session/start") {
+            Reply {
+                status: "200 OK",
+                body: r#"{"session_id":"session-1","fps_sampling":false}"#,
+            }
+        } else {
+            Reply {
+                status: "500 Internal Server Error",
+                body: r#"{"error":"internal","message":"init must not call this"}"#,
+            }
+        }
+    });
+    stub.write_drm_off_ticket("user-a");
+
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("a cached ticket is enough");
+
+    assert_eq!(client.ownership(), OwnershipStatus::DrmDisabled);
+    assert_eq!(client.user_id(), Some("user-a"));
+
+    stub.wait_for("/session/start", 1);
+    assert!(
+        stub.matching("/v1/health").is_empty(),
+        "init probed the desktop, so it could have opened the deep link"
+    );
+    assert!(stub.matching("ownership/refresh").is_empty());
+    await_active(&client);
+}
+
+fn await_active(client: &ArcaneClient) -> arcane_sdk::SessionSnapshot {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let session = client.session();
+        if session.tracking == TrackingState::Active {
+            return session;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "session never became active: {session:?}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
 }

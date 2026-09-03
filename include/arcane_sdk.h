@@ -48,6 +48,12 @@ long long arcane_sdk_checked_at(void);
 // `buf` must be null or point to at least `len` writable bytes.
 int arcane_sdk_device_hash(char *buf, size_t len);
 
+// Count one rendered frame, for FPS sampling. Call once per frame.
+//
+// Outside a sampling window this is a relaxed atomic load; inside one it adds a
+// relaxed increment. Does nothing before `arcane_sdk_init` succeeds.
+void arcane_sdk_frame(void);
+
 // Write the canonical title id into `buf`.
 //
 // # Safety
@@ -104,7 +110,35 @@ int arcane_sdk_public_key(char *buf, size_t len);
 // `err_buf` must be null or point to at least `err_len` writable bytes.
 int arcane_sdk_refresh(char *err_buf, size_t err_len);
 
-// Drop the client. Optional — mostly useful for editor play-mode reloads.
+// Write the play session state as JSON into `buf`:
+// `{"session_id","tracking","played_seconds","fps_sampling","samples_taken","last_fps_avg"}`.
+//
+// `tracking` is `"active"`, `"pending"` or `"disabled"`. 256 bytes is enough.
+//
+// # Safety
+//
+// `buf` must be null or point to at least `len` writable bytes.
+int arcane_sdk_session_json(char *buf, size_t len);
+
+// Record the current display settings, attached to the FPS samples that follow.
+//
+// Both strings are NUL-terminated UTF-8, for example `"2560x1440"` and
+// `"high"`. Empty strings clear the values. Never call this from the render
+// loop — it takes a short lock.
+//
+// Returns 0 on success, 1 on a null / non-UTF-8 argument or when the client is
+// not initialised.
+//
+// # Safety
+//
+// `resolution` and `preset` must be valid NUL-terminated C strings.
+int arcane_sdk_set_graphics(const char *resolution, const char *preset);
+
+// End the play session and drop the client.
+//
+// Reports the final playtime to the Arcane desktop app with a 2-second timeout,
+// then releases the singleton. Call it when the game exits; it is also what you
+// want on an editor play-mode reload.
 void arcane_sdk_shutdown(void);
 
 // Unix timestamp of the ownership ticket's expiry, or -1 when unknown.

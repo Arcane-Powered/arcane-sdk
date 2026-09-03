@@ -4,6 +4,9 @@
 //! cargo run --example client_init -- pk_your_portal_key
 //! ```
 //!
+//! It renders a fake three-second loop calling `frame()`, prints the session
+//! snapshot, then ends the session with `shutdown()`.
+//!
 //! Useful environment overrides (developer tooling — never set these in a game):
 //!
 //! - `ARCANE_DRM_ROOT`      point the SDK at a throwaway DRM directory
@@ -11,6 +14,8 @@
 //! - `ARCANE_OFFLINE_ONLY`  never contact or launch Arcane desktop
 
 use std::process::ExitCode;
+use std::thread;
+use std::time::Duration;
 
 use arcane_sdk::ArcaneClient;
 
@@ -30,6 +35,24 @@ fn main() -> ExitCode {
             println!("device_hash {}", client.device_hash());
             println!("expires_at  {:?}", client.ticket_expires_at());
             println!("checked_at  {}", client.checked_at());
+
+            client.set_graphics("2560x1440", "high");
+
+            for _ in 0..600 {
+                client.frame();
+                thread::sleep(Duration::from_millis(5));
+            }
+
+            let session = client.session();
+            println!();
+            println!("tracking    {}", session.tracking);
+            println!("session_id  {:?}", session.session_id);
+            println!("played_secs {}", session.played_seconds);
+            println!("sampling    {}", session.fps_sampling);
+            println!("samples     {}", session.samples_taken);
+            println!("last_fps    {:?}", session.last_fps_avg);
+
+            client.shutdown();
             ExitCode::SUCCESS
         }
         Err(err) => {
