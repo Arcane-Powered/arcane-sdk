@@ -735,6 +735,7 @@ fn an_invalid_key_fails_before_any_request_is_sent() {
         "",
         "first blood",
         "first/../blood",
+        "First_Blood",
         ".",
         "..",
         too_long.as_str(),
@@ -847,4 +848,25 @@ fn the_c_abi_singleton_sees_the_cache_filled_through_its_clone() {
     );
 
     ffi::arcane_sdk_shutdown();
+}
+
+#[test]
+fn a_key_the_desktop_rejects_is_reported_as_an_invalid_argument() {
+    let _stub = achievement_stub(
+        Reply {
+            status: "400 Bad Request",
+            body: r#"{"error":"invalid_key","message":"achievement keys are lowercase"}"#,
+        },
+        ACHIEVEMENTS,
+    );
+
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+    let err = client
+        .achievements()
+        .unlock("first_blood")
+        .expect_err("rejected key");
+
+    assert_eq!(err.code(), "invalid_argument");
+    assert!(!err.is_retryable());
+    assert!(err.hint().expect("hint").contains("lowercase"));
 }

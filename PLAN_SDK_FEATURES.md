@@ -281,7 +281,8 @@ pub struct Unlock { pub key: String, pub unlocked_at: i64, pub already_unlocked:
   `list` n'a jamais été appelé) ; `unlock` met le cache à jour.
 - `unlock` est idempotent côté desktop et backend : le jeu peut l'appeler à chaque fois
   que la condition est vraie sans garde côté jeu.
-- Validation de `key` : même charset que la clé publique (`[A-Za-z0-9_.-]{1,64}`) →
+- Validation de `key` : charset du backend et du desktop (`^[a-z0-9_.-]{1,64}$`, une clé
+  faite uniquement de points est refusée) →
   `invalid_argument` avant tout réseau. Nouveau code `invalid_argument` (remplace le
   cas particulier `invalid_public_key` pour les nouvelles entrées, sans le retirer).
 

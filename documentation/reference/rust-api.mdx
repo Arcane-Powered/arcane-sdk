@@ -139,7 +139,7 @@ if unlock.queued { /* stored locally, synchronised later */ }
 # Ok::<(), arcane_sdk::SdkError>(())
 ```
 
-**Errors:** `invalid_argument` when the key is empty, over `MAX_ACHIEVEMENT_KEY_LEN` bytes, or outside `A–Z a–z 0–9 _ - .` (raised before any network call), `unknown_achievement`, plus the codes of `list`.
+**Errors:** `invalid_argument` when the key is empty, over `MAX_ACHIEVEMENT_KEY_LEN` bytes, made only of dots, or outside `a–z 0–9 _ - .` — keys are lowercase — raised before any network call, and also when Arcane rejects the key; `unknown_achievement`; plus the codes of `list`.
 
 ### `is_unlocked`
 

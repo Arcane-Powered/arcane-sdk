@@ -69,10 +69,11 @@ pub struct Unlock {
 /// Reject a malformed achievement key before any network call, so a typo
 /// surfaces as `invalid_argument` instead of a `unknown_achievement` round trip.
 ///
-/// The charset is the one that makes it safe to interpolate the key straight
-/// into the loopback URL. `.` is allowed inside a key but a key made only of
-/// dots is not: it would be a relative path segment, which an HTTP client
-/// normalises away into a different route.
+/// Keys are lowercase, as the Arcane portal and the backend define them, which
+/// is also what makes them safe to interpolate straight into the loopback URL.
+/// `.` is allowed inside a key but a key made only of dots is not: it would be a
+/// relative path segment, which an HTTP client normalises away into a different
+/// route.
 pub(crate) fn validate_key(key: &str) -> Result<(), SdkError> {
     if key.is_empty() {
         return Err(SdkError::invalid_argument("The achievement key is empty.")
@@ -88,16 +89,16 @@ pub(crate) fn validate_key(key: &str) -> Result<(), SdkError> {
                 .with_context("max_length", MAX_ACHIEVEMENT_KEY_LEN),
         );
     }
-    if let Some((index, bad)) = key
-        .char_indices()
-        .find(|(_, c)| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')))
-    {
+    if let Some((index, bad)) = key.char_indices().find(|(_, c)| {
+        !(c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-' | '.'))
+    }) {
         return Err(SdkError::invalid_argument(
             "The achievement key contains a character that is not allowed.",
         )
         .with_hint(
-            "Allowed characters are ASCII letters, digits, and `_`, `-`, `.`. \
-             Check for stray whitespace or quotes around the value.",
+            "Achievement keys are lowercase, exactly as defined in the Arcane portal: \
+             `a`–`z`, digits, and `_`, `-`, `.`. Check for capitals, stray whitespace \
+             or quotes around the value.",
         )
         .with_context("index", index)
         .with_context("character", format!("{bad:?}")));
@@ -432,7 +433,7 @@ mod tests {
 
     #[test]
     fn accepts_portal_shaped_keys() {
-        for key in ["first_blood", "boss.01", "level-3", "A", "0"] {
+        for key in ["first_blood", "boss.01", "level-3", "a", "0"] {
             assert!(validate_key(key).is_ok(), "rejected {key}");
         }
     }
@@ -465,6 +466,8 @@ mod tests {
             "first\n",
             " first",
             "prémier",
+            "First_Blood",
+            "FIRST_BLOOD",
             ".",
             "..",
             "...",
@@ -472,6 +475,19 @@ mod tests {
             let err = validate_key(key).unwrap_err();
             assert_eq!(err.code(), "invalid_argument", "accepted {key:?}");
         }
+    }
+
+    #[test]
+    fn reports_where_the_capital_is() {
+        let err = validate_key("first_Blood").unwrap_err();
+        let context: Vec<_> = err
+            .context()
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert!(context.contains(&("index", "6")));
+        assert!(context.contains(&("character", "'B'")));
+        assert!(err.hint().expect("hint").contains("lowercase"));
     }
 
     #[test]

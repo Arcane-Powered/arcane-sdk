@@ -39,7 +39,7 @@ match ArcaneClient::init(PUBLIC_KEY) {
 | Code | Problem | What to do | Retryable |
 |------|---------|------------|-----------|
 | `invalid_public_key` | Empty, over 256 bytes, or a character outside `A–Z a–z 0–9 _ - .` | Check the value you compiled in — the context names the bad character and its index | no |
-| `invalid_argument` | An argument other than the public key is empty, oversized, or has a forbidden character — today, an [achievement](/concepts/achievements) key over 64 bytes or outside `A–Z a–z 0–9 _ - .` | Check the key against the Arcane portal. Raised before any network call | no |
+| `invalid_argument` | An argument other than the public key is empty, oversized, or has a forbidden character — today, an [achievement](/concepts/achievements) key over 64 bytes or outside `a–z 0–9 _ - .` (keys are lowercase) | Check the key against the Arcane portal. Raised before any network call, or when Arcane rejects the key | no |
 | `ticket_missing` | No ticket cached for the signed-in account, or an empty ticket while DRM is on | Open Arcane desktop once while online. `init` normally refreshes this for you | yes |
 | `ticket_expired` | JWT past `exp` (beyond ±5 min skew) | `init` normally refreshes this for you; otherwise reconnect online via Arcane | yes |
 | `ticket_invalid` | Bad JWT, missing/unreadable JWKS, unknown `kid`, wrong title, `own=false`, corrupt file | Refresh via Arcane. If `expected` ≠ `ticket_gid` in the context, your public key is wrong | no |

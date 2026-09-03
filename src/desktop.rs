@@ -357,6 +357,9 @@ fn map_known_desktop_error(body: &SdkErrorBody) -> Option<SdkError> {
                 .with_hint("Sign in to the Arcane desktop app, then retry.")
                 .with_context("detail", detail)
         }
+        "invalid_key" => SdkError::invalid_argument("Arcane rejected the achievement key.")
+            .with_hint("Achievement keys are lowercase, exactly as defined in the Arcane portal.")
+            .with_context("detail", detail),
         "unknown_achievement" => {
             SdkError::unknown_achievement("Arcane does not know this achievement for this title.")
                 .with_hint(
@@ -495,6 +498,14 @@ mod tests {
         let err = map_desktop_error(&body("offline", "Cannot refresh while offline."));
         assert_eq!(err.code(), "network_required");
         assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn maps_invalid_key() {
+        let err = map_desktop_error(&body("invalid_key", "keys are lowercase"));
+        assert_eq!(err.code(), "invalid_argument");
+        assert!(err.hint().unwrap().contains("lowercase"));
+        assert!(!err.is_retryable());
     }
 
     #[test]

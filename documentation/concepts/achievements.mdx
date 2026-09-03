@@ -16,7 +16,7 @@ char err[512];
 arcane_sdk_achievement_unlock("first_blood", err, sizeof(err));
 ```
 
-Keys come from the **Arcane portal**: you define each achievement there — key, title, description, icon, hidden or not — and the game only ever passes the key. Nothing is declared in code.
+Keys come from the **Arcane portal**: you define each achievement there — key, title, description, icon, hidden or not — and the game only ever passes the key. Nothing is declared in code. Keys are lowercase (`a`–`z`, digits, `_`, `-`, `.`, up to 64 bytes), the same charset Arcane enforces on its side.
 
 ## Unlocking is idempotent
 
@@ -95,7 +95,7 @@ The one thing that is genuinely lost is a call made while the **desktop app is n
 
 | Code | When |
 |------|------|
-| `invalid_argument` | The key is empty, over 64 bytes, made only of dots (`.` / `..` would be a path segment), or has a character outside `A–Z a–z 0–9 _ - .` — raised before any network call |
+| `invalid_argument` | The key is empty, over 64 bytes, made only of dots (`.` / `..` would be a path segment), or has a character outside `a–z 0–9 _ - .` — capitals included. Raised before any network call, or returned when Arcane itself rejects the key |
 | `unknown_achievement` | The title does not define that key. Check the portal |
 | `not_owned` | The signed-in account does not own the title |
 | `feature_unavailable` | The Arcane desktop app predates the achievement routes — update it |

@@ -99,7 +99,7 @@ int arcane_sdk_achievement_unlock(const char *key, char *err_buf, size_t err_len
 
 Unlocks an achievement for the signed-in player. `key` is the key from the Arcane portal (NUL-terminated UTF-8). Idempotent — call it every time the condition holds; an already-unlocked or `queued` (desktop app offline) answer returns `0`.
 
-One synchronous loopback call, so never call it from the render loop. Returns `1` on a null / non-UTF-8 key or before init, `2` on an SDK error written to `err_buf` — `invalid_argument` for a malformed key (raised before any call), `unknown_achievement` when the title does not define it. See [Achievements](/concepts/achievements).
+One synchronous loopback call, so never call it from the render loop. Returns `1` on a null / non-UTF-8 key or before init, `2` on an SDK error written to `err_buf` — `invalid_argument` for a malformed key (keys are lowercase; raised before any call), `unknown_achievement` when the title does not define it. See [Achievements](/concepts/achievements).
 
 ### `arcane_sdk_achievement_is_unlocked`
 
