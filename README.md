@@ -17,6 +17,7 @@ client.frame();     // once per rendered frame — an atomic load, for FPS sampl
 client.session();   // tracking state, playtime, FPS samples
 
 client.achievements().unlock("first_blood")?;   // idempotent, one loopback call
+client.friends().list()?;                       // friends, with online and in_game
 
 client.shutdown();  // ends the session and reports the final playtime
 ```

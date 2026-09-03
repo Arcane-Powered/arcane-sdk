@@ -123,6 +123,7 @@ int  arcane_sdk_public_key(char *buf, size_t len);
 int  arcane_sdk_device_hash(char *buf, size_t len);
 int  arcane_sdk_session_json(char *buf, size_t len);
 int  arcane_sdk_achievements_json(char *buf, size_t len);
+int  arcane_sdk_friends_json(char *buf, size_t len);
 int  arcane_sdk_last_error_json(char *buf, size_t len);
 ```
 
@@ -154,7 +155,19 @@ if (arcane_sdk_achievements_json(json, sizeof(json)) > 0) {
 
 `unlocked_at` is a Unix timestamp, or `null` while locked. A `-4` here means the call failed — read `arcane_sdk_last_error_json` for the code.
 
-Buffer sizing: user ids and device hashes fit comfortably in 64 bytes; allow 256 for the session JSON, 512 for `err_buf`, 1024 for the error JSON, and size the achievement JSON to your title (a few hundred bytes per achievement). A short buffer is never a silent truncation — you get `-3` and an empty string.
+`arcane_sdk_friends_json` is the C form of the Rust `friends().list()`: one synchronous loopback call returning this player's [friends](/concepts/friends) with their presence. Call it when a friends menu opens or on a timer of your own, never per frame.
+
+```c
+char json[8192];
+if (arcane_sdk_friends_json(json, sizeof(json)) > 0) {
+  /* {"friends":[{"user_id":"…","pseudo":"…","online":true,"in_game":false}],
+      "stale":false} */
+}
+```
+
+`in_game` is `true` for a friend playing this title right now — always `false` when the SDK has no `game_id`. `stale` is `true` when the desktop app answered from its cache because it is offline; the list is still usable. A `-4` means the call failed — read `arcane_sdk_last_error_json` for the code.
+
+Buffer sizing: user ids and device hashes fit comfortably in 64 bytes; allow 256 for the session JSON, 512 for `err_buf`, 1024 for the error JSON, and size the achievement and friends JSON to your title and the player's friend list (a few hundred bytes per entry). A short buffer is never a silent truncation — you get `-3` and an empty string.
 
 ## Example
 
@@ -191,6 +204,13 @@ int boot(void) {
 void on_boss_defeated(void) {
   char err[512];
   arcane_sdk_achievement_unlock("boss.01", err, sizeof(err));   /* idempotent */
+}
+
+void open_friends_menu(void) {
+  char json[8192];
+  if (arcane_sdk_friends_json(json, sizeof(json)) > 0) {
+    /* {"friends":[…],"stale":false} — one loopback call, not per frame */
+  }
 }
 
 void render_frame(void) {

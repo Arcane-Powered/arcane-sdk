@@ -1,0 +1,95 @@
+---
+title: "Friends"
+description: "Read this player's friends, who is online, and who is in your game right now."
+keywords: ["friends", "presence", "online", "in_game", "stale", "launcher"]
+---
+
+One line gives you the list:
+
+```rust
+let friends = client.friends().list()?;
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+```c
+char json[8192];
+arcane_sdk_friends_json(json, sizeof(json));
+```
+
+Each entry is the signed-in player's friend on Arcane, with their presence right now:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `user_id` | `String` | The friend's Arcane account id |
+| `pseudo` | `String` | Their display name on Arcane |
+| `online` | `bool` | Signed in to Arcane right now |
+| `in_game` | `bool` | Playing **this** title right now |
+
+```rust
+for friend in client.friends().list()?.friends {
+    match (friend.online, friend.in_game) {
+        (_, true) => show(&friend.pseudo, "In game"),
+        (true, false) => show(&friend.pseudo, "Online"),
+        (false, false) => show(&friend.pseudo, "Offline"),
+    }
+}
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+## `in_game` is about your title
+
+`in_game` is `true` when the friend is playing the same `game_id` as this client — a friend playing something else on Arcane is `online`, not `in_game`. That presence is set by the Arcane desktop app when a game opens its [play session](/concepts/session), so it costs your game nothing.
+
+When the SDK has no `game_id` — an older Arcane desktop build that does not report one — every `in_game` is `false`. It is never a guess: `false` means "not known to be in this title".
+
+## `stale`
+
+The Arcane desktop app caches the list for 15 seconds. When it is offline it serves that cache and says so:
+
+```rust
+let list = client.friends().list()?;
+if list.stale {
+    // Usable, just possibly a few minutes old. Dim the presence dots, don't hide them.
+}
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+`stale: true` is a **success**, not an error. The SDK keeps no list of its own: every call asks the desktop app, and the desktop app decides what to answer with.
+
+<Warning>
+  `list()` is **synchronous**: one loopback round trip to the Arcane desktop app, on your thread, on the order of a millisecond. Call it when a friends menu opens, or on a timer of your own of a few seconds — never per frame.
+</Warning>
+
+## What stays in the launcher
+
+This is a read of presence, and only that. **Friend requests, accepting or removing a friend, chat and the in-game overlay stay in the Arcane Powered desktop app.** A game does not send friend requests on the player's behalf, and there is nothing to call for it.
+
+## Errors
+
+| Code | When |
+|------|------|
+| `not_authenticated` | Nobody is signed in to the Arcane desktop app |
+| `feature_unavailable` | The Arcane desktop app predates the friends route — update it |
+| `arcane_unavailable` | The desktop app is not running |
+| `network_required` | `ARCANE_OFFLINE_ONLY` is set — raised before any call |
+
+Full table and what to do about each: [Errors](/concepts/errors).
+
+## In C
+
+```c
+char json[8192];
+if (arcane_sdk_friends_json(json, sizeof(json)) > 0) {
+  /* {"friends":[{"user_id":"…","pseudo":"…","online":true,"in_game":false}],
+      "stale":false} */
+}
+```
+
+Same call, same round trip. A `-4` means it failed — read `arcane_sdk_last_error_json` for the code. Size the buffer to the player's friend list (a few hundred bytes per friend); a short buffer gives `-3` and an empty string, never a truncated one. Details: [C ABI](/reference/c-abi).
+
+## Next steps
+
+- [Session](/concepts/session) — the play session that makes your player "in game" for their friends
+- [Achievements](/concepts/achievements) — `unlock("first_blood")`, one line, idempotent
+- [Errors](/concepts/errors) — every code, and its fix
+- [Rust API](/reference/rust-api) · [C ABI](/reference/c-abi)

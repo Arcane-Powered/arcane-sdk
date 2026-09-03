@@ -28,11 +28,12 @@ impl ArcaneClient {
     pub fn set_graphics(&self, resolution: &str, preset: &str);
     pub fn session(&self) -> SessionSnapshot;
     pub fn achievements(&self) -> Achievements<'_>;
+    pub fn friends(&self) -> Friends<'_>;
     pub fn shutdown(self);
 }
 ```
 
-`ArcaneClient` is `Debug + Clone`, and `Send + Sync`. Clones share one play session — it ends when the last one is dropped, or on `shutdown` — and one achievement cache.
+`ArcaneClient` is `Debug + Clone`, and `Send + Sync`. Clones share one play session — it ends when the last one is dropped, or on `shutdown` — and one achievement cache. There is no friends cache to share: `friends().list()` always asks the Arcane desktop app.
 
 ### `init`
 
@@ -111,6 +112,15 @@ client.achievements().unlock("first_blood")?;
 
 Borrows an `Achievements<'_>` accessor. It holds no state, so there is nothing to keep around. See [Achievements](/concepts/achievements).
 
+### `friends`
+
+```rust
+client.friends().list()?;
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+Borrows a `Friends<'_>` accessor, carrying only this client's `game_id` so `in_game` can be derived. See [Friends](/concepts/friends).
+
 ## `Achievements`
 
 ```rust
@@ -156,6 +166,30 @@ client.shutdown();
 ```
 
 Ends the play session, reporting the final playtime to the Arcane desktop app with a 2-second timeout, and consumes the client. Dropping the last clone does the same best-effort, so this is optional.
+
+## `Friends`
+
+```rust
+impl Friends<'_> {
+    pub fn list(&self) -> Result<FriendList, SdkError>;
+}
+```
+
+`list` is **synchronous** — one loopback round trip on the calling thread, around a millisecond. Call it when a friends menu opens or on a timer of your own, never per frame.
+
+The SDK caches nothing: the Arcane desktop app caches the list for 15 seconds and reports `stale` when it served that cache while offline — a success, not an error.
+
+```rust
+let list = client.friends().list()?;
+for friend in &list.friends {
+    println!("{} {} {}", friend.pseudo, friend.online, friend.in_game);
+}
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+`in_game` is `true` when the friend is playing the same `game_id` as this client; it is `false` for every friend when the client has no `game_id`.
+
+**Errors:** `not_authenticated`, `network_required` (including under `ARCANE_OFFLINE_ONLY`, raised before any call), `arcane_unavailable`, `feature_unavailable`.
 
 ## `SdkError`
 
@@ -222,6 +256,18 @@ pub struct Unlock {
     pub queued: bool,                 // desktop app offline; synchronised later
 }
 
+pub struct FriendList {
+    pub friends: Vec<Friend>,
+    pub stale: bool,                  // desktop app offline; served from its cache
+}
+
+pub struct Friend {
+    pub user_id: String,              // the friend's Arcane account id
+    pub pseudo: String,               // their display name on Arcane
+    pub online: bool,                 // signed in to Arcane right now
+    pub in_game: bool,                // playing this title right now
+}
+
 #[non_exhaustive]
 pub enum ErrorCode { /* one variant per code in the Errors table */ }
 
@@ -229,7 +275,7 @@ pub const MAX_PUBLIC_KEY_LEN: usize = 256;
 pub const MAX_ACHIEVEMENT_KEY_LEN: usize = 64;
 ```
 
-`OwnershipStatus` implements `Display` (`"owned"` / `"drm_disabled"`), and `TrackingState` does too (`"active"` / `"pending"` / `"disabled"`). `SessionSnapshot` is `Debug + Clone`; `Achievement` and `Unlock` are `Debug + Clone + PartialEq`.
+`OwnershipStatus` implements `Display` (`"owned"` / `"drm_disabled"`), and `TrackingState` does too (`"active"` / `"pending"` / `"disabled"`). `SessionSnapshot` is `Debug + Clone`; `Achievement`, `Unlock`, `Friend` and `FriendList` are `Debug + Clone + PartialEq`.
 
 ## Crate types
 
