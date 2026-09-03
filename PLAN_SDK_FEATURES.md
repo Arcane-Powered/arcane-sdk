@@ -37,7 +37,7 @@ arcane_sdk_friends_json(buf, sizeof buf);
 
 | Aujourd'hui | Après |
 |---|---|
-| « Pas de thread, pas de timer » (`concepts/client.mdx`) | **Un** thread de session (heartbeat 60 s). La propriété, elle, n'est toujours jamais revalidée seule. |
+| « Pas de thread, pas de timer » (`concepts/client.mdx`) | **Un** thread de session, endormi 59 s sur 60 (budget perf ci-dessous). La doc est réécrite en ce sens. La propriété, elle, n'est toujours jamais revalidée seule. |
 | `ArcaneClient: Clone` par copie de valeurs | `Clone` partage la session (`Arc`). La session se termine quand le **dernier** clone est droppé, ou sur `shutdown()`. |
 | Le desktop n'est contacté que pour rafraîchir un ticket | Le desktop reçoit aussi les heartbeats, les unlocks, les lectures amis. Le SDK **n'ouvre jamais le deep link** pour ces appels : si le desktop n'est pas là, la fonctionnalité est dégradée, jamais bloquante. |
 | Erreurs : 13 codes | + `feature_unavailable` (desktop trop ancien / route 404), `unknown_achievement`, `tracking_unavailable` (réservé au JSON de diagnostic, jamais une `Err` de `init`). `ErrorCode` est `#[non_exhaustive]`, donc additif. |
@@ -53,6 +53,24 @@ arcane_sdk_friends_json(buf, sizeof buf);
 | `ARCANE_OFFLINE_ONLY` | Désactive aussi le thread de session et tous les appels achievements / amis (`network_required`). |
 | Anti-triche | **Hors périmètre.** Un unlock est une requête loopback qu'un process local peut forger (cf. `DESKTOP_CONTRACT.md` §6). La validation de forme et de plausibilité est côté backend. |
 | Versioning | `0.5.0` (`feat:`) pour la phase 1. Chaque phase suivante est un `feat:` mineur. Le header C est regénéré par `.github/scripts/generate-header.sh`. |
+| P2P | Pas de relais, pas de transport. Arcane fournit le **lobby**, le **code d'invitation**, les invitations entre amis, le « rejoindre » depuis le launcher, et l'échange de blobs de connexion. Le trafic de jeu est au jeu. |
+
+### Budget perf du thread de session
+
+Le tracking est actif par défaut, donc il doit être invisible pour le jeu :
+
+| Chemin | Coût | Règle |
+|---|---|---|
+| `frame()` | un `fetch_add` relaxed sur un `AtomicU64` | pas de lock, pas d'allocation, pas de lecture d'horloge |
+| `set_graphics()` | un `Mutex` court, appelé rarement | jamais dans la boucle de rendu |
+| thread `arcane-session` | endormi sur `Condvar::wait_timeout(60 s)`, réveil ~1/min, un `POST` loopback de ~200 octets | aucune boucle active, aucun `sleep` fin, pile 64 KiB |
+| `p2p` events | polling loopback à chaque tick **uniquement** si `p2p()` a été appelé | zéro coût pour un jeu qui ne s'en sert pas |
+| `achievements()` / `friends()` | synchrones sur le thread appelant, un aller-retour loopback local (~1 ms) | à appeler hors du thread de rendu ou en acceptant ~1 ms ; jamais par frame |
+| `shutdown()` | un `POST session/end` synchrone, timeout 2 s | le seul appel bloquant du cycle de vie |
+
+Mesure de sortie de phase 1 : un jeu qui appelle `frame()` à 1000 fps ne doit pas
+voir de différence mesurable (< 0,1 % CPU attribué au SDK). Test `criterion` non
+requis ; un `cargo bench` simple sur `frame()` suffit pour vérifier l'absence de lock.
 
 ## 1. Phases et ordre
 
@@ -62,7 +80,7 @@ arcane_sdk_friends_json(buf, sizeof buf);
 | 1 | Session de jeu : temps joué + FPS par défaut dans `init` | 0, backend/desktop phase 1 |
 | 2 | Achievements : `list`, `unlock`, `is_unlocked` | 1 (la session porte `user_id`/`game_id`) |
 | 3 | Amis : `list` avec `online` / `in_game` | 1 (présence « en jeu » vient de la session) |
-| 4 | P2P : invitations + échange de blobs de signalisation entre amis | 3 |
+| 4 | P2P : lobbies, codes d'invitation, invitations entre amis, « rejoindre » depuis le launcher, échange de blobs de connexion | 3 |
 
 Chaque phase se livre seule (PR + bump), avec un desktop plus ancien qui dégrade en
 `feature_unavailable` et jamais en échec d'`init`.
@@ -124,22 +142,39 @@ GET /v1/friends
 `stale: true` = desktop hors ligne, liste issue de son cache. Le SDK dérive
 `in_game = playing_game_id == client.game_id()`.
 
-### §11 P2P (phase 4)
+### §11 Lobbies P2P (phase 4)
 
 ```
-POST /v1/p2p/invites            { "to_user_id": "…", "payload": "<≤4 KiB opaque>" }
-→ 200 { "invite_id": "…", "expires_at": "…" }
+POST /v1/games/{public_key}/lobbies
+{ "max_players": 4, "visibility": "friends" | "code" | "friends_and_code", "payload": "<≤4 KiB opaque>" }
+→ 200 { "lobby_id": "…", "join_code": "K7P3QX", "expires_at": "…" }
 
-POST /v1/p2p/invites/{id}/accept   { "payload": "<≤4 KiB opaque>" }
-→ 200 { "ok": true }
+POST /v1/games/{public_key}/lobbies/join      { "join_code": "K7P3QX", "payload": "…" }
+POST /v1/games/{public_key}/lobbies/{id}/join { "payload": "…" }          (invité ou ami « rejoindre »)
+→ 200 { "lobby_id": "…", "host_user_id": "…", "host_payload": "…",
+         "members": [ { "user_id": "…", "pseudo": "…", "payload": "…" } ] }
+→ 404 lobby_not_found · 409 lobby_full · 410 lobby_closed
 
-GET  /v1/p2p/events?after={cursor}
-→ 200 { "events": [ { "id": …, "type": "invite|accepted|declined|expired",
-         "invite_id": "…", "from_user_id": "…", "payload": "…|null" } ], "cursor": … }
+POST /v1/games/{public_key}/lobbies/{id}/invite  { "to_user_id": "…" }   → 200 { "ok": true }
+POST /v1/games/{public_key}/lobbies/{id}/leave                             → 200 { "ok": true }
+DELETE /v1/games/{public_key}/lobbies/{id}                                  → 200 { "ok": true }  (hôte)
+
+GET  /v1/games/{public_key}/lobbies/events?after={cursor}
+→ 200 { "events": [ { "id": …, "type": "invite | member_joined | member_left | lobby_closed",
+         "lobby_id": "…", "join_code": "…|null", "from_user_id": "…|null",
+         "user_id": "…|null", "pseudo": "…|null", "payload": "…|null" } ], "cursor": … }
+
+GET  /v1/games/{public_key}/launch-context
+→ 200 { "join_code": "K7P3QX" | null }
 ```
 
-Le loopback n'a pas de push : le thread de session interroge `/v1/p2p/events` à
-chaque tick **uniquement** si le jeu a appelé `p2p()` au moins une fois.
+- `payload` est le blob de connexion du jeu (adresse publique, ticket de son propre
+  netcode, ce qu'il veut). Arcane le transporte, ne le lit pas.
+- `launch-context` : quand le launcher démarre le jeu depuis « Rejoindre » d'un ami,
+  il stocke le code pour ce lancement et le jeu le récupère au premier appel.
+- Le loopback n'a pas de push : le thread de session interroge `/lobbies/events` à
+  chaque tick (et à 5 s au lieu de 60 s tant qu'un lobby est ouvert) **uniquement**
+  si le jeu a appelé `p2p()` au moins une fois.
 
 ## 3. Phase 1 — Session de jeu (temps joué + FPS)
 
@@ -283,42 +318,108 @@ int arcane_sdk_friends_json(char *buf, size_t len);
 `src/friends.rs` (nouveau), `src/client.rs`, `src/ffi.rs`, header,
 `documentation/concepts/friends.mdx`, références, `DESKTOP_CONTRACT.md` §10, tests loopback.
 
-## 6. Phase 4 — P2P (cadrage, décisions à prendre avant implémentation)
+## 6. Phase 4 — Lobbies P2P (liens entre joueurs, sans relais)
 
-Périmètre proposé : **invitations + échange de blobs de signalisation entre amis**,
-transport laissé au jeu. Le SDK ne fait ni NAT traversal ni relais.
+### Comment font les autres plateformes
+
+Steam, Epic Online Services et Discord font tous la même chose à la base : la
+plateforme héberge un **lobby** (un objet « partie » avec un hôte, des membres, une
+capacité), on y entre par **invitation d'ami**, par **code** ou par « Rejoindre » depuis
+la liste d'amis quand un ami est dans un lobby ouvert, et la plateforme sert de
+**boîte aux lettres** pour que les membres s'échangent leurs infos de connexion. Le
+transport du trafic de jeu est la partie lourde (Steam Datagram Relay, EOS P2P avec
+relais) et elle est optionnelle : beaucoup de jeux utilisent le lobby Steam avec leur
+propre netcode.
+
+Arcane commence par la première moitié seulement : lobby, code, invitations,
+« rejoindre », échange de blobs. Aucun transport, aucun NAT traversal, aucun relais.
+
+### API publique
 
 ```rust
 impl ArcaneClient { pub fn p2p(&self) -> P2p<'_>; }
 
 impl P2p<'_> {
-    pub fn invite(&self, to_user_id: &str, payload: &[u8]) -> Result<InviteId, SdkError>;
-    pub fn accept(&self, invite: &InviteId, payload: &[u8]) -> Result<(), SdkError>;
-    pub fn poll_events(&self) -> Vec<P2pEvent>;
+    pub fn create_lobby(&self, max_players: u8, visibility: Visibility, payload: &[u8]) -> Result<Lobby, SdkError>;
+    pub fn join_by_code(&self, join_code: &str, payload: &[u8]) -> Result<Lobby, SdkError>;
+    pub fn join(&self, lobby_id: &str, payload: &[u8]) -> Result<Lobby, SdkError>;
+    pub fn invite(&self, lobby_id: &str, to_user_id: &str) -> Result<(), SdkError>;
+    pub fn leave(&self, lobby_id: &str) -> Result<(), SdkError>;
+    pub fn close(&self, lobby_id: &str) -> Result<(), SdkError>;
+    pub fn launch_join_code(&self) -> Option<String>;
+    pub fn poll_events(&self) -> Vec<LobbyEvent>;
 }
 
-pub enum P2pEvent {
-    Invite   { invite_id: String, from_user_id: String, payload: Vec<u8> },
-    Accepted { invite_id: String, from_user_id: String, payload: Vec<u8> },
-    Declined { invite_id: String },
-    Expired  { invite_id: String },
+pub enum Visibility { Friends, Code, FriendsAndCode }
+
+pub struct Lobby { pub lobby_id: String, pub join_code: Option<String>, pub host_user_id: String,
+                   pub host_payload: Vec<u8>, pub members: Vec<LobbyMember>, pub max_players: u8 }
+pub struct LobbyMember { pub user_id: String, pub pseudo: String, pub payload: Vec<u8> }
+
+pub enum LobbyEvent {
+    Invite       { lobby_id: String, join_code: Option<String>, from_user_id: String, pseudo: String },
+    MemberJoined { lobby_id: String, user_id: String, pseudo: String, payload: Vec<u8> },
+    MemberLeft   { lobby_id: String, user_id: String },
+    LobbyClosed  { lobby_id: String },
 }
 ```
 
-- `payload` opaque, ≤ 4 KiB, base64 sur le fil. C'est au jeu d'y mettre une offre
-  (adresse publique, SDP, ticket de relais tiers…).
-- `poll_events()` vide une file remplie par le thread de session (§2 §11) ; aucun
-  callback, aucun thread supplémentaire.
-- TTL d'une invitation : 2 min côté backend.
+Scénario type, côté jeu :
 
-Questions ouvertes, à trancher avant de commencer la phase 4 :
+```rust
+let lobby = client.p2p().create_lobby(4, Visibility::FriendsAndCode, my_endpoint)?;
+show_code(lobby.join_code.as_deref());                 // "K7P3QX" à l'écran
+client.p2p().invite(&lobby.lobby_id, friend_id)?;      // ou depuis le launcher
 
-1. « P2P » = uniquement invitations + signalisation (ce plan), ou aussi un transport
-   fourni par Arcane (WebRTC data channel, relais TURN) ? Le second point est un
-   projet à part entière.
-2. Invitations limitées aux amis, ou aussi par code de session (lobby public) ?
-3. Faut-il que l'invitation apparaisse dans le launcher (toast « X vous invite ») en
-   plus d'être livrée au jeu ? Le WS desktop la reçoit de toute façon.
+for ev in client.p2p().poll_events() {                 // une fois par seconde suffit
+    if let LobbyEvent::MemberJoined { payload, .. } = ev { connect_to(payload) }
+}
+
+if let Some(code) = client.p2p().launch_join_code() {  // lancé via « Rejoindre »
+    let lobby = client.p2p().join_by_code(&code, my_endpoint)?;
+    connect_to(lobby.host_payload);
+}
+```
+
+- `payload` opaque, ≤ 4 KiB, base64 sur le fil. Le jeu y met son adresse publique,
+  un ticket de son netcode, ce qu'il veut. Arcane ne l'interprète jamais.
+- `join_code` : 6 caractères `[A-HJ-NP-Z2-9]` (sans ambiguïtés), unique parmi les
+  lobbies ouverts d'un jeu, généré côté backend.
+- Le lobby se ferme quand l'hôte part, `close()`, ou quand sa session de jeu (phase 1)
+  expire. Pas de migration d'hôte.
+- Présence : un membre d'un lobby `Friends*` non plein apparaît « Playing · Join »
+  chez ses amis dans le launcher ; « Rejoindre » lance le jeu avec le code
+  (`launch-context`) ou, si le jeu tourne déjà, pousse un `Invite` dans ses events.
+- `poll_events()` vide une file remplie par le thread de session ; aucun callback,
+  aucun thread supplémentaire.
+
+### C ABI
+
+```c
+int arcane_sdk_lobby_create(uint8_t max_players, int visibility, const char *payload_b64, char *buf, size_t len);
+int arcane_sdk_lobby_join_code(const char *join_code, const char *payload_b64, char *buf, size_t len);
+int arcane_sdk_lobby_join(const char *lobby_id, const char *payload_b64, char *buf, size_t len);
+int arcane_sdk_lobby_invite(const char *lobby_id, const char *to_user_id, char *err_buf, size_t err_len);
+int arcane_sdk_lobby_leave(const char *lobby_id, char *err_buf, size_t err_len);
+int arcane_sdk_lobby_close(const char *lobby_id, char *err_buf, size_t err_len);
+int arcane_sdk_launch_join_code(char *buf, size_t len);
+int arcane_sdk_lobby_events_json(char *buf, size_t len);   /* vide la file */
+```
+
+Les réponses `Lobby` sont écrites en JSON dans `buf` (même convention que
+`arcane_sdk_last_error_json`).
+
+### Fichiers
+
+`src/p2p.rs` (nouveau), `src/session.rs` (tick à 5 s tant qu'un lobby est ouvert,
+polling des events), `src/client.rs`, `src/error.rs` (`LobbyNotFound`, `LobbyFull`,
+`LobbyClosed`), `src/ffi.rs`, header, `documentation/concepts/lobbies.mdx` (nouveau,
+avec le scénario ci-dessus), références, `DESKTOP_CONTRACT.md` §11, tests loopback
+(create → code → join par code, events consommés une seule fois, `launch-context`).
+
+Reste ouvert, sans bloquer la phase : faut-il un toast « X vous invite » dans le
+launcher en plus de l'événement livré au jeu ? Le WS desktop reçoit l'invitation de
+toute façon ; c'est une décision d'UI launcher.
 
 ## 7. Compatibilité et rollout
 
@@ -336,6 +437,8 @@ phase peut être publié avant le desktop (dégradation propre), l'inverse aussi
 - Statistiques / achievements à progression (`set_progress`), leaderboards.
 - Cloud saves (annoncé dans le README, plan séparé).
 - Overlay in-game, demandes d'ami depuis le jeu, chat.
+- Transport réseau, NAT traversal, relais, migration d'hôte, matchmaking public
+  (liste de lobbies ouverts à tous).
 - Tracking des jeux sans SDK par la durée du process lancé par le desktop.
 - Pause du chrono (menu, alt-tab) : le temps de jeu est le temps process.
 - Attestation du process appelant sur le loopback (`DESKTOP_CONTRACT.md` §6).
