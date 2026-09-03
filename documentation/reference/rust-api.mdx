@@ -75,6 +75,8 @@ All read cached state — no I/O, no failure.
 
 `game_id` and `user_id` are `Option` because an older Arcane desktop build may not report them, and because a DRM-disabled title may have no ticket file to read them from.
 
+They are **plain copied fields**: a clone carries the values held when the clone was made, and `refresh()` updates only the client it is called on. A clone taken before a `refresh()` that discovers a `game_id` keeps `None` — and so reports `in_game: false` for every friend. The play session and the achievement cache are shared between clones; these two are not.
+
 ### `frame`
 
 ```rust
@@ -187,7 +189,7 @@ for friend in &list.friends {
 # Ok::<(), arcane_sdk::SdkError>(())
 ```
 
-`in_game` is `true` when the friend is playing the same `game_id` as this client; it is `false` for every friend when the client has no `game_id`.
+`in_game` is `true` when the friend is playing the same `game_id` as this client; it is `false` for every friend when the client has no `game_id` — an older desktop build, or a clone taken before the `refresh()` that discovered one (see [Accessors](#accessors)).
 
 **Errors:** `not_authenticated`, `network_required` (including under `ARCANE_OFFLINE_ONLY`, raised before any call), `arcane_unavailable`, `feature_unavailable`.
 

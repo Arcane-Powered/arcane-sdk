@@ -32,6 +32,7 @@ include = [
   "arcane_sdk_achievements_json",
   "arcane_sdk_achievement_unlock",
   "arcane_sdk_achievement_is_unlocked",
+  "arcane_sdk_friends_json",
   "arcane_sdk_is_initialized",
   "arcane_sdk_ownership",
   "arcane_sdk_ticket_expires_at",

@@ -12,8 +12,7 @@
 
 use std::time::Duration;
 
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
 
 use crate::desktop::{get_json, offline_only, DesktopCall, OFFLINE_ONLY_ENV};
 use crate::error::SdkError;
@@ -140,20 +139,38 @@ fn is_in_game(playing_game_id: Option<&str>, game_id: Option<&str>) -> bool {
     }
 }
 
+/// The C ABI rendering, in the field order the header and the docs promise —
+/// which `serde_json::json!` would not keep, as it sorts its keys.
+#[derive(Serialize)]
+struct JsonFriendList<'a> {
+    friends: Vec<JsonFriend<'a>>,
+    stale: bool,
+}
+
+#[derive(Serialize)]
+struct JsonFriend<'a> {
+    user_id: &'a str,
+    pseudo: &'a str,
+    online: bool,
+    in_game: bool,
+}
+
 pub(crate) fn to_json(list: &FriendList) -> String {
-    let friends: Vec<serde_json::Value> = list
-        .friends
-        .iter()
-        .map(|friend| {
-            json!({
-                "user_id": friend.user_id,
-                "pseudo": friend.pseudo,
-                "online": friend.online,
-                "in_game": friend.in_game,
+    let rendered = JsonFriendList {
+        friends: list
+            .friends
+            .iter()
+            .map(|friend| JsonFriend {
+                user_id: &friend.user_id,
+                pseudo: &friend.pseudo,
+                online: friend.online,
+                in_game: friend.in_game,
             })
-        })
-        .collect();
-    json!({ "friends": friends, "stale": list.stale }).to_string()
+            .collect(),
+        stale: list.stale,
+    };
+    serde_json::to_string(&rendered)
+        .unwrap_or_else(|_| r#"{"friends":[],"stale":false}"#.to_string())
 }
 
 #[cfg(test)]
@@ -237,5 +254,36 @@ mod tests {
         assert_eq!(parsed["friends"][0]["online"], true);
         assert_eq!(parsed["friends"][0]["in_game"], true);
         assert_eq!(parsed["friends"][1]["in_game"], false);
+    }
+
+    #[test]
+    fn the_json_rendering_keeps_the_documented_field_order() {
+        let rendered = to_json(&map_list(parse(WIRE), Some("game-canonical-id")));
+
+        assert!(
+            rendered.starts_with(
+                r#"{"friends":[{"user_id":"user-a","pseudo":"Ada","online":true,"in_game":true}"#
+            ),
+            "field order drifted from the header and the docs: {rendered}"
+        );
+        assert!(rendered.ends_with(r#"],"stale":false}"#));
+    }
+
+    #[test]
+    fn a_pseudo_with_json_metacharacters_survives_the_rendering() {
+        let pseudo = "A\"B\\C\nD\u{0}E 日本語 🎮";
+        let list = FriendList {
+            friends: vec![Friend {
+                user_id: "user-a".into(),
+                pseudo: pseudo.into(),
+                online: true,
+                in_game: false,
+            }],
+            stale: false,
+        };
+
+        let parsed: serde_json::Value = serde_json::from_str(&to_json(&list)).expect("json");
+
+        assert_eq!(parsed["friends"][0]["pseudo"], pseudo);
     }
 }

@@ -1054,3 +1054,63 @@ fn the_c_abi_writes_the_friend_list_as_json() {
 
     ffi::arcane_sdk_shutdown();
 }
+
+#[test]
+fn two_list_calls_make_two_requests_because_the_sdk_caches_nothing() {
+    let stub = friends_stub(FRIENDS);
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+
+    let first = client.friends().list().expect("first list");
+    let second = client.friends().list().expect("second list");
+
+    assert_eq!(first, second);
+    assert_eq!(
+        stub.matching("/v1/friends").len(),
+        2,
+        "the desktop app owns the cache, the SDK holds no list of its own"
+    );
+}
+
+/// A pseudo carrying every character class that has to survive JSON escaping on
+/// the way through the C buffer: a quote, a backslash, a newline, an escaped
+/// NUL, CJK and an emoji.
+const AWKWARD_PSEUDO: &str = "A\"B\\C\nD\u{0}E 日本語 🎮";
+
+const AWKWARD_FRIEND: Reply = Reply {
+    status: "200 OK",
+    body: "{\"friends\":[{\"user_id\":\"user-a\",\
+           \"pseudo\":\"A\\\"B\\\\C\\nD\\u0000E 日本語 🎮\",\"online\":true,\
+           \"playing_game_id\":\"game-canonical-id\"}],\"stale\":false}",
+};
+
+#[test]
+fn the_c_abi_escapes_a_pseudo_that_carries_json_metacharacters() {
+    let _stub = friends_stub(AWKWARD_FRIEND);
+
+    assert_eq!(
+        unsafe { ffi::arcane_sdk_init(c"pk_test_title".as_ptr(), std::ptr::null_mut(), 0) },
+        0
+    );
+
+    let mut buf = [0 as c_char; 2048];
+    assert!(unsafe { ffi::arcane_sdk_friends_json(buf.as_mut_ptr(), buf.len()) } > 0);
+
+    let json: Vec<u8> = buf
+        .iter()
+        .take_while(|byte| **byte != 0)
+        .map(|byte| *byte as u8)
+        .collect();
+    let rendered = String::from_utf8(json).expect("the C ABI writes utf-8");
+
+    assert!(
+        rendered.starts_with("{\"friends\":[{\"user_id\":\"user-a\",\"pseudo\":"),
+        "field order drifted from the header and the docs: {rendered}"
+    );
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&rendered).expect("the C ABI writes valid json");
+    assert_eq!(parsed["friends"][0]["pseudo"], AWKWARD_PSEUDO);
+    assert_eq!(parsed["friends"][0]["in_game"], true);
+
+    ffi::arcane_sdk_shutdown();
+}

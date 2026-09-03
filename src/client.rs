@@ -265,6 +265,11 @@ impl ArcaneClient {
     /// list of its own: the Arcane desktop app caches it and flags a stale
     /// answer.
     ///
+    /// `in_game` comes from this client's [`game_id`](ArcaneClient::game_id),
+    /// which is copied into a clone when the clone is made: a clone taken
+    /// before a [`refresh`](ArcaneClient::refresh) that discovered a `game_id`
+    /// still reports every friend as not in game.
+    ///
     /// ```no_run
     /// # let client = arcane_sdk::ArcaneClient::init("pk_...")?;
     /// client.friends().list()?;
