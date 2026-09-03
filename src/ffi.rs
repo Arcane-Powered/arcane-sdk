@@ -92,6 +92,15 @@ fn write_err(err: &SdkError, buf: *mut c_char, len: usize) {
     }
 }
 
+/// Clone the singleton out of its lock, so a blocking loopback call never holds
+/// the lock the render thread and the lifecycle entry points need. The clone
+/// shares the session and the achievement cache, so updates still land on the
+/// singleton.
+fn client_snapshot() -> Option<ArcaneClient> {
+    let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
+    guard.as_ref().cloned()
+}
+
 /// Read a client field, or return the appropriate negative code.
 fn with_client<F>(buf: *mut c_char, len: usize, read: F) -> c_int
 where
@@ -271,8 +280,7 @@ pub unsafe extern "C" fn arcane_sdk_session_json(buf: *mut c_char, len: usize) -
 /// `buf` must be null or point to at least `len` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn arcane_sdk_achievements_json(buf: *mut c_char, len: usize) -> c_int {
-    let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
-    let Some(client) = guard.as_ref() else {
+    let Some(client) = client_snapshot() else {
         let err = SdkError::not_initialized("The Arcane SDK client is not initialised.")
             .with_hint("Call arcane_sdk_init once at launch before reading achievements.");
         store_error(&err);
@@ -317,8 +325,7 @@ pub unsafe extern "C" fn arcane_sdk_achievement_unlock(
         return ARCANE_ERR_ARGUMENT;
     };
 
-    let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
-    let Some(client) = guard.as_ref() else {
+    let Some(client) = client_snapshot() else {
         let err = SdkError::not_initialized("The Arcane SDK client is not initialised.")
             .with_hint("Call arcane_sdk_init once at launch before arcane_sdk_achievement_unlock.");
         write_err(&err, err_buf, err_len);

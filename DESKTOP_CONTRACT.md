@@ -281,10 +281,15 @@ POST /v1/games/{public_key}/achievements/{key}/unlock
   The SDK treats it as a success and updates its cache.
 - The unlock is **idempotent**: a repeat answers `200` with `already_unlocked: true`,
   carrying the original `unlocked_at`. A game may call it every time its condition holds.
-- `{key}` is interpolated raw, and the SDK validates it against `[A-Za-z0-9_.-]{1,64}`
-  before building the URL — an invalid key never leaves the process (`invalid_argument`).
+- `{key}` is interpolated raw, and the SDK validates it against `[A-Za-z0-9_.-]{1,64}`,
+  minus keys made only of dots (`.`, `..`) which an HTTP client would normalise into a
+  different route, before building the URL — an invalid key never leaves the process
+  (`invalid_argument`).
 - Both calls are synchronous on the calling thread, one round trip each. The SDK never
   polls achievements in the background and never opens the deep link for them.
+- `GET /achievements` is not required to reflect an unlock that is still queued, so a
+  game that lists right after an offline unlock may see that key locked again until the
+  queue drains. The SDK's own cache keeps the unlock until the next `list`.
 
 ### What the SDK does around this
 

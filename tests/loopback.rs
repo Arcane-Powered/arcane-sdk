@@ -12,6 +12,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use std::os::raw::c_char;
+
+use arcane_sdk::ffi;
 use arcane_sdk::{ArcaneClient, OwnershipStatus, TrackingState};
 use tempfile::TempDir;
 
@@ -146,6 +149,7 @@ impl Stub {
 
 impl Drop for Stub {
     fn drop(&mut self) {
+        std::env::remove_var("ARCANE_OFFLINE_ONLY");
         std::env::remove_var("ARCANE_DRM_ROOT");
         std::env::remove_var("ARCANE_SDK_PORT");
         std::env::remove_var("ARCANE_SESSION_TICK_MS");
@@ -727,7 +731,14 @@ fn an_invalid_key_fails_before_any_request_is_sent() {
 
     let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
     let too_long = "a".repeat(65);
-    for key in ["", "first blood", "first/../blood", too_long.as_str()] {
+    for key in [
+        "",
+        "first blood",
+        "first/../blood",
+        ".",
+        "..",
+        too_long.as_str(),
+    ] {
         let err = client.achievements().unlock(key).expect_err("invalid key");
         assert_eq!(err.code(), "invalid_argument", "accepted {key:?}");
     }
@@ -737,4 +748,103 @@ fn an_invalid_key_fails_before_any_request_is_sent() {
         "an invalid key must not reach the desktop: {:?}",
         stub.requests()
     );
+}
+
+#[test]
+fn a_json_404_with_a_code_this_sdk_does_not_know_is_still_feature_unavailable() {
+    let not_found = Reply {
+        status: "404 Not Found",
+        body: r#"{"error":"not_found","message":"no such route"}"#,
+    };
+    let _stub = achievement_stub(not_found, not_found);
+
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+
+    assert_eq!(
+        client.achievements().list().expect_err("no route").code(),
+        "feature_unavailable"
+    );
+    assert_eq!(
+        client
+            .achievements()
+            .unlock("first_blood")
+            .expect_err("no route")
+            .code(),
+        "feature_unavailable"
+    );
+}
+
+#[test]
+fn offline_only_mode_refuses_both_achievement_calls_without_a_request() {
+    let stub = achievement_stub(UNLOCK_OK, ACHIEVEMENTS);
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+
+    std::env::set_var("ARCANE_OFFLINE_ONLY", "1");
+
+    let listed = client.achievements().list().expect_err("offline only");
+    assert_eq!(listed.code(), "network_required");
+    assert!(listed.is_retryable());
+
+    let unlocked = client
+        .achievements()
+        .unlock("first_blood")
+        .expect_err("offline only");
+    assert_eq!(unlocked.code(), "network_required");
+    assert!(unlocked
+        .context()
+        .iter()
+        .any(|(k, v)| k == "env" && v == "ARCANE_OFFLINE_ONLY"));
+
+    assert!(
+        stub.matching("/achievements").is_empty(),
+        "offline-only mode must not reach the desktop: {:?}",
+        stub.requests()
+    );
+
+    std::env::remove_var("ARCANE_OFFLINE_ONLY");
+}
+
+#[test]
+fn the_c_abi_singleton_sees_the_cache_filled_through_its_clone() {
+    let _stub = achievement_stub(
+        Reply {
+            status: "200 OK",
+            body: r#"{"key":"boss.01","unlocked_at":"2026-05-01T12:34:56Z",
+                      "already_unlocked":false,"queued":false}"#,
+        },
+        ACHIEVEMENTS,
+    );
+
+    assert_eq!(
+        unsafe { ffi::arcane_sdk_init(c"pk_test_title".as_ptr(), std::ptr::null_mut(), 0) },
+        0
+    );
+    assert_eq!(
+        unsafe { ffi::arcane_sdk_achievement_is_unlocked(c"first_blood".as_ptr()) },
+        -4,
+        "nothing is known before the list is loaded"
+    );
+
+    let mut buf = [0 as c_char; 1024];
+    assert!(unsafe { ffi::arcane_sdk_achievements_json(buf.as_mut_ptr(), buf.len()) } > 0);
+
+    assert_eq!(
+        unsafe { ffi::arcane_sdk_achievement_is_unlocked(c"first_blood".as_ptr()) },
+        1
+    );
+    assert_eq!(
+        unsafe { ffi::arcane_sdk_achievement_is_unlocked(c"boss.01".as_ptr()) },
+        0
+    );
+    assert_eq!(
+        unsafe { ffi::arcane_sdk_achievement_unlock(c"boss.01".as_ptr(), std::ptr::null_mut(), 0) },
+        0
+    );
+    assert_eq!(
+        unsafe { ffi::arcane_sdk_achievement_is_unlocked(c"boss.01".as_ptr()) },
+        1,
+        "the unlock landed on the singleton's cache, not on a detached clone"
+    );
+
+    ffi::arcane_sdk_shutdown();
 }

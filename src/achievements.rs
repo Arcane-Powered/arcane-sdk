@@ -70,7 +70,9 @@ pub struct Unlock {
 /// surfaces as `invalid_argument` instead of a `unknown_achievement` round trip.
 ///
 /// The charset is the one that makes it safe to interpolate the key straight
-/// into the loopback URL.
+/// into the loopback URL. `.` is allowed inside a key but a key made only of
+/// dots is not: it would be a relative path segment, which an HTTP client
+/// normalises away into a different route.
 pub(crate) fn validate_key(key: &str) -> Result<(), SdkError> {
     if key.is_empty() {
         return Err(SdkError::invalid_argument("The achievement key is empty.")
@@ -99,6 +101,13 @@ pub(crate) fn validate_key(key: &str) -> Result<(), SdkError> {
         )
         .with_context("index", index)
         .with_context("character", format!("{bad:?}")));
+    }
+    if key.bytes().all(|byte| byte == b'.') {
+        return Err(SdkError::invalid_argument(
+            "The achievement key is only dots, which is a relative path segment.",
+        )
+        .with_hint("Pass the achievement key from the Arcane portal, not `.` or `..`.")
+        .with_context("key", key));
     }
     Ok(())
 }
@@ -456,6 +465,9 @@ mod tests {
             "first\n",
             " first",
             "prémier",
+            ".",
+            "..",
+            "...",
         ] {
             let err = validate_key(key).unwrap_err();
             assert_eq!(err.code(), "invalid_argument", "accepted {key:?}");

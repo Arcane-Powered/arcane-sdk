@@ -95,7 +95,7 @@ The one thing that is genuinely lost is a call made while the **desktop app is n
 
 | Code | When |
 |------|------|
-| `invalid_argument` | The key is empty, over 64 bytes, or has a character outside `A–Z a–z 0–9 _ - .` — raised before any network call |
+| `invalid_argument` | The key is empty, over 64 bytes, made only of dots (`.` / `..` would be a path segment), or has a character outside `A–Z a–z 0–9 _ - .` — raised before any network call |
 | `unknown_achievement` | The title does not define that key. Check the portal |
 | `not_owned` | The signed-in account does not own the title |
 | `feature_unavailable` | The Arcane desktop app predates the achievement routes — update it |

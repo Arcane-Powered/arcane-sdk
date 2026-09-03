@@ -226,13 +226,10 @@ pub struct Unlock {
 pub enum ErrorCode { /* one variant per code in the Errors table */ }
 
 pub const MAX_PUBLIC_KEY_LEN: usize = 256;
+pub const MAX_ACHIEVEMENT_KEY_LEN: usize = 64;
 ```
 
 `OwnershipStatus` implements `Display` (`"owned"` / `"drm_disabled"`), and `TrackingState` does too (`"active"` / `"pending"` / `"disabled"`). `SessionSnapshot` is `Debug + Clone`; `Achievement` and `Unlock` are `Debug + Clone + PartialEq`.
-
-```rust
-pub const MAX_ACHIEVEMENT_KEY_LEN: usize = 64;
-```
 
 ## Crate types
 
