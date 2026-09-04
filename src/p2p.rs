@@ -9,7 +9,7 @@
 //!
 //! ```no_run
 //! # use arcane_sdk::Visibility;
-//! # let client = arcane_sdk::ArcaneClient::init("pk_...")?;
+//! # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
 //! # let my_endpoint = b"udp://203.0.113.7:7777";
 //! let lobby = client.p2p().create_lobby(4, Visibility::FriendsAndCode, my_endpoint)?;
 //! println!("join code: {:?}", lobby.join_code);
@@ -383,10 +383,10 @@ impl P2pState {
 /// Returns the failure to record on the session, if any. A
 /// `feature_unavailable` is not one: it retires polling silently and shows up
 /// as [`LobbyPollingState::Unavailable`] in the session snapshot instead.
-pub(crate) fn poll_once(public_key: &str, state: &P2pState) -> Option<SdkError> {
+pub(crate) fn poll_once(game_id: &str, state: &P2pState) -> Option<SdkError> {
     let cursor = state.lock().cursor.clone();
     let response: WireEvents =
-        match get_json(&events_path(public_key, cursor.as_deref()), CALL_TIMEOUT) {
+        match get_json(&events_path(game_id, cursor.as_deref()), CALL_TIMEOUT) {
             Ok(response) => response,
             Err(call) => {
                 let err = call.into_sdk_error();
@@ -424,14 +424,14 @@ struct Incoming {
 /// nothing.
 #[derive(Debug)]
 pub struct P2p<'a> {
-    public_key: &'a str,
+    game_id: &'a str,
     state: &'a P2pState,
 }
 
 impl<'a> P2p<'a> {
-    pub(crate) fn new(public_key: &'a str, state: &'a P2pState) -> Self {
+    pub(crate) fn new(game_id: &'a str, state: &'a P2pState) -> Self {
         state.arm();
-        Self { public_key, state }
+        Self { game_id, state }
     }
 
     /// Open a lobby with this player as its host.
@@ -624,7 +624,7 @@ impl<'a> P2p<'a> {
     /// offline-only mode. Never fails.
     ///
     /// ```no_run
-    /// # let client = arcane_sdk::ArcaneClient::init("pk_...")?;
+    /// # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
     /// # let my_endpoint = b"udp://203.0.113.7:7777";
     /// if let Some(code) = client.p2p().launch_join_code() {
     ///     let lobby = client.p2p().join_by_code(&code, my_endpoint)?;
@@ -646,7 +646,7 @@ impl<'a> P2p<'a> {
         }
 
         let fetched = match get_json::<WireLaunchContext>(
-            &format!("{GAMES_PATH_PREFIX}/{}/launch-context", self.public_key),
+            &format!("{GAMES_PATH_PREFIX}/{}/launch-context", self.game_id),
             CALL_TIMEOUT,
         ) {
             Ok(context) => context
@@ -675,7 +675,7 @@ impl<'a> P2p<'a> {
     ///
     /// ```no_run
     /// # use arcane_sdk::LobbyEvent;
-    /// # let client = arcane_sdk::ArcaneClient::init("pk_...")?;
+    /// # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
     /// for event in client.p2p().poll_events() {
     ///     if let LobbyEvent::MemberJoined { payload, .. } = event {
     ///         // connect_to(&payload)
@@ -720,7 +720,7 @@ impl<'a> P2p<'a> {
     }
 
     fn lobbies_path(&self) -> String {
-        format!("{GAMES_PATH_PREFIX}/{}/lobbies", self.public_key)
+        format!("{GAMES_PATH_PREFIX}/{}/lobbies", self.game_id)
     }
 
     fn guard_offline(&self, action: &str) -> Result<(), SdkError> {
@@ -975,8 +975,8 @@ fn decode_payload(encoded: Option<&str>, field: &str) -> Result<Vec<u8>, SdkErro
     Ok(decoded)
 }
 
-fn events_path(public_key: &str, cursor: Option<&str>) -> String {
-    let base = format!("{GAMES_PATH_PREFIX}/{public_key}/lobbies/events");
+fn events_path(game_id: &str, cursor: Option<&str>) -> String {
+    let base = format!("{GAMES_PATH_PREFIX}/{game_id}/lobbies/events");
     match cursor {
         Some(cursor) => format!("{base}?after={}", encode_query(cursor)),
         None => base,
@@ -1330,16 +1330,16 @@ mod tests {
     #[test]
     fn the_events_path_carries_the_cursor_only_once_there_is_one() {
         assert_eq!(
-            events_path("pk_test", None),
-            "/v1/games/pk_test/lobbies/events"
+            events_path("7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34", None),
+            "/v1/games/7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34/lobbies/events"
         );
         assert_eq!(
-            events_path("pk_test", Some("c-2")),
-            "/v1/games/pk_test/lobbies/events?after=c-2"
+            events_path("7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34", Some("c-2")),
+            "/v1/games/7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34/lobbies/events?after=c-2"
         );
         assert_eq!(
-            events_path("pk_test", Some("a b&c=1/2")),
-            "/v1/games/pk_test/lobbies/events?after=a%20b%26c%3D1%2F2"
+            events_path("7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34", Some("a b&c=1/2")),
+            "/v1/games/7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34/lobbies/events?after=a%20b%26c%3D1%2F2"
         );
     }
 
@@ -1353,7 +1353,7 @@ mod tests {
         assert_eq!(state.polling(), LobbyPollingState::Off);
         assert!(!state.armed());
 
-        P2p::new("pk_test", &state);
+        P2p::new("7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34", &state);
 
         assert_eq!(state.polling(), LobbyPollingState::Active);
         assert!(state.armed());
@@ -1362,13 +1362,13 @@ mod tests {
     #[test]
     fn an_unavailable_desktop_retires_polling_for_good() {
         let state = state();
-        P2p::new("pk_test", &state);
+        P2p::new("7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34", &state);
         state.retire();
 
         assert!(!state.armed());
         assert_eq!(state.polling(), LobbyPollingState::Unavailable);
 
-        P2p::new("pk_test", &state);
+        P2p::new("7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34", &state);
 
         assert!(!state.armed(), "a later p2p() call must not re-arm polling");
         assert_eq!(state.polling(), LobbyPollingState::Unavailable);

@@ -208,13 +208,13 @@ impl From<WireAchievement> for Achievement {
 /// own, so keeping one around buys nothing.
 #[derive(Debug)]
 pub struct Achievements<'a> {
-    public_key: &'a str,
+    game_id: &'a str,
     cache: &'a AchievementCache,
 }
 
 impl<'a> Achievements<'a> {
-    pub(crate) fn new(public_key: &'a str, cache: &'a AchievementCache) -> Self {
-        Self { public_key, cache }
+    pub(crate) fn new(game_id: &'a str, cache: &'a AchievementCache) -> Self {
+        Self { game_id, cache }
     }
 
     /// Every achievement this title defines, with this player's unlock state.
@@ -291,13 +291,13 @@ impl<'a> Achievements<'a> {
     }
 
     fn list_path(&self) -> String {
-        format!("{GAMES_PATH_PREFIX}/{}/achievements", self.public_key)
+        format!("{GAMES_PATH_PREFIX}/{}/achievements", self.game_id)
     }
 
     fn unlock_path(&self, key: &str) -> String {
         format!(
             "{GAMES_PATH_PREFIX}/{}/achievements/{key}/unlock",
-            self.public_key
+            self.game_id
         )
     }
 

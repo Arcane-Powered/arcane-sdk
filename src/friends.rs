@@ -29,8 +29,8 @@ pub struct Friend {
     pub pseudo: String,
     /// Whether they are signed in to Arcane right now.
     pub online: bool,
-    /// Whether they are playing **this** title right now. Always `false` when
-    /// the SDK does not know this title's `game_id`.
+    /// Whether they are playing **this** title right now — the title whose
+    /// `game_id` was passed to `init`.
     pub in_game: bool,
 }
 
@@ -69,11 +69,11 @@ struct WireFriend {
 /// so keeping one around buys nothing.
 #[derive(Debug)]
 pub struct Friends<'a> {
-    game_id: Option<&'a str>,
+    game_id: &'a str,
 }
 
 impl<'a> Friends<'a> {
-    pub(crate) fn new(game_id: Option<&'a str>) -> Self {
+    pub(crate) fn new(game_id: &'a str) -> Self {
         Self { game_id }
     }
 
@@ -114,7 +114,7 @@ impl<'a> Friends<'a> {
     }
 }
 
-fn map_list(wire: WireFriendList, game_id: Option<&str>) -> FriendList {
+fn map_list(wire: WireFriendList, game_id: &str) -> FriendList {
     FriendList {
         friends: wire
             .friends
@@ -130,13 +130,9 @@ fn map_list(wire: WireFriendList, game_id: Option<&str>) -> FriendList {
     }
 }
 
-/// A friend is in this game when the title they are playing is this title. With
-/// no `game_id` the SDK cannot tell, and says `false` rather than guessing.
-fn is_in_game(playing_game_id: Option<&str>, game_id: Option<&str>) -> bool {
-    match (playing_game_id, game_id) {
-        (Some(playing), Some(game_id)) => !game_id.is_empty() && playing == game_id,
-        _ => false,
-    }
+/// A friend is in this game when the title they are playing is this title.
+fn is_in_game(playing_game_id: Option<&str>, game_id: &str) -> bool {
+    playing_game_id == Some(game_id)
 }
 
 /// The C ABI rendering, in the field order the header and the docs promise —
@@ -179,7 +175,7 @@ mod tests {
 
     const WIRE: &str = r#"{
         "friends": [
-            {"user_id":"user-a","pseudo":"Ada","online":true,"playing_game_id":"game-canonical-id"},
+            {"user_id":"user-a","pseudo":"Ada","online":true,"playing_game_id":"9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413"},
             {"user_id":"user-b","pseudo":"Bo","online":true,"playing_game_id":"another-game"},
             {"user_id":"user-c","pseudo":"Cy","online":false,"playing_game_id":null}
         ],
@@ -192,7 +188,7 @@ mod tests {
 
     #[test]
     fn the_wire_shape_maps_onto_the_public_struct() {
-        let list = map_list(parse(WIRE), Some("game-canonical-id"));
+        let list = map_list(parse(WIRE), "9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413");
 
         assert_eq!(list.friends.len(), 3);
         assert!(!list.stale);
@@ -210,8 +206,8 @@ mod tests {
     }
 
     #[test]
-    fn without_a_game_id_nobody_is_in_game() {
-        let list = map_list(parse(WIRE), None);
+    fn another_titles_id_marks_nobody_in_game() {
+        let list = map_list(parse(WIRE), "some-other-title");
 
         assert!(list.friends.iter().all(|friend| !friend.in_game));
         assert!(list.friends[0].online, "presence still comes through");
@@ -219,7 +215,7 @@ mod tests {
 
     #[test]
     fn stale_passes_through() {
-        let list = map_list(parse(r#"{"friends":[],"stale":true}"#), Some("game"));
+        let list = map_list(parse(r#"{"friends":[],"stale":true}"#), "game");
 
         assert!(list.stale);
         assert!(list.friends.is_empty());
@@ -227,7 +223,7 @@ mod tests {
 
     #[test]
     fn a_missing_body_field_reads_as_absent_rather_than_failing() {
-        let list = map_list(parse(r#"{"friends":[{"user_id":"user-a"}]}"#), Some("game"));
+        let list = map_list(parse(r#"{"friends":[{"user_id":"user-a"}]}"#), "game");
 
         assert!(!list.stale);
         assert_eq!(list.friends[0].pseudo, "");
@@ -236,16 +232,18 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_game_id_never_matches() {
-        assert!(!is_in_game(Some(""), Some("")));
-        assert!(!is_in_game(None, Some("game")));
-        assert!(!is_in_game(Some("game"), None));
-        assert!(is_in_game(Some("game"), Some("game")));
+    fn only_the_same_title_counts_as_in_game() {
+        assert!(is_in_game(Some("game"), "game"));
+        assert!(!is_in_game(Some("another-game"), "game"));
+        assert!(!is_in_game(None, "game"));
     }
 
     #[test]
     fn the_json_rendering_carries_every_field() {
-        let rendered = to_json(&map_list(parse(WIRE), Some("game-canonical-id")));
+        let rendered = to_json(&map_list(
+            parse(WIRE),
+            "9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413",
+        ));
         let parsed: serde_json::Value = serde_json::from_str(&rendered).expect("json");
 
         assert_eq!(parsed["stale"], false);
@@ -258,7 +256,10 @@ mod tests {
 
     #[test]
     fn the_json_rendering_keeps_the_documented_field_order() {
-        let rendered = to_json(&map_list(parse(WIRE), Some("game-canonical-id")));
+        let rendered = to_json(&map_list(
+            parse(WIRE),
+            "9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413",
+        ));
 
         assert!(
             rendered.starts_with(

@@ -38,7 +38,6 @@ pub(crate) struct OwnershipTicketClaims {
 pub(crate) struct OwnershipCheck {
     pub status: OwnershipStatus,
     pub user_id: Option<String>,
-    pub game_id: Option<String>,
     pub ticket_expires_at: Option<i64>,
     pub device_hash: String,
 }
@@ -98,7 +97,7 @@ fn load_decoding_key(kid: Option<&str>) -> Result<DecodingKey, SdkError> {
 
 pub(crate) fn verify_ticket(
     jwt: &str,
-    public_key: &str,
+    game_id: &str,
     expected_device_hash: &str,
 ) -> Result<OwnershipTicketClaims, SdkError> {
     let header = decode_header(jwt).map_err(|e| {
@@ -137,14 +136,14 @@ pub(crate) fn verify_ticket(
         .with_context("ticket_iat", claims.iat)
         .with_context("ticket_nbf", claims.nbf));
     }
-    if claims.gid != public_key {
+    if claims.gid != game_id {
         return Err(SdkError::ticket_invalid(
             "The cached ticket was issued for a different title.",
         )
         .with_hint(
-            "Confirm the public key compiled into your build matches the one in the Arcane portal.",
+            "Confirm the game id compiled into your build matches the one in the Arcane portal.",
         )
-        .with_context("expected", public_key)
+        .with_context("expected", game_id)
         .with_context("ticket_gid", &claims.gid));
     }
     if !claims.own {
@@ -153,7 +152,7 @@ pub(crate) fn verify_ticket(
                 .with_hint(
                     "Refresh via Arcane desktop; the account may have lost access to this title.",
                 )
-                .with_context("public_key", public_key),
+                .with_context("game_id", game_id),
         );
     }
     if claims.dev != expected_device_hash {
@@ -187,21 +186,19 @@ fn non_empty(value: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-/// Verify the cached ticket for `public_key` without touching the network.
-pub(crate) fn check_ownership_offline(public_key: &str) -> Result<OwnershipCheck, SdkError> {
-    let resolved = resolve_ticket(public_key)?;
+/// Verify the cached ticket for `game_id` without touching the network.
+pub(crate) fn check_ownership_offline(game_id: &str) -> Result<OwnershipCheck, SdkError> {
+    let resolved = resolve_ticket(game_id)?;
     let file = &resolved.file;
     check_clock_rollback(file)?;
 
     let local_device = device_hash()?;
     let user_id = non_empty(&file.user_id);
-    let game_id = non_empty(&file.game_id);
 
     if !file.drm_enabled {
         return Ok(OwnershipCheck {
             status: OwnershipStatus::DrmDisabled,
             user_id,
-            game_id,
             ticket_expires_at: None,
             device_hash: local_device,
         });
@@ -212,7 +209,7 @@ pub(crate) fn check_ownership_offline(public_key: &str) -> Result<OwnershipCheck
             "DRM is enabled for this title but the cached ticket is empty.",
         )
         .with_hint("Open the Arcane desktop app while online so it can mint a ticket.")
-        .with_context("public_key", public_key)
+        .with_context("game_id", game_id)
         .with_context("path", resolved.path.display()));
     }
 
@@ -226,12 +223,11 @@ pub(crate) fn check_ownership_offline(public_key: &str) -> Result<OwnershipCheck
         .with_context("path", resolved.path.display()));
     }
 
-    let claims = verify_ticket(&file.ticket, public_key, &local_device)?;
+    let claims = verify_ticket(&file.ticket, game_id, &local_device)?;
 
     Ok(OwnershipCheck {
         status: OwnershipStatus::Owned,
         user_id: user_id.or_else(|| non_empty(&claims.sub)),
-        game_id,
         ticket_expires_at: Some(claims.exp),
         device_hash: local_device,
     })

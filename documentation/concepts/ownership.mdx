@@ -1,25 +1,27 @@
 ---
 title: "Ownership model"
 description: "How ArcaneClient::init checks ownership, and when DRM is skipped."
-keywords: ["ownership", "ArcaneClient", "drm", "public key", "portal", "session"]
+keywords: ["ownership", "ArcaneClient", "drm", "game id", "portal", "session"]
 ---
 
-**Building the client is the ownership check.** `ArcaneClient::init` runs it once at launch with your portal public key; you do not add a second ownership step.
+**Building the client is the ownership check.** `ArcaneClient::init` runs it once at launch with your title's game id; you do not add a second ownership step.
 
 Init prefers a local ticket cache. When the ticket is missing or expired, it contacts the Arcane desktop app on loopback (`127.0.0.1:39284`) to refresh online — and may open Arcane via the `arcane-powered://` deep link if the app is not running.
 
-## Portal public key
+## Game id
 
-The string you pass to `init` is the **public key** generated for your title in the Arcane portal. It keys the local flag and ticket files, and must match the ticket's `gid` claim.
+The string you pass to `init` is the **game id** of your title in the Arcane portal. It keys the local flag and ticket files, names the title in every desktop route, and must match the ticket's `gid` claim.
 
-It is validated before any I/O: ASCII letters, digits, `_`, `-`, `.`, at most 256 bytes. Anything else is `invalid_public_key`.
+It is validated before any I/O: ASCII letters, digits, `_`, `-`, `.`, at most 256 bytes. Anything else is `invalid_game_id`.
+
+It is **not a secret**. The id identifies a title; it proves nothing on its own. What proves ownership is the signed ticket below — an ES256 JWT bound to an account and a device — which nobody can mint from the id.
 
 ## Default init policy
 
-`ArcaneClient::init(public_key)`:
+`ArcaneClient::init(game_id)`:
 
-1. Validates the public key
-2. Reads `flags/{public_key}.json` for `drm_enabled`
+1. Validates the game id
+2. Reads `flags/{game_id}.json` for `drm_enabled`
 3. If `drm_enabled` is `false` → `OwnershipStatus::DrmDisabled` (no ticket required)
 4. Otherwise (flag `true` or missing) → runs the offline ownership check
 5. If the offline check fails with `ticket_missing` or `ticket_expired`:
@@ -29,7 +31,7 @@ It is validated before any I/O: ASCII letters, digits, `_`, `-`, `.`, at most 25
    - Re-runs the offline check against the refreshed cache
    - If the desktop reported DRM is off for this title and no ticket appeared, resolves to `DrmDisabled` rather than failing
 
-Everything learned along the way — `user_id`, `game_id`, ticket expiry — is kept on the client. See [Client](/concepts/client).
+Everything learned along the way — `user_id`, ticket expiry — is kept on the client, alongside the `game_id` init was given. See [Client](/concepts/client).
 
 ## Offline check (what init runs when DRM is on)
 
@@ -46,7 +48,7 @@ Everything learned along the way — `user_id`, `game_id`, ticket expiry — is 
 
 | `session.json` | Result |
 |---|---|
-| Names a user | Reads exactly `tickets/{user_id}/{public_key}.ticket`. No fallback. |
+| Names a user | Reads exactly `tickets/{user_id}/{game_id}.ticket`. No fallback. |
 | Records a signed-out state | `not_authenticated` |
 | Absent (older Arcane desktop) | Scans ticket directories: one match is used, several give `ambiguous_session` |
 
@@ -72,8 +74,8 @@ An unrecognised desktop error code becomes `ticket_invalid` with the original st
 ├── machine_id
 ├── jwks.json
 ├── session.json
-├── flags/{public_key}.json
-└── tickets/{user_id}/{public_key}.ticket
+├── flags/{game_id}.json
+└── tickets/{user_id}/{game_id}.ticket
 ```
 
 `{app_data}` is the OS application data directory (the SDK resolves this internally).
@@ -82,7 +84,7 @@ An unrecognised desktop error code becomes `ticket_invalid` with the original st
 
 | Claim | Role |
 |-------|------|
-| `gid` | Must match the portal public key you passed to init |
+| `gid` | Must match the game id you passed to init |
 | `own` | Must be `true` |
 | `dev` | Must match local `device_hash` |
 | `iat` / `nbf` / `exp` | Time bounds (±5 min skew) |
@@ -98,4 +100,4 @@ Verification keys come from `jwks.json`. The JWT `kid` selects the key when pres
 
 ## What ownership does not prove
 
-The SDK verifies that *this machine, for this account, holds a valid signed entitlement for this title*. It does not — and cannot — prove that the process making the call is genuinely your game. Any secret compiled into a game binary is extractable, and the init call itself can be patched out. Treat ownership as a platform integration, not as anti-tamper; enforcement that must hold against a determined attacker belongs on the server.
+The SDK verifies that *this machine, for this account, holds a valid signed entitlement for this title*. It does not — and cannot — prove that the process making the call is genuinely your game. Any secret compiled into a game binary is extractable, and the init call itself can be patched out. That is also why the game id is not treated as a secret: hiding it would buy nothing. Treat ownership as a platform integration, not as anti-tamper; enforcement that must hold against a determined attacker belongs on the server.

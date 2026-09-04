@@ -52,8 +52,10 @@ struct OwnershipRefreshOk {
     /// Added by newer Arcane desktop builds; absent on older ones.
     #[serde(default)]
     user_id: Option<String>,
-    /// Canonical title id, added by newer Arcane desktop builds.
+    /// Echo of the game id in the request path. Read for diagnostics only — the
+    /// SDK already knows the id the game passed to `init`.
     #[serde(default)]
+    #[allow(dead_code)]
     game_id: Option<String>,
 }
 
@@ -63,7 +65,6 @@ struct OwnershipRefreshOk {
 pub(crate) struct RefreshOutcome {
     pub drm_enabled: bool,
     pub user_id: Option<String>,
-    pub game_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -292,10 +293,10 @@ fn health_error(call: DesktopCall) -> SdkError {
 
 /// Open the Arcane desktop deep link so the app starts (or focuses) and serves loopback.
 ///
-/// `public_key` is interpolated raw; it is validated against a strict charset by
-/// [`crate::client::validate_public_key`] before it can reach this function.
-pub(crate) fn open_arcane_deep_link(public_key: &str) -> Result<(), SdkError> {
-    let url = format!("arcane-powered://sdk/ownership?game_id={public_key}");
+/// `game_id` is interpolated raw; it is validated against a strict charset by
+/// [`crate::client::validate_game_id`] before it can reach this function.
+pub(crate) fn open_arcane_deep_link(game_id: &str) -> Result<(), SdkError> {
+    let url = format!("arcane-powered://sdk/ownership?game_id={game_id}");
     open::that(&url).map_err(|e| {
         SdkError::arcane_unavailable(format!("Could not open Arcane Powered: {e}"))
             .with_hint("Install the Arcane Powered desktop app, or launch it manually and retry.")
@@ -304,12 +305,12 @@ pub(crate) fn open_arcane_deep_link(public_key: &str) -> Result<(), SdkError> {
 }
 
 /// Ensure the desktop loopback is up, launching Arcane via deep link if needed.
-pub(crate) fn ensure_arcane_desktop(public_key: &str) -> Result<HealthResponse, SdkError> {
+pub(crate) fn ensure_arcane_desktop(game_id: &str) -> Result<HealthResponse, SdkError> {
     if let Ok(health) = probe_health() {
         return Ok(health);
     }
 
-    open_arcane_deep_link(public_key)?;
+    open_arcane_deep_link(game_id)?;
 
     let started = Instant::now();
     let deadline = started + LAUNCH_TIMEOUT;
@@ -398,7 +399,7 @@ fn map_known_desktop_error(body: &SdkErrorBody) -> Option<SdkError> {
         .with_context("detail", detail),
         "game_not_found" => SdkError::ticket_invalid("Arcane does not know this title.")
             .with_hint(
-                "Confirm the public key compiled into your build matches the one in the \
+                "Confirm the game id compiled into your build matches the one in the \
                  Arcane portal, and that the title is published.",
             )
             .with_context("detail", detail),
@@ -421,9 +422,9 @@ fn unknown_desktop_error(body: &SdkErrorBody) -> SdkError {
         .with_context("detail", detail_of(body))
 }
 
-/// Ask the desktop to refresh (or issue) an ownership ticket for `public_key`.
-pub(crate) fn refresh_ownership_via_desktop(public_key: &str) -> Result<RefreshOutcome, SdkError> {
-    let health = ensure_arcane_desktop(public_key)?;
+/// Ask the desktop to refresh (or issue) an ownership ticket for `game_id`.
+pub(crate) fn refresh_ownership_via_desktop(game_id: &str) -> Result<RefreshOutcome, SdkError> {
+    let health = ensure_arcane_desktop(game_id)?;
 
     if !health.ok {
         return Err(SdkError::arcane_unavailable(
@@ -437,12 +438,12 @@ pub(crate) fn refresh_ownership_via_desktop(public_key: &str) -> Result<RefreshO
         return Err(
             SdkError::not_authenticated("Nobody is signed in to the Arcane desktop app.")
                 .with_hint("Sign in to the Arcane desktop app, then retry.")
-                .with_context("public_key", public_key),
+                .with_context("game_id", game_id),
         );
     }
 
     let parsed: OwnershipRefreshOk = post_json(
-        &format!("{GAMES_PATH_PREFIX}/{public_key}/ownership/refresh"),
+        &format!("{GAMES_PATH_PREFIX}/{game_id}/ownership/refresh"),
         None,
         DEFAULT_READ_TIMEOUT,
     )
@@ -454,13 +455,12 @@ pub(crate) fn refresh_ownership_via_desktop(public_key: &str) -> Result<RefreshO
             "Arcane desktop could not issue an ownership ticket.",
         )
         .with_hint("Retry; if it persists, sign out and back in to Arcane desktop.")
-        .with_context("public_key", public_key));
+        .with_context("game_id", game_id));
     }
 
     Ok(RefreshOutcome {
         drm_enabled: parsed.drm_enabled,
         user_id: parsed.user_id.or(health.user_id),
-        game_id: parsed.game_id,
     })
 }
 

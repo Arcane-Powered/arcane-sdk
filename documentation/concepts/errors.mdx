@@ -17,12 +17,12 @@ Every failure is an `SdkError`. It carries four things, and each answers a diffe
 
 ```
 ticket_invalid: The cached ticket was issued for a different title.
-  — Confirm the public key compiled into your build matches the one in the
-    Arcane portal. (expected=pk_abc, ticket_gid=pk_xyz)
+  — Confirm the game id compiled into your build matches the one in the
+    Arcane portal. (expected=9a1f8c3e-…, ticket_gid=4c02b7d5-…)
 ```
 
 ```rust
-match ArcaneClient::init(PUBLIC_KEY) {
+match ArcaneClient::init(GAME_ID) {
     Ok(client) => start_game(client),
     Err(err) => {
         eprintln!("{err}");                    // full detail for your logs
@@ -38,11 +38,11 @@ match ArcaneClient::init(PUBLIC_KEY) {
 
 | Code | Problem | What to do | Retryable |
 |------|---------|------------|-----------|
-| `invalid_public_key` | Empty, over 256 bytes, or a character outside `A–Z a–z 0–9 _ - .` | Check the value you compiled in — the context names the bad character and its index | no |
-| `invalid_argument` | An argument other than the public key is empty, oversized, or has a forbidden character: an [achievement](/concepts/achievements) key over 64 bytes or outside `a–z 0–9 _ - .` (keys are lowercase), a [lobby](/concepts/lobbies) payload over 4096 bytes, a join code that is not six characters of `A–H J–N P–Z 2–9`, or a lobby / user id outside `A–Za–z0–9-` | Check the value. Raised before any network call, or when Arcane rejects it | no |
+| `invalid_game_id` | Empty, over 256 bytes, or a character outside `A–Z a–z 0–9 _ - .` | Check the value you compiled in — the context names the bad character and its index | no |
+| `invalid_argument` | An argument other than the game id is empty, oversized, or has a forbidden character: an [achievement](/concepts/achievements) key over 64 bytes or outside `a–z 0–9 _ - .` (keys are lowercase), a [lobby](/concepts/lobbies) payload over 4096 bytes, a join code that is not six characters of `A–H J–N P–Z 2–9`, or a lobby / user id outside `A–Za–z0–9-` | Check the value. Raised before any network call, or when Arcane rejects it | no |
 | `ticket_missing` | No ticket cached for the signed-in account, or an empty ticket while DRM is on | Open Arcane desktop once while online. `init` normally refreshes this for you | yes |
 | `ticket_expired` | JWT past `exp` (beyond ±5 min skew) | `init` normally refreshes this for you; otherwise reconnect online via Arcane | yes |
-| `ticket_invalid` | Bad JWT, missing/unreadable JWKS, unknown `kid`, wrong title, `own=false`, corrupt file | Refresh via Arcane. If `expected` ≠ `ticket_gid` in the context, your public key is wrong | no |
+| `ticket_invalid` | Bad JWT, missing/unreadable JWKS, unknown `kid`, wrong title, `own=false`, corrupt file | Refresh via Arcane. If `expected` ≠ `ticket_gid` in the context, your game id is wrong | no |
 | `device_mismatch` | Ticket bound to another machine | Refresh ownership on this machine while online. Context shows both fingerprints | no |
 | `clock_rollback` | System clock earlier than the ticket or the last-seen time | Enable automatic date & time, then retry | no |
 | `not_owned` | Cloud confirmed this account does not own the title | Send the player to the Arcane Store or marketplace | no |
@@ -71,7 +71,7 @@ The play session opened by `init` never surfaces an error. When the desktop app 
 
 ### `ArcaneClient::refresh` / `arcane_sdk_refresh`
 
-Same codes as init, minus `invalid_public_key` (the key was already validated). Always contacts the desktop app, so it never returns a purely offline result. On failure the client keeps its previous state.
+Same codes as init, minus `invalid_game_id` (the id was already validated). Always contacts the desktop app, so it never returns a purely offline result. On failure the client keeps its previous state.
 
 Under `ARCANE_OFFLINE_ONLY` it returns `network_required` immediately.
 
@@ -109,7 +109,7 @@ A successful check returns `OwnershipStatus`:
 
 | Value | Meaning |
 |-------|---------|
-| `Owned` | Valid ticket for this public key, this account, and this device |
+| `Owned` | Valid ticket for this game id, this account, and this device |
 | `DrmDisabled` | DRM is off for this title; no ticket required |
 
 Both mean **launch the game**. `is_owned()` distinguishes them if you need to.
@@ -128,7 +128,7 @@ Two conventions, by function kind.
 
 `arcane_sdk_frame` and `arcane_sdk_shutdown` return nothing and cannot fail.
 
-### Getters — `arcane_sdk_user_id`, `arcane_sdk_game_id`, `arcane_sdk_public_key`, `arcane_sdk_device_hash`, `arcane_sdk_session_json`, `arcane_sdk_achievements_json`, `arcane_sdk_friends_json`, `arcane_sdk_lobby_create`, `arcane_sdk_lobby_join_code`, `arcane_sdk_lobby_join`, `arcane_sdk_launch_join_code`, `arcane_sdk_lobby_events_json`, `arcane_sdk_last_error_json`
+### Getters — `arcane_sdk_user_id`, `arcane_sdk_game_id`, `arcane_sdk_device_hash`, `arcane_sdk_session_json`, `arcane_sdk_achievements_json`, `arcane_sdk_friends_json`, `arcane_sdk_lobby_create`, `arcane_sdk_lobby_join_code`, `arcane_sdk_lobby_join`, `arcane_sdk_launch_join_code`, `arcane_sdk_lobby_events_json`, `arcane_sdk_last_error_json`
 
 | Return | Meaning |
 |--------|---------|
@@ -136,7 +136,7 @@ Two conventions, by function kind.
 | `-1` | Not initialised |
 | `-2` | Null buffer or zero length |
 | `-3` | Buffer too small — the buffer is left as an empty string, never truncated |
-| `-4` | Value not available (for example no `game_id` reported yet, or the achievement list could not be fetched — read `arcane_sdk_last_error_json` for why) |
+| `-4` | Value not available (for example no `user_id` known yet, or the achievement list could not be fetched — read `arcane_sdk_last_error_json` for why) |
 
 `arcane_sdk_lobby_events_json` drains its queue **only** once the JSON is in your buffer: a `-3` leaves every event queued for a retry with a bigger buffer.
 
@@ -156,7 +156,7 @@ if (arcane_sdk_last_error_json(json, sizeof(json)) > 0) {
 
 ```c
 char err[512];
-if (arcane_sdk_init(PUBLIC_KEY, err, sizeof(err)) != 0) {
+if (arcane_sdk_init(GAME_ID, err, sizeof(err)) != 0) {
   /* err starts with the code: "not_owned: …", "network_required: …" */
 }
 ```

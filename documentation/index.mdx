@@ -11,11 +11,11 @@ The **Arcane SDK** is how your game talks to **Arcane Powered**. Link it once (R
 For launch, you do two things:
 
 1. Link the SDK
-2. Build an `ArcaneClient` with your **portal public key**
+2. Build an `ArcaneClient` with your title's **game id**
 
 That is the default path. Building the client *is* the ownership check — unless the cached `drm_enabled` flag is `false`, in which case it succeeds without a ticket. When a ticket is missing or expired, init asks the Arcane desktop app to refresh (and may open Arcane). You do not wire a separate ownership step.
 
-The client then holds what your game needs for the rest of the session — the signed-in `user_id`, the title's `game_id`, the ownership status, the device fingerprint — so nothing downstream has to pass the public key around again.
+The client then holds what your game needs for the rest of the session — the signed-in `user_id`, that `game_id`, the ownership status, the device fingerprint — so nothing downstream has to pass the id around again.
 
 <Columns cols={2}>
   <Card title="Quickstart" icon="rocket" href="/quickstart">
@@ -41,9 +41,9 @@ The client then holds what your game needs for the rest of the session — the s
   </Card>
 </Columns>
 
-## Portal public key
+## Game id
 
-Each title gets a **public key** generated in the Arcane portal. Pass that value to `ArcaneClient::init`. It identifies your game to Arcane Powered — it is not a hand-picked slug or package name.
+Each title has a **game id** in the Arcane portal. Pass that value to `ArcaneClient::init`. It identifies your game to Arcane Powered — it is not a hand-picked slug or package name, and it is not a secret: it names your title, and ownership is proven by the signed ticket the SDK checks, never by knowing the id.
 
 ## Shipped today
 

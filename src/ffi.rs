@@ -128,30 +128,30 @@ where
 
 /// Verify ownership and build the process-wide client. Call once at launch.
 ///
-/// `public_key` must be a NUL-terminated UTF-8 string — the public key generated
-/// for this title in the Arcane portal.
+/// `game_id` must be a NUL-terminated UTF-8 string — the id of this title in the
+/// Arcane portal.
 ///
-/// Returns 0 on success, 1 if `public_key` is null or not UTF-8, 2 on an SDK
+/// Returns 0 on success, 1 if `game_id` is null or not UTF-8, 2 on an SDK
 /// error written to `err_buf` as `"code: message"`.
 ///
 /// # Safety
 ///
-/// `public_key` must be a valid NUL-terminated C string. `err_buf` must be null
+/// `game_id` must be a valid NUL-terminated C string. `err_buf` must be null
 /// or point to at least `err_len` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn arcane_sdk_init(
-    public_key: *const c_char,
+    game_id: *const c_char,
     err_buf: *mut c_char,
     err_len: usize,
 ) -> c_int {
-    if public_key.is_null() {
+    if game_id.is_null() {
         return ARCANE_ERR_ARGUMENT;
     }
-    let Ok(key) = CStr::from_ptr(public_key).to_str() else {
+    let Ok(game_id) = CStr::from_ptr(game_id).to_str() else {
         return ARCANE_ERR_ARGUMENT;
     };
 
-    match ArcaneClient::init(key) {
+    match ArcaneClient::init(game_id) {
         Ok(client) => {
             *CLIENT.write().unwrap_or_else(|e| e.into_inner()) = Some(client);
             clear_error();
@@ -853,24 +853,14 @@ pub unsafe extern "C" fn arcane_sdk_user_id(buf: *mut c_char, len: usize) -> c_i
     with_client(buf, len, |c| c.user_id().map(str::to_string))
 }
 
-/// Write the canonical title id into `buf`.
+/// Write the game id this client was initialised with into `buf`.
 ///
 /// # Safety
 ///
 /// `buf` must be null or point to at least `len` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn arcane_sdk_game_id(buf: *mut c_char, len: usize) -> c_int {
-    with_client(buf, len, |c| c.game_id().map(str::to_string))
-}
-
-/// Write the public key this client was initialised with into `buf`.
-///
-/// # Safety
-///
-/// `buf` must be null or point to at least `len` writable bytes.
-#[no_mangle]
-pub unsafe extern "C" fn arcane_sdk_public_key(buf: *mut c_char, len: usize) -> c_int {
-    with_client(buf, len, |c| Some(c.public_key().to_string()))
+    with_client(buf, len, |c| Some(c.game_id().to_string()))
 }
 
 /// Write this machine's device fingerprint into `buf`.
@@ -921,16 +911,16 @@ mod tests {
     #[test]
     fn write_str_reports_bytes_and_nul_terminates() {
         let mut buf = [1 as c_char; 16];
-        let written = write_str("pk_abc", buf.as_mut_ptr(), buf.len());
-        assert_eq!(written, 6);
-        assert_eq!(read_c_string(&buf), "pk_abc");
-        assert_eq!(buf[6], 0);
+        let written = write_str("game-abc", buf.as_mut_ptr(), buf.len());
+        assert_eq!(written, 8);
+        assert_eq!(read_c_string(&buf), "game-abc");
+        assert_eq!(buf[8], 0);
     }
 
     #[test]
     fn write_str_refuses_to_truncate() {
         let mut buf = [1 as c_char; 4];
-        let written = write_str("pk_abc", buf.as_mut_ptr(), buf.len());
+        let written = write_str("game-abc", buf.as_mut_ptr(), buf.len());
         assert_eq!(written, ARCANE_ERR_BUFFER_TOO_SMALL);
         // Left as an empty C string, never a partial value.
         assert_eq!(buf[0], 0);
@@ -992,7 +982,7 @@ mod tests {
             ARCANE_ERR_NOT_INITIALIZED
         );
         assert_eq!(
-            unsafe { arcane_sdk_public_key(buf.as_mut_ptr(), buf.len()) },
+            unsafe { arcane_sdk_game_id(buf.as_mut_ptr(), buf.len()) },
             ARCANE_ERR_NOT_INITIALIZED
         );
         assert_eq!(arcane_sdk_ownership(), ARCANE_ERR_NOT_INITIALIZED);
@@ -1077,7 +1067,7 @@ mod tests {
     }
 
     #[test]
-    fn init_rejects_a_null_public_key() {
+    fn init_rejects_a_null_game_id() {
         let mut err = [0 as c_char; 64];
         let rc = unsafe { arcane_sdk_init(std::ptr::null(), err.as_mut_ptr(), err.len()) };
         assert_eq!(rc, ARCANE_ERR_ARGUMENT);

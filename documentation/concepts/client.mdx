@@ -4,18 +4,17 @@ description: "One client built at launch, holding the state your game reads all 
 keywords: ["ArcaneClient", "init", "user_id", "game_id", "refresh", "lifecycle"]
 ---
 
-`ArcaneClient` is the SDK's entry point. You build one at launch with your portal public key, and read from it for the rest of the session.
+`ArcaneClient` is the SDK's entry point. You build one at launch with your title's game id, and read from it for the rest of the session.
 
 ## Why a client
 
-Before 0.4 every call was a free function taking the public key, and every call redid the whole job: resolve paths, read the ticket from disk, parse the JWKS, verify the JWT, sometimes talk to the desktop app over loopback. Nothing was kept.
+Before 0.4 every call was a free function taking the game id, and every call redid the whole job: resolve paths, read the ticket from disk, parse the JWKS, verify the JWT, sometimes talk to the desktop app over loopback. Nothing was kept.
 
 The client does that work **once** and holds the result:
 
 | What | Accessor | Source |
 |------|----------|--------|
-| Portal public key | `public_key()` | what you passed to `init` |
-| Canonical title id | `game_id()` | the ticket file, or the desktop refresh response |
+| Game id | `game_id()` | what you passed to `init` |
 | Signed-in account | `user_id()` | the ticket file, `session.json`, or the desktop |
 | Ownership | `ownership()` / `is_owned()` | the ownership check |
 | Device fingerprint | `device_hash()` | this machine |
@@ -34,7 +33,7 @@ More Arcane surfaces will hang off this client as they ship — that is the poin
 use arcane_sdk::ArcaneClient;
 
 // Once, at launch.
-let mut client = ArcaneClient::init("pk_...")?;
+let mut client = ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
 
 // For the rest of the session — free, reads memory.
 if client.is_owned() {
@@ -94,7 +93,7 @@ Native engines get the same client as a singleton, so nothing has to carry a han
 
 ```c
 char err[512];
-if (arcane_sdk_init("pk_...", err, sizeof(err)) != 0) { /* handle */ }
+if (arcane_sdk_init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413", err, sizeof(err)) != 0) { /* handle */ }
 
 char user_id[64];
 int written = arcane_sdk_user_id(user_id, sizeof(user_id));
@@ -113,11 +112,13 @@ arcane_sdk_shutdown();  /* ends the play session, then drops the client */
 
 Calling a getter before `arcane_sdk_init` returns `not_initialized` rather than a null or an empty string. Full signatures: [C ABI](/reference/c-abi).
 
-## Public key validation
+## Game id validation
 
-`init` validates the public key **before any filesystem or network work**. Empty, longer than 256 bytes, or containing anything outside ASCII letters, digits, `_`, `-` and `.` gives `invalid_public_key` immediately, naming the offending character and its index.
+`init` validates the game id **before any filesystem or network work**. Empty, longer than 256 bytes, or containing anything outside ASCII letters, digits, `_`, `-` and `.` gives `invalid_game_id` immediately, naming the offending character and its index.
 
-That turns a whole class of confusing downstream failures — a stray quote, trailing whitespace from a config file, a path pasted instead of a key — into one obvious error at the call site.
+That turns a whole class of confusing downstream failures — a stray quote, trailing whitespace from a config file, a path pasted instead of an id — into one obvious error at the call site.
+
+The game id is a public identifier, not a credential: it says which title you are, and nothing more. Ownership is proven by the signed ticket `init` verifies, so a game id in a log or a crash dump gives an attacker nothing.
 
 ## Developer overrides
 

@@ -1,15 +1,15 @@
 ---
 title: "Quickstart"
 description: "Link the Arcane SDK and build a client at launch."
-keywords: ["install", "quickstart", "ArcaneClient", "init", "public key", "portal"]
+keywords: ["install", "quickstart", "ArcaneClient", "init", "game id", "portal"]
 ---
 
-Link the SDK, build one client at launch with your portal public key, keep it for the session. That is the full default integration.
+Link the SDK, build one client at launch with your title's game id, keep it for the session. That is the full default integration.
 
 ## Prerequisites
 
 - [Rust](https://rustup.rs/) (edition 2021), or a native engine that can load the C ABI
-- A **public key** for your title from the Arcane portal
+- The **game id** of your title, shown in the Arcane portal
 - The Arcane desktop app is installed (init opens it when a ticket must be refreshed online)
 
 ## Get started
@@ -30,16 +30,16 @@ Link the SDK, build one client at launch with your portal public key, keep it fo
     ```
   </Step>
   <Step title="Build the client at launch">
-    Pass the public key from the portal. `init` checks ownership as part of building the client — there is no separate ownership call.
+    Pass the game id from the portal. `init` checks ownership as part of building the client — there is no separate ownership call.
 
     ```rust
     use arcane_sdk::{ArcaneClient, SdkError};
 
-    // Public key generated in the Arcane portal for this title
-    const PUBLIC_KEY: &str = "pk_...";
+    // The game id of this title in the Arcane portal
+    const GAME_ID: &str = "9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413";
 
     fn boot() -> Result<ArcaneClient, SdkError> {
-        let client = ArcaneClient::init(PUBLIC_KEY)?;
+        let client = ArcaneClient::init(GAME_ID)?;
         // Owned, or DRM is disabled for this title — either way, launch.
         Ok(client)
     }
@@ -47,17 +47,17 @@ Link the SDK, build one client at launch with your portal public key, keep it fo
 
     ```c
     char err[512];
-    if (arcane_sdk_init("pk_...", err, sizeof(err)) != 0) {
+    if (arcane_sdk_init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413", err, sizeof(err)) != 0) {
       /* err is "code: message — hint (context…)" — see Errors */
     }
     ```
   </Step>
   <Step title="Read state from the client, not from new calls">
-    The client holds the result in memory. Nothing downstream needs the public key again.
+    The client holds the result in memory. Nothing downstream needs the game id again.
 
     ```rust
     client.user_id();          // Option<&str> — the signed-in Arcane account
-    client.game_id();          // Option<&str> — canonical title id
+    client.game_id();          // &str — the game id you passed to init
     client.is_owned();         // bool
     client.ownership();        // Owned | DrmDisabled
     client.device_hash();      // this machine's fingerprint
@@ -96,12 +96,16 @@ Link the SDK, build one client at launch with your portal public key, keep it fo
   Ownership is never revalidated on its own: a session that runs for hours and wants to re-confirm it calls `refresh()` explicitly. The client does run one lightweight thread for the play session — asleep about 59 seconds out of 60 — which reports playtime and FPS samples and never blocks your game. See [Client](/concepts/client) and [Session](/concepts/session).
 </Note>
 
+<Note>
+  **Renamed in 0.9.** `init` takes the game id of your title; earlier releases called the same value a "public key". `game_id()` now always answers with it, `public_key()` is gone, and `invalid_public_key` became `invalid_game_id`.
+</Note>
+
 ## Handle failures
 
 Every failure is an `SdkError` with a stable `code`, a player-facing `message`, a developer-facing `hint`, and a `context` naming the values involved.
 
 ```rust
-match ArcaneClient::init(PUBLIC_KEY) {
+match ArcaneClient::init(GAME_ID) {
     Ok(client) => start_game(client),
     Err(err) => {
         // One log line is enough to debug:

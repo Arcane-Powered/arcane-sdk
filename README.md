@@ -7,10 +7,10 @@ use arcane_sdk::ArcaneClient;
 
 // Once, at launch. Building the client is the ownership check, and it opens
 // the play session that measures playtime.
-let client = ArcaneClient::init("pk_your_portal_key")?;
+let client = ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;   // your title's game id
 
 client.user_id();   // signed-in Arcane account
-client.game_id();   // canonical title id
+client.game_id();   // the game id you passed to init
 client.is_owned();  // ownership as of the last check
 
 client.frame();     // once per rendered frame — an atomic load, for FPS sampling
@@ -32,6 +32,11 @@ events — but only once the game has called `p2p()`, and every 5 seconds instea
 of 60 while a lobby is open. Ownership itself is never revalidated on its own.
 
 Native engines get the same client as a C ABI singleton — see [`include/arcane_sdk.h`](./include/arcane_sdk.h).
+
+Since 0.9, `init` takes the **game id** of your title (shown in the Arcane portal); the
+argument the SDK used to call a "public key" was always that id, and the platform never
+had a second value. `game_id()` therefore always answers, `public_key()` is gone, and
+the one error code that changed is `invalid_public_key` → `invalid_game_id`.
 
 The desktop-app side of the wire (endpoints, `session.json`, error bodies) is specified in [`DESKTOP_CONTRACT.md`](./DESKTOP_CONTRACT.md).
 

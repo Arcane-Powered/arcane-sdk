@@ -13,7 +13,7 @@ propriété ; il ouvre désormais aussi une *session de jeu* qui mesure le temps
 les FPS sans autre appel du jeu.
 
 ```rust
-let client = ArcaneClient::init("pk_...")?;
+let client = ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
 ```
 
 C'est tout pour : propriété, temps de jeu, échantillons FPS de temps en temps (si le
@@ -28,7 +28,7 @@ client.p2p().invite(friend_id, blob)?;            // phase 4
 ```
 
 ```c
-arcane_sdk_init("pk_...", err, sizeof err);
+arcane_sdk_init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413", err, sizeof err);
 arcane_sdk_frame();
 arcane_sdk_achievement_unlock("first_blood", err, sizeof err);
 arcane_sdk_friends_json(buf, sizeof buf);
@@ -97,11 +97,11 @@ corps JSON (route inconnue, desktop trop ancien) vers `feature_unavailable`.
 ### §8 Sessions de jeu (phase 1)
 
 ```
-POST /v1/games/{public_key}/session/start
+POST /v1/games/{game_id}/session/start
 → 200 { "session_id": "uuid", "user_id": "…", "game_id": "…", "fps_sampling": true }
 → 401 not_authenticated · 403 not_owned · 404 game_not_found
 
-POST /v1/games/{public_key}/session/heartbeat
+POST /v1/games/{game_id}/session/heartbeat
 { "session_id": "uuid", "seconds": 120,
   "samples": [ { "sample_id": "uuid", "taken_at": 1786480000, "fps_avg": 59.8,
                  "window_seconds": 30, "frames": 1794,
@@ -109,7 +109,7 @@ POST /v1/games/{public_key}/session/heartbeat
 → 200 { "ok": true, "fps_sampling": true }
 → 404 unknown_session (le desktop a expiré la session → le SDK redémarre une session)
 
-POST /v1/games/{public_key}/session/end
+POST /v1/games/{game_id}/session/end
 { "session_id": "uuid", "seconds": 1830, "samples": [ … ] }
 → 200 { "ok": true }
 ```
@@ -129,11 +129,11 @@ POST /v1/games/{public_key}/session/end
 ### §9 Achievements (phase 2)
 
 ```
-GET /v1/games/{public_key}/achievements
+GET /v1/games/{game_id}/achievements
 → 200 { "achievements": [ { "key": "first_blood", "title": "…", "description": "…",
          "icon_url": "…|null", "hidden": false, "unlocked_at": "2026-…|null" } ] }
 
-POST /v1/games/{public_key}/achievements/{key}/unlock
+POST /v1/games/{game_id}/achievements/{key}/unlock
 → 200 { "key": "first_blood", "unlocked_at": "…", "already_unlocked": false, "queued": false }
 → 404 unknown_achievement · 403 not_owned
 ```
@@ -150,31 +150,31 @@ GET /v1/friends
 ```
 
 `stale: true` = desktop hors ligne, liste issue de son cache. Le SDK dérive
-`in_game = playing_game_id == client.game_id()`.
+`in_game = playing_game_id == client.game_id()`, l'identifiant passé à `init`.
 
 ### §11 Lobbies P2P (phase 4)
 
 ```
-POST /v1/games/{public_key}/lobbies
+POST /v1/games/{game_id}/lobbies
 { "max_players": 4, "visibility": "friends" | "code" | "friends_and_code", "payload": "<≤4 KiB opaque>" }
 → 200 { "lobby_id": "…", "join_code": "K7P3QX", "expires_at": "…" }
 
-POST /v1/games/{public_key}/lobbies/join      { "join_code": "K7P3QX", "payload": "…" }
-POST /v1/games/{public_key}/lobbies/{id}/join { "payload": "…" }          (invité ou ami « rejoindre »)
+POST /v1/games/{game_id}/lobbies/join      { "join_code": "K7P3QX", "payload": "…" }
+POST /v1/games/{game_id}/lobbies/{id}/join { "payload": "…" }          (invité ou ami « rejoindre »)
 → 200 { "lobby_id": "…", "host_user_id": "…", "host_payload": "…",
          "members": [ { "user_id": "…", "pseudo": "…", "payload": "…" } ] }
 → 404 lobby_not_found · 409 lobby_full · 410 lobby_closed
 
-POST /v1/games/{public_key}/lobbies/{id}/invite  { "to_user_id": "…" }   → 200 { "ok": true }
-POST /v1/games/{public_key}/lobbies/{id}/leave                             → 200 { "ok": true }
-DELETE /v1/games/{public_key}/lobbies/{id}                                  → 200 { "ok": true }  (hôte)
+POST /v1/games/{game_id}/lobbies/{id}/invite  { "to_user_id": "…" }   → 200 { "ok": true }
+POST /v1/games/{game_id}/lobbies/{id}/leave                             → 200 { "ok": true }
+DELETE /v1/games/{game_id}/lobbies/{id}                                  → 200 { "ok": true }  (hôte)
 
-GET  /v1/games/{public_key}/lobbies/events?after={cursor}
+GET  /v1/games/{game_id}/lobbies/events?after={cursor}
 → 200 { "events": [ { "id": …, "type": "invite | member_joined | member_left | lobby_closed",
          "lobby_id": "…", "join_code": "…|null", "from_user_id": "…|null",
          "user_id": "…|null", "pseudo": "…|null", "payload": "…|null" } ], "cursor": … }
 
-GET  /v1/games/{public_key}/launch-context
+GET  /v1/games/{game_id}/launch-context
 → 200 { "join_code": "K7P3QX" | null }
 ```
 
@@ -284,7 +284,7 @@ pub struct Unlock { pub key: String, pub unlocked_at: i64, pub already_unlocked:
 - Validation de `key` : charset du backend et du desktop (`^[a-z0-9_.-]{1,64}$`, une clé
   faite uniquement de points est refusée) →
   `invalid_argument` avant tout réseau. Nouveau code `invalid_argument` (remplace le
-  cas particulier `invalid_public_key` pour les nouvelles entrées, sans le retirer).
+  cas particulier `invalid_game_id` pour les nouvelles entrées, sans le retirer).
 
 ### C ABI
 
@@ -319,8 +319,9 @@ pub struct Friend { pub user_id: String, pub pseudo: String, pub online: bool, p
 
 - Pas de cache SDK : le desktop cache déjà (15 s) et pose `stale`.
 - Pas d'envoi de demande d'ami, pas d'overlay : ces flux restent dans le launcher.
-- `in_game` = `playing_game_id == game_id()` ; la présence « en jeu » du joueur courant
-  est posée par le **desktop** au `session/start` de la phase 1, donc gratuite ici.
+- `in_game` = `playing_game_id == game_id()`, où `game_id()` est l'identifiant passé à
+  `init` ; la présence « en jeu » du joueur courant est posée par le **desktop** au
+  `session/start` de la phase 1, donc gratuite ici.
 
 ### C ABI
 

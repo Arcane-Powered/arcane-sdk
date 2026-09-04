@@ -124,7 +124,7 @@ void arcane_sdk_frame(void);
 // `buf` must be null or point to at least `len` writable bytes.
 int arcane_sdk_friends_json(char *buf, size_t len);
 
-// Write the canonical title id into `buf`.
+// Write the game id this client was initialised with into `buf`.
 //
 // # Safety
 //
@@ -133,17 +133,17 @@ int arcane_sdk_game_id(char *buf, size_t len);
 
 // Verify ownership and build the process-wide client. Call once at launch.
 //
-// `public_key` must be a NUL-terminated UTF-8 string — the public key generated
-// for this title in the Arcane portal.
+// `game_id` must be a NUL-terminated UTF-8 string — the id of this title in the
+// Arcane portal.
 //
-// Returns 0 on success, 1 if `public_key` is null or not UTF-8, 2 on an SDK
+// Returns 0 on success, 1 if `game_id` is null or not UTF-8, 2 on an SDK
 // error written to `err_buf` as `"code: message"`.
 //
 // # Safety
 //
-// `public_key` must be a valid NUL-terminated C string. `err_buf` must be null
+// `game_id` must be a valid NUL-terminated C string. `err_buf` must be null
 // or point to at least `err_len` writable bytes.
-int arcane_sdk_init(const char *public_key, char *err_buf, size_t err_len);
+int arcane_sdk_init(const char *game_id, char *err_buf, size_t err_len);
 
 // Whether a client is currently initialised. Returns 1 or 0.
 int arcane_sdk_is_initialized(void);
@@ -293,13 +293,6 @@ int arcane_sdk_lobby_leave(const char *lobby_id, char *err_buf, size_t err_len);
 //
 // Returns 0 (owned), 1 (DRM disabled for this title), or -1 if not initialised.
 int arcane_sdk_ownership(void);
-
-// Write the public key this client was initialised with into `buf`.
-//
-// # Safety
-//
-// `buf` must be null or point to at least `len` writable bytes.
-int arcane_sdk_public_key(char *buf, size_t len);
 
 // Re-run the ownership check against Arcane desktop and update the client.
 //
