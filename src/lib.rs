@@ -18,6 +18,12 @@
 //! `127.0.0.1:39284`) to refresh online, opening the app via deep link when
 //! needed.
 //!
+//! `init` also opens a play session: one background thread reports playtime to
+//! the Arcane desktop app once a minute, and — while the player allows it —
+//! samples the frame rate in short windows if the game calls
+//! [`ArcaneClient::frame`]. It never blocks or fails `init`. See
+//! [`SessionSnapshot`].
+//!
 //! Failures are [`SdkError`], carrying a stable [`code`](SdkError::code), a
 //! player-facing [`message`](SdkError::message), a developer-facing
 //! [`hint`](SdkError::hint) and a [`context`](SdkError::context) key/value list.
@@ -27,9 +33,11 @@ mod desktop;
 mod device;
 mod error;
 mod paths;
+mod session;
 mod ticket;
 
 pub use client::{ArcaneClient, MAX_PUBLIC_KEY_LEN};
 pub use error::{ErrorCode, OwnershipStatus, SdkError};
+pub use session::{SessionSnapshot, TrackingState};
 
 pub mod ffi;

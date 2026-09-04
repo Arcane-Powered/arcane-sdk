@@ -5,13 +5,22 @@ Native SDK for integrating Arcane Powered — ownership, achievements, cloud sav
 ```rust
 use arcane_sdk::ArcaneClient;
 
-// Once, at launch. Building the client is the ownership check.
+// Once, at launch. Building the client is the ownership check, and it opens
+// the play session that measures playtime.
 let client = ArcaneClient::init("pk_your_portal_key")?;
 
 client.user_id();   // signed-in Arcane account
 client.game_id();   // canonical title id
 client.is_owned();  // ownership as of the last check
+
+client.frame();     // once per rendered frame — an atomic load, for FPS sampling
+client.session();   // tracking state, playtime, FPS samples
+client.shutdown();  // ends the session and reports the final playtime
 ```
+
+One background thread (`arcane-session`) reports playtime once a minute and
+samples FPS in 30-second windows while the player allows it. Ownership itself is
+never revalidated on its own.
 
 Native engines get the same client as a C ABI singleton — see [`include/arcane_sdk.h`](./include/arcane_sdk.h).
 

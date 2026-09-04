@@ -1,9 +1,12 @@
 //! The SDK client: initialise once at launch, then read state from memory.
 
+use std::sync::Arc;
+
 use crate::desktop::{offline_only, refresh_ownership_via_desktop, OFFLINE_ONLY_ENV};
 use crate::device::{device_hash, now_unix};
 use crate::error::{OwnershipStatus, SdkError};
 use crate::paths::{load_cached_drm_flag, load_session, SessionState};
+use crate::session::{Session, SessionSnapshot, TrackingState};
 use crate::ticket::{check_ownership_offline, OwnershipCheck};
 
 /// Longest public key the SDK will accept, in bytes.
@@ -49,9 +52,13 @@ pub(crate) fn validate_public_key(public_key: &str) -> Result<(), SdkError> {
 /// result, the signed-in `user_id`, the title's `game_id` and the device
 /// fingerprint, so nothing downstream has to pass the public key around again.
 ///
-/// There is no background thread and no automatic revalidation: the client
-/// reflects the state as of the last [`init`](ArcaneClient::init) or
-/// [`refresh`](ArcaneClient::refresh).
+/// Ownership is never revalidated on its own: it reflects the state as of the
+/// last [`init`](ArcaneClient::init) or [`refresh`](ArcaneClient::refresh). The
+/// client does run one background thread for the play session — playtime and
+/// FPS sampling — described in [`SessionSnapshot`].
+///
+/// Cloning shares that session. It ends when the last clone is dropped, or on
+/// [`shutdown`](ArcaneClient::shutdown).
 #[derive(Debug, Clone)]
 pub struct ArcaneClient {
     public_key: String,
@@ -61,6 +68,7 @@ pub struct ArcaneClient {
     ownership: OwnershipStatus,
     ticket_expires_at: Option<i64>,
     checked_at: i64,
+    session: Arc<Session>,
 }
 
 impl ArcaneClient {
@@ -72,6 +80,11 @@ impl ArcaneClient {
     /// 3. Otherwise verifies the cached ownership ticket offline.
     /// 4. If the ticket is missing or expired, asks Arcane desktop to refresh
     ///    (opening the app via deep link when needed), then re-verifies.
+    /// 5. Opens the play session and starts the `arcane-session` thread.
+    ///
+    /// The session never blocks or fails init: if the Arcane desktop app cannot
+    /// be reached, tracking stays [`TrackingState::Pending`] and the thread
+    /// retries every 60 seconds. It never opens the deep link.
     ///
     /// # Errors
     ///
@@ -80,7 +93,12 @@ impl ArcaneClient {
     /// `not_authenticated`, `arcane_unavailable`, `ambiguous_session`, `internal`.
     pub fn init(public_key: &str) -> Result<Self, SdkError> {
         validate_public_key(public_key)?;
+        let client = Self::resolve_ownership(public_key)?;
+        client.session.begin(client.tracking_state());
+        Ok(client)
+    }
 
+    fn resolve_ownership(public_key: &str) -> Result<Self, SdkError> {
         if let Some(false) = load_cached_drm_flag(public_key) {
             return Self::drm_disabled(public_key);
         }
@@ -113,6 +131,16 @@ impl ArcaneClient {
         }
     }
 
+    fn tracking_state(&self) -> TrackingState {
+        if offline_only() {
+            return TrackingState::Disabled;
+        }
+        if self.ownership == OwnershipStatus::DrmDisabled && self.user_id.is_none() {
+            return TrackingState::Disabled;
+        }
+        TrackingState::Pending
+    }
+
     /// Re-run the ownership check, contacting Arcane desktop, and update the
     /// cached state in place.
     ///
@@ -141,6 +169,7 @@ impl ArcaneClient {
         };
         next.user_id = next.user_id.or(outcome.user_id).or(self.user_id.clone());
         next.game_id = next.game_id.or(outcome.game_id).or(self.game_id.clone());
+        next.session = Arc::clone(&self.session);
 
         let status = next.ownership.clone();
         *self = next;
@@ -188,6 +217,43 @@ impl ArcaneClient {
         self.checked_at
     }
 
+    /// Count one rendered frame. Call it once per frame, from the render loop.
+    ///
+    /// Outside an FPS sampling window this is a single relaxed atomic load;
+    /// inside one it adds a relaxed increment. No lock, no allocation, no clock
+    /// read — safe to call thousands of times a second. A game that never calls
+    /// it simply reports no FPS samples.
+    pub fn frame(&self) {
+        self.session.frame();
+    }
+
+    /// Record the current display settings, attached to the FPS samples that
+    /// follow. Call it at startup and whenever the player changes them — never
+    /// from the render loop, it takes a short lock.
+    ///
+    /// Both values are free-form and only travel to Arcane, for example
+    /// `"2560x1440"` and `"high"`. Empty strings clear them.
+    pub fn set_graphics(&self, resolution: &str, preset: &str) {
+        self.session.set_graphics(resolution, preset);
+    }
+
+    /// A copy of the current play session state: tracking, playtime, FPS
+    /// samples. Reads memory only.
+    pub fn session(&self) -> SessionSnapshot {
+        self.session.snapshot()
+    }
+
+    /// End the play session now, reporting the final playtime, and drop the
+    /// client.
+    ///
+    /// This is the one blocking call of the lifecycle: it posts to the Arcane
+    /// desktop app with a 2-second timeout. Dropping the last clone of a client
+    /// does the same thing, best-effort, so calling this is optional — it just
+    /// makes the moment explicit.
+    pub fn shutdown(self) {
+        self.session.end();
+    }
+
     fn from_check(public_key: &str, check: OwnershipCheck) -> Self {
         Self {
             public_key: public_key.to_string(),
@@ -197,6 +263,7 @@ impl ArcaneClient {
             ownership: check.status,
             ticket_expires_at: check.ticket_expires_at,
             checked_at: now_unix(),
+            session: Arc::new(Session::dormant(public_key)),
         }
     }
 
@@ -212,6 +279,7 @@ impl ArcaneClient {
             ownership: OwnershipStatus::DrmDisabled,
             ticket_expires_at: None,
             checked_at: now_unix(),
+            session: Arc::new(Session::dormant(public_key)),
         })
     }
 }

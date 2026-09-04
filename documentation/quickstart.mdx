@@ -20,7 +20,7 @@ Link the SDK, build one client at launch with your portal public key, keep it fo
 
     ```toml Cargo.toml
     [dependencies]
-    arcane-sdk = "0.4"
+    arcane-sdk = "0.5"
     ```
 
     Engines (Unity / Unreal / C++): build the shared library, include `include/arcane_sdk.h`, and load the [C ABI](/reference/c-abi).
@@ -70,6 +70,22 @@ Link the SDK, build one client at launch with your portal public key, keep it fo
     /* written >= 0 on success; negative values are errors — see C ABI */
     ```
   </Step>
+  <Step title="Call frame() in your render loop">
+    Optional, one line. `init` already tracks playtime; `frame()` is what lets Arcane sample the frame rate.
+
+    ```rust
+    loop {
+        render();
+        client.frame();   // an atomic load, ~30 s per 5 min an increment too
+    }
+    ```
+
+    ```c
+    arcane_sdk_frame();
+    ```
+
+    Nothing else is needed. Sampling happens in 30-second windows, only while the player allows it in the Arcane desktop app, and a game that never calls `frame()` simply reports no FPS. See [Session](/concepts/session).
+  </Step>
 </Steps>
 
 <Check>
@@ -77,7 +93,7 @@ Link the SDK, build one client at launch with your portal public key, keep it fo
 </Check>
 
 <Note>
-  The client never revalidates on its own — no background thread, no timer. A session that runs for hours and wants to re-confirm ownership calls `refresh()` explicitly. See [Client](/concepts/client).
+  Ownership is never revalidated on its own: a session that runs for hours and wants to re-confirm it calls `refresh()` explicitly. The client does run one lightweight thread for the play session — asleep about 59 seconds out of 60 — which reports playtime and FPS samples and never blocks your game. See [Client](/concepts/client) and [Session](/concepts/session).
 </Note>
 
 ## Handle failures
@@ -107,6 +123,7 @@ Use `err.is_retryable()` to decide whether a retry button makes sense. The full 
 ## Next steps
 
 - [Client](/concepts/client) — lifecycle, what is cached, when to refresh
+- [Session](/concepts/session) — playtime, FPS sampling, `shutdown`
 - [Ownership model](/concepts/ownership) — what init does under the hood
 - [Errors](/concepts/errors) — this code → this problem → this fix
 - [Rust API](/reference/rust-api) · [C ABI](/reference/c-abi)

@@ -17,7 +17,12 @@
       },
       {
         "group": "Concepts",
-        "pages": ["concepts/client", "concepts/ownership", "concepts/errors"]
+        "pages": [
+          "concepts/client",
+          "concepts/ownership",
+          "concepts/session",
+          "concepts/errors"
+        ]
       },
       {
         "group": "Reference",

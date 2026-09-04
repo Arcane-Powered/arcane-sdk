@@ -5,9 +5,10 @@
 //!
 //! Two return conventions:
 //!
-//! - **Actions** (`arcane_sdk_init`, `arcane_sdk_refresh`) return `0` on success,
-//!   `1` on a bad argument, `2` on an SDK error whose `"code: message"` rendering
-//!   is written into `err_buf`.
+//! - **Actions** (`arcane_sdk_init`, `arcane_sdk_refresh`,
+//!   `arcane_sdk_set_graphics`) return `0` on success, `1` on a bad argument,
+//!   `2` on an SDK error whose `"code: message"` rendering is written into
+//!   `err_buf`.
 //! - **Getters** return the number of bytes written (excluding the NUL) when they
 //!   succeed, or a negative value: `-1` not initialised, `-2` bad argument,
 //!   `-3` buffer too small, `-4` value not available.
@@ -174,11 +175,81 @@ pub unsafe extern "C" fn arcane_sdk_refresh(err_buf: *mut c_char, err_len: usize
     }
 }
 
-/// Drop the client. Optional — mostly useful for editor play-mode reloads.
+/// End the play session and drop the client.
+///
+/// Reports the final playtime to the Arcane desktop app with a 2-second timeout,
+/// then releases the singleton. Call it when the game exits; it is also what you
+/// want on an editor play-mode reload.
 #[no_mangle]
 pub extern "C" fn arcane_sdk_shutdown() {
-    *CLIENT.write().unwrap_or_else(|e| e.into_inner()) = None;
+    let client = { CLIENT.write().unwrap_or_else(|e| e.into_inner()).take() };
+    if let Some(client) = client {
+        client.shutdown();
+    }
     clear_error();
+}
+
+/// Count one rendered frame, for FPS sampling. Call once per frame.
+///
+/// Outside a sampling window this is a relaxed atomic load; inside one it adds a
+/// relaxed increment. Does nothing before `arcane_sdk_init` succeeds.
+#[no_mangle]
+pub extern "C" fn arcane_sdk_frame() {
+    let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
+    if let Some(client) = guard.as_ref() {
+        client.frame();
+    }
+}
+
+/// Record the current display settings, attached to the FPS samples that follow.
+///
+/// Both strings are NUL-terminated UTF-8, for example `"2560x1440"` and
+/// `"high"`. Empty strings clear the values. Never call this from the render
+/// loop — it takes a short lock.
+///
+/// Returns 0 on success, 1 on a null / non-UTF-8 argument or when the client is
+/// not initialised.
+///
+/// # Safety
+///
+/// `resolution` and `preset` must be valid NUL-terminated C strings.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_set_graphics(
+    resolution: *const c_char,
+    preset: *const c_char,
+) -> c_int {
+    if resolution.is_null() || preset.is_null() {
+        return ARCANE_ERR_ARGUMENT;
+    }
+    let (Ok(resolution), Ok(preset)) = (
+        CStr::from_ptr(resolution).to_str(),
+        CStr::from_ptr(preset).to_str(),
+    ) else {
+        return ARCANE_ERR_ARGUMENT;
+    };
+
+    let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
+    let Some(client) = guard.as_ref() else {
+        let err = SdkError::not_initialized("The Arcane SDK client is not initialised.")
+            .with_hint("Call arcane_sdk_init once at launch before arcane_sdk_set_graphics.");
+        store_error(&err);
+        return ARCANE_ERR_ARGUMENT;
+    };
+    client.set_graphics(resolution, preset);
+    ARCANE_OK
+}
+
+/// Write the play session state as JSON into `buf`:
+/// `{"session_id","tracking","played_seconds","fps_sampling","samples_taken","last_fps_avg"}`.
+///
+/// `tracking` is `"active"`, `"pending"` or `"disabled"`. 256 bytes is enough.
+///
+/// # Safety
+///
+/// `buf` must be null or point to at least `len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_session_json(buf: *mut c_char, len: usize) -> c_int {
+    with_client(buf, len, |c| Some(c.session().to_json()))
 }
 
 /// Whether a client is currently initialised. Returns 1 or 0.
@@ -374,6 +445,32 @@ mod tests {
         assert_eq!(arcane_sdk_is_initialized(), 0);
         assert_eq!(arcane_sdk_ticket_expires_at(), -1);
         assert_eq!(arcane_sdk_checked_at(), -1);
+    }
+
+    #[test]
+    fn frame_and_session_json_are_safe_before_init() {
+        let _guard = GLOBAL_STATE.lock().unwrap_or_else(|e| e.into_inner());
+
+        arcane_sdk_shutdown();
+        arcane_sdk_frame();
+
+        let mut buf = [0 as c_char; 256];
+        assert_eq!(
+            unsafe { arcane_sdk_session_json(buf.as_mut_ptr(), buf.len()) },
+            ARCANE_ERR_NOT_INITIALIZED
+        );
+        assert_eq!(
+            unsafe { arcane_sdk_set_graphics(c"1920x1080".as_ptr(), c"ultra".as_ptr()) },
+            ARCANE_ERR_ARGUMENT
+        );
+    }
+
+    #[test]
+    fn set_graphics_rejects_null_arguments() {
+        assert_eq!(
+            unsafe { arcane_sdk_set_graphics(std::ptr::null(), std::ptr::null()) },
+            ARCANE_ERR_ARGUMENT
+        );
     }
 
     #[test]

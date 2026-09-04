@@ -27,7 +27,7 @@ cargo install cbindgen --version 0.29.4 --locked
 
 Two conventions, by function kind. Both are in the header as named constants.
 
-**Actions** — `arcane_sdk_init`, `arcane_sdk_refresh`:
+**Actions** — `arcane_sdk_init`, `arcane_sdk_refresh`, `arcane_sdk_set_graphics`:
 
 | Return | Constant | Meaning |
 |--------|----------|---------|
@@ -73,7 +73,23 @@ Re-runs the check against Arcane desktop and updates the singleton. Returns `1` 
 void arcane_sdk_shutdown(void);
 ```
 
-Drops the client. Optional — mainly useful for editor play-mode reloads, where the library stays loaded across runs.
+Ends the play session — reporting the final playtime with a 2-second timeout — then drops the client. Call it when the game exits. It is also what you want on an editor play-mode reload, where the library stays loaded across runs.
+
+### `arcane_sdk_frame`
+
+```c
+void arcane_sdk_frame(void);
+```
+
+Counts one rendered frame, for FPS sampling. Call it once per frame from the render loop: outside a sampling window it is a relaxed atomic load, inside one it adds a relaxed increment. Does nothing before `arcane_sdk_init` succeeds, and cannot fail.
+
+### `arcane_sdk_set_graphics`
+
+```c
+int arcane_sdk_set_graphics(const char *resolution, const char *preset);
+```
+
+Records the current display settings — for example `"2560x1440"` and `"high"` — attached to the FPS samples that follow. Empty strings clear them. Returns `1` on a null / non-UTF-8 argument or before init. Takes a short lock, so never call it per frame.
 
 ## Getters
 
@@ -87,6 +103,7 @@ int  arcane_sdk_user_id(char *buf, size_t len);
 int  arcane_sdk_game_id(char *buf, size_t len);
 int  arcane_sdk_public_key(char *buf, size_t len);
 int  arcane_sdk_device_hash(char *buf, size_t len);
+int  arcane_sdk_session_json(char *buf, size_t len);
 int  arcane_sdk_last_error_json(char *buf, size_t len);
 ```
 
@@ -94,7 +111,19 @@ int  arcane_sdk_last_error_json(char *buf, size_t len);
 
 `arcane_sdk_last_error_json` writes the last failure as JSON — `{"code","message","hint","retryable","context"}` — for engines that want to render full detail. It returns `-4` when nothing has failed since the last success.
 
-Buffer sizing: user ids and device hashes fit comfortably in 64 bytes; allow 512 for `err_buf` and 1024 for the error JSON. A short buffer is never a silent truncation — you get `-3` and an empty string.
+`arcane_sdk_session_json` writes the [play session](/concepts/session) state:
+
+```c
+char json[256];
+if (arcane_sdk_session_json(json, sizeof(json)) > 0) {
+  /* {"session_id":"…","tracking":"active","played_seconds":1830,
+      "fps_sampling":true,"samples_taken":6,"last_fps_avg":59.8} */
+}
+```
+
+`tracking` is `"active"`, `"pending"` or `"disabled"`.
+
+Buffer sizing: user ids and device hashes fit comfortably in 64 bytes; allow 256 for the session JSON, 512 for `err_buf` and 1024 for the error JSON. A short buffer is never a silent truncation — you get `-3` and an empty string.
 
 ## Example
 
@@ -123,7 +152,18 @@ int boot(void) {
   if (arcane_sdk_user_id(user_id, sizeof(user_id)) >= 0) {
     printf("signed in as %s\n", user_id);
   }
+
+  arcane_sdk_set_graphics("2560x1440", "high");
   return 1;                        /* Owned or DrmDisabled — launch */
+}
+
+void render_frame(void) {
+  draw();
+  arcane_sdk_frame();              /* one atomic load per frame */
+}
+
+void quit(void) {
+  arcane_sdk_shutdown();           /* reports the final playtime */
 }
 ```
 
@@ -134,6 +174,7 @@ int boot(void) {
 - Getter buffers must point to at least `len` writable bytes
 - Do not free strings owned by the SDK; only your own buffers are written into
 - All functions are safe to call from any thread; the singleton is behind a lock
+- `arcane_sdk_frame` takes only a read lock and no allocation — it is the one function meant for the render loop
 
 ## Link
 
