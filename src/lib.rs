@@ -1,14 +1,15 @@
 //! Arcane game SDK core.
 //!
-//! Games build one [`ArcaneClient`] at launch with their Arcane portal public
-//! key. The client verifies ownership once and then holds the result in memory —
-//! the signed-in `user_id`, the title's `game_id`, the ownership status and the
-//! device fingerprint — so nothing downstream needs the public key again.
+//! Games build one [`ArcaneClient`] at launch with the game id of their title in
+//! the Arcane portal. The client verifies ownership once and then holds the
+//! result in memory — the signed-in `user_id`, that `game_id`, the ownership
+//! status and the device fingerprint — so nothing downstream needs the id
+//! again.
 //!
 //! ```no_run
 //! use arcane_sdk::ArcaneClient;
 //!
-//! let client = ArcaneClient::init("pk_...")?;
+//! let client = ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
 //! println!("user={:?} owned={}", client.user_id(), client.is_owned());
 //! # Ok::<(), arcane_sdk::SdkError>(())
 //! ```
@@ -28,7 +29,7 @@
 //! and it is idempotent, so a game can call it every time its condition holds.
 //!
 //! ```no_run
-//! # let client = arcane_sdk::ArcaneClient::init("pk_...")?;
+//! # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
 //! client.achievements().unlock("first_blood")?;
 //! # Ok::<(), arcane_sdk::SdkError>(())
 //! ```
@@ -37,7 +38,7 @@
 //! `in_game` for this title, read straight from the Arcane desktop app.
 //!
 //! ```no_run
-//! # let client = arcane_sdk::ArcaneClient::init("pk_...")?;
+//! # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
 //! client.friends().list()?;
 //! # Ok::<(), arcane_sdk::SdkError>(())
 //! ```
@@ -48,7 +49,7 @@
 //!
 //! ```no_run
 //! # use arcane_sdk::Visibility;
-//! # let client = arcane_sdk::ArcaneClient::init("pk_...")?;
+//! # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
 //! # let my_endpoint = b"udp://203.0.113.7:7777";
 //! let lobby = client.p2p().create_lobby(4, Visibility::FriendsAndCode, my_endpoint)?;
 //! for event in client.p2p().poll_events() { /* … */ }
@@ -71,7 +72,7 @@ mod session;
 mod ticket;
 
 pub use achievements::{Achievement, Achievements, Unlock, MAX_ACHIEVEMENT_KEY_LEN};
-pub use client::{ArcaneClient, MAX_PUBLIC_KEY_LEN};
+pub use client::{ArcaneClient, MAX_GAME_ID_LEN};
 pub use error::{ErrorCode, OwnershipStatus, SdkError};
 pub use friends::{Friend, FriendList, Friends};
 pub use p2p::{

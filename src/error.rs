@@ -43,9 +43,9 @@ pub enum ErrorCode {
     /// The lobby is visible to the host's friends only, and this player is not
     /// one of them.
     NotFriends,
-    /// The public key argument is empty, oversized, or has forbidden characters.
-    InvalidPublicKey,
-    /// An argument other than the public key is empty, oversized, or has
+    /// The game id argument is empty, oversized, or has forbidden characters.
+    InvalidGameId,
+    /// An argument other than the game id is empty, oversized, or has
     /// forbidden characters.
     InvalidArgument,
     /// Several accounts hold a ticket for this title and Arcane has not recorded
@@ -76,7 +76,7 @@ impl ErrorCode {
             Self::LobbyFull => "lobby_full",
             Self::LobbyClosed => "lobby_closed",
             Self::NotFriends => "not_friends",
-            Self::InvalidPublicKey => "invalid_public_key",
+            Self::InvalidGameId => "invalid_game_id",
             Self::InvalidArgument => "invalid_argument",
             Self::AmbiguousSession => "ambiguous_session",
             Self::NotInitialized => "not_initialized",
@@ -272,8 +272,8 @@ impl SdkError {
         Self::new(ErrorCode::NotFriends, message)
     }
 
-    pub(crate) fn invalid_public_key(message: impl Into<String>) -> Self {
-        Self::new(ErrorCode::InvalidPublicKey, message)
+    pub(crate) fn invalid_game_id(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::InvalidGameId, message)
     }
 
     pub(crate) fn invalid_argument(message: impl Into<String>) -> Self {
@@ -323,14 +323,14 @@ mod tests {
     #[test]
     fn display_includes_code_message_hint_and_context() {
         let err = SdkError::ticket_invalid("Ticket was issued for a different title.")
-            .with_hint("Check the public key in your build.")
-            .with_context("expected", "pk_abc")
-            .with_context("ticket_gid", "pk_xyz");
+            .with_hint("Check the game id in your build.")
+            .with_context("expected", "game-a")
+            .with_context("ticket_gid", "game-b");
 
         assert_eq!(
             err.to_string(),
             "ticket_invalid: Ticket was issued for a different title. \
-             — Check the public key in your build. (expected=pk_abc, ticket_gid=pk_xyz)"
+             — Check the game id in your build. (expected=game-a, ticket_gid=game-b)"
         );
     }
 
@@ -369,7 +369,7 @@ mod tests {
         assert!(SdkError::not_authenticated("x").is_retryable());
         assert!(!SdkError::not_owned("x").is_retryable());
         assert!(!SdkError::device_mismatch("x").is_retryable());
-        assert!(!SdkError::invalid_public_key("x").is_retryable());
+        assert!(!SdkError::invalid_game_id("x").is_retryable());
         assert!(!SdkError::invalid_argument("x").is_retryable());
         assert!(!SdkError::feature_unavailable("x").is_retryable());
         assert!(!SdkError::unknown_achievement("x").is_retryable());
@@ -402,10 +402,7 @@ mod tests {
             "unknown_achievement"
         );
         assert_eq!(SdkError::invalid_argument("x").code(), "invalid_argument");
-        assert_eq!(
-            SdkError::invalid_public_key("x").code(),
-            "invalid_public_key"
-        );
+        assert_eq!(SdkError::invalid_game_id("x").code(), "invalid_game_id");
     }
 
     #[test]

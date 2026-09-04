@@ -175,7 +175,7 @@ struct State {
 
 #[derive(Debug)]
 pub(crate) struct SessionInner {
-    public_key: String,
+    game_id: String,
     window_open: AtomicBool,
     frames: AtomicU64,
     started: Instant,
@@ -185,9 +185,9 @@ pub(crate) struct SessionInner {
 }
 
 impl SessionInner {
-    fn new(public_key: &str, p2p: Arc<P2pState>) -> Self {
+    fn new(game_id: &str, p2p: Arc<P2pState>) -> Self {
         Self {
-            public_key: public_key.to_string(),
+            game_id: game_id.to_string(),
             p2p,
             window_open: AtomicBool::new(false),
             frames: AtomicU64::new(0),
@@ -390,7 +390,7 @@ impl SessionInner {
     }
 
     fn poll_lobby_events(&self) {
-        if let Some(err) = poll_once(&self.public_key, &self.p2p) {
+        if let Some(err) = poll_once(&self.game_id, &self.p2p) {
             self.lock().last_error = Some(err);
         }
     }
@@ -431,7 +431,7 @@ impl SessionInner {
     fn path(&self, action: &str) -> String {
         format!(
             "{GAMES_PATH_PREFIX}/{}/session/{action}",
-            self.public_key.as_str()
+            self.game_id.as_str()
         )
     }
 
@@ -532,9 +532,9 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    pub(crate) fn dormant(public_key: &str, p2p: Arc<P2pState>) -> Self {
+    pub(crate) fn dormant(game_id: &str, p2p: Arc<P2pState>) -> Self {
         Self {
-            inner: Arc::new(SessionInner::new(public_key, p2p)),
+            inner: Arc::new(SessionInner::new(game_id, p2p)),
             ended: AtomicBool::new(false),
         }
     }
@@ -589,7 +589,10 @@ mod tests {
     use super::*;
 
     fn session() -> SessionInner {
-        SessionInner::new("pk_test_title", Arc::new(P2pState::new()))
+        SessionInner::new(
+            "7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34",
+            Arc::new(P2pState::new()),
+        )
     }
 
     fn sampling_session() -> SessionInner {
@@ -755,19 +758,19 @@ mod tests {
     #[test]
     fn the_snapshot_carries_the_lobby_polling_state() {
         let p2p = Arc::new(P2pState::new());
-        let inner = SessionInner::new("pk_test_title", Arc::clone(&p2p));
+        let inner = SessionInner::new("7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34", Arc::clone(&p2p));
         inner.lock().tracking = TrackingState::Pending;
         assert_eq!(inner.snapshot().lobby_events, LobbyPollingState::Off);
 
-        crate::p2p::P2p::new("pk_test_title", &p2p);
+        crate::p2p::P2p::new("7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34", &p2p);
         assert_eq!(inner.snapshot().lobby_events, LobbyPollingState::Active);
     }
 
     #[test]
     fn a_disabled_session_polls_nothing_however_armed_it_is() {
         let p2p = Arc::new(P2pState::new());
-        let inner = SessionInner::new("pk_test_title", Arc::clone(&p2p));
-        crate::p2p::P2p::new("pk_test_title", &p2p);
+        let inner = SessionInner::new("7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34", Arc::clone(&p2p));
+        crate::p2p::P2p::new("7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34", &p2p);
 
         assert_eq!(inner.lock().tracking, TrackingState::Disabled);
         assert_eq!(

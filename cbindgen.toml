@@ -51,14 +51,13 @@ include = [
   "arcane_sdk_checked_at",
   "arcane_sdk_user_id",
   "arcane_sdk_game_id",
-  "arcane_sdk_public_key",
   "arcane_sdk_device_hash",
   "arcane_sdk_last_error_json",
 ]
 item_types = ["constants", "functions"]
 # Rust-only; an unprefixed macro of this name would collide in a C project.
 exclude = [
-  "MAX_PUBLIC_KEY_LEN",
+  "MAX_GAME_ID_LEN",
   "MAX_ACHIEVEMENT_KEY_LEN",
   "MAX_LOBBY_PAYLOAD_LEN",
   "JOIN_CODE_LEN",

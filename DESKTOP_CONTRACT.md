@@ -45,7 +45,7 @@ which is what the pre-0.4 SDK always did, and it is wrong on a shared machine:
 
 | `session.json` | SDK behaviour |
 |---|---|
-| Names a user | Reads exactly `tickets/{user_id}/{public_key}.ticket`. **No fallback** — another account's ticket must never satisfy this one. |
+| Names a user | Reads exactly `tickets/{user_id}/{game_id}.ticket`. **No fallback** — another account's ticket must never satisfy this one. |
 | Present, `user_id` null/empty | `not_authenticated` — nobody is signed in, so no ownership can be attributed. |
 | Absent (older desktop) | Scans `tickets/*/`. Exactly one match is used. Several matches → `ambiguous_session` rather than a guess. |
 
@@ -71,9 +71,9 @@ Existing fields are unchanged and still required:
 
 ---
 
-## 3. `POST /v1/games/{public_key}/ownership/refresh` — add `user_id` and `game_id`
+## 3. `POST /v1/games/{game_id}/ownership/refresh` — add `user_id`
 
-**Status: new fields, additive.**
+**Status: new field, additive.**
 
 The SDK sends no request body.
 
@@ -93,7 +93,7 @@ The SDK sends no request body.
 | `ok` | yes | Refresh completed. |
 | `drm_enabled` | yes | Whether this title enforces DRM. |
 | `user_id` | *new*, optional | Signed-in account. Takes precedence over the `/v1/health` value. |
-| `game_id` | *new*, optional | Canonical title id, surfaced as `ArcaneClient::game_id()`. |
+| `game_id` | optional | Echo of the `{game_id}` path segment. The SDK ignores it: `ArcaneClient::game_id()` is the value the game passed to `init`. |
 
 Two behaviours worth knowing:
 
@@ -131,13 +131,13 @@ New `error` values are safe to introduce: an older SDK degrades to
 ## 4. Deep link
 
 ```
-arcane-powered://sdk/ownership?game_id={public_key}
+arcane-powered://sdk/ownership?game_id={game_id}
 ```
 
 Opened when the loopback is not reachable. The SDK then polls `/v1/health` every
 400 ms for up to 25 s before giving up with `arcane_unavailable`.
 
-The `public_key` is interpolated raw, but the SDK validates it against
+The game id is interpolated raw, but the SDK validates it against
 `[A-Za-z0-9_.-]{1,256}` before any URL is built, so it cannot carry a query
 separator, a path traversal, or whitespace.
 
@@ -150,8 +150,8 @@ separator, a path traversal, or whitespace.
 ├── machine_id                              written by the SDK (mode 0600)
 ├── jwks.json                               written by the desktop
 ├── session.json                            written by the desktop  ← new
-├── flags/{public_key}.json                 { "drm_enabled": bool }
-└── tickets/{user_id}/{public_key}.ticket
+├── flags/{game_id}.json                    { "drm_enabled": bool }
+└── tickets/{user_id}/{game_id}.ticket
 ```
 
 Ticket file:
@@ -169,19 +169,29 @@ Ticket file:
 }
 ```
 
-The SDK reads `user_id` and `game_id` from this file to populate the client, so
-both should be filled even when `drm_enabled` is `false`.
+The SDK reads `user_id` from this file to populate the client, so it should be
+filled even when `drm_enabled` is `false`. `game_id` stays in the layout for the
+desktop's own use; the SDK does not read it, since the game already told `init`
+which title it is.
 
-JWT claims enforced by the SDK: `gid` must equal the public key, `own` must be
-`true`, `dev` must equal the local device hash, `iss` = `arcane-drm`,
-`aud` = `arcane-game-sdk`, ES256, ±300 s skew on `iat`/`nbf`/`exp`.
+JWT claims enforced by the SDK: `gid` must equal the game id passed to `init`,
+`own` must be `true`, `dev` must equal the local device hash, `iss` =
+`arcane-drm`, `aud` = `arcane-game-sdk`, ES256, ±300 s skew on `iat`/`nbf`/`exp`.
 
 ---
 
 ## 6. Not in scope: verifying the calling process
 
+The game id is **not a secret and is not a credential**. It is a public
+identifier — it names a title, exactly like the `{game_id}` already in every
+route above — and knowing it grants nothing. Ownership is proven by the signed
+ownership ticket alone: an ES256 JWT minted by the backend, bound to an account
+and to a device, which no caller can forge from the id. A desktop build must
+never treat the id in a request as evidence of anything beyond which title is
+being asked about.
+
 The SDK does **not** attempt to prove that the process calling the loopback is
-the game matching the public key, and it should not: any secret compiled into a
+the game matching the game id, and it should not: any secret compiled into a
 game binary is extractable, and an attacker can simply patch out the init call.
 Real enforcement belongs on the server, where entitlement checks cannot be
 edited by the client.
@@ -216,11 +226,11 @@ error bodies as everywhere else. The SDK maps a `404` **without** a JSON body
 (unknown route, desktop too old) to `feature_unavailable`.
 
 ```
-POST /v1/games/{public_key}/session/start
+POST /v1/games/{game_id}/session/start
 → 200 { "session_id": "uuid", "user_id": "…", "game_id": "…", "fps_sampling": true }
 → 401 not_authenticated · 403 not_owned · 404 game_not_found
 
-POST /v1/games/{public_key}/session/heartbeat
+POST /v1/games/{game_id}/session/heartbeat
 { "session_id": "uuid", "seconds": 120,
   "samples": [ { "sample_id": "uuid", "taken_at": 1786480000, "fps_avg": 59.8,
                  "window_seconds": 30, "frames": 1794,
@@ -228,7 +238,7 @@ POST /v1/games/{public_key}/session/heartbeat
 → 200 { "ok": true, "fps_sampling": true }
 → 404 unknown_session (the desktop expired the session → the SDK starts a new one)
 
-POST /v1/games/{public_key}/session/end
+POST /v1/games/{game_id}/session/end
 { "session_id": "uuid", "seconds": 1830, "samples": [ … ] }
 → 200 { "ok": true }
 ```
@@ -266,11 +276,11 @@ Same conventions as §8: `http://127.0.0.1:39284`, JSON bodies, `{ "error", "mes
 old) maps to `feature_unavailable`.
 
 ```
-GET /v1/games/{public_key}/achievements
+GET /v1/games/{game_id}/achievements
 → 200 { "achievements": [ { "key": "first_blood", "title": "…", "description": "…",
          "icon_url": "…|null", "hidden": false, "unlocked_at": "2026-…|null" } ] }
 
-POST /v1/games/{public_key}/achievements/{key}/unlock
+POST /v1/games/{game_id}/achievements/{key}/unlock
 → 200 { "key": "first_blood", "unlocked_at": "…", "already_unlocked": false, "queued": false }
 → 404 unknown_achievement · 403 not_owned
 ```
@@ -320,15 +330,15 @@ GET /v1/friends
 ```
 
 - The route is **not** scoped to a title: it answers for the signed-in account, and the
-  SDK derives `in_game = playing_game_id == game_id()` per friend. A client with no
-  `game_id` reports every friend as not in game rather than guessing.
+  SDK derives `in_game = playing_game_id == game_id()` per friend, where `game_id()` is
+  the id the game passed to `init`.
 - `stale: true` means the desktop app is offline and served its own cache. The SDK
   passes it through as `FriendList::stale`; it is a successful answer, not an error.
 - The desktop app caches the list for 15 seconds. The SDK caches nothing and calls the
   route every time the game asks, so the cache is the desktop's to size.
-- `playing_game_id` is the canonical `game_id` of the title the friend is playing, the
-  same value `session/start` reports in §8 — the desktop sets that presence itself, so
-  nothing here depends on the game.
+- `playing_game_id` is the `game_id` of the title the friend is playing — the same value
+  a game passes to `init` and the SDK puts in the `{game_id}` routes. The desktop sets
+  that presence itself, so nothing here depends on the game.
 - One synchronous round trip on the calling thread. The SDK never polls friends in the
   background and never opens the deep link for them.
 - Friend requests, chat and the overlay are launcher flows. The SDK only reads presence.
@@ -341,7 +351,7 @@ GET /v1/friends
 | Desktop older than this route | Bare `404` → `feature_unavailable` |
 | `401 not_authenticated` | `not_authenticated`, retryable — the player can sign in and retry |
 | `ARCANE_OFFLINE_ONLY` set | `network_required`, raised before any call |
-| No `game_id` on the client | Every `in_game` is `false`; `online` still comes through |
+| A friend is playing another title | Their `in_game` is `false`; `online` still comes through |
 
 ---
 
@@ -354,26 +364,26 @@ Same conventions as §8–§10: `http://127.0.0.1:39284`, JSON bodies, `{ "error
 old) maps to `feature_unavailable`.
 
 ```
-POST /v1/games/{public_key}/lobbies
+POST /v1/games/{game_id}/lobbies
 { "max_players": 4, "visibility": "friends" | "code" | "friends_and_code", "payload": "<base64 ≤ 4 KiB>" }
 → 200 { "lobby_id", "join_code": "K7P3QX" | null, "host_user_id", "host_payload", "visibility", "max_players",
          "members": [ { "user_id", "pseudo", "payload" } ], "expires_at" }
 
-POST /v1/games/{public_key}/lobbies/join       { "join_code": "K7P3QX", "payload": "…" }   → 200 same lobby object
-POST /v1/games/{public_key}/lobbies/{id}/join  { "payload": "…" }                          → 200 same lobby object
-GET  /v1/games/{public_key}/lobbies/{id}                                                   → 200 same lobby object
+POST /v1/games/{game_id}/lobbies/join       { "join_code": "K7P3QX", "payload": "…" }   → 200 same lobby object
+POST /v1/games/{game_id}/lobbies/{id}/join  { "payload": "…" }                          → 200 same lobby object
+GET  /v1/games/{game_id}/lobbies/{id}                                                   → 200 same lobby object
 → 404 lobby_not_found · 409 lobby_full · 410 lobby_closed · 403 not_friends
 
-POST /v1/games/{public_key}/lobbies/{id}/invite  { "to_user_id": "…" }   → 200 { "ok": true }
-POST /v1/games/{public_key}/lobbies/{id}/leave                             → 200 { "ok": true }
-DELETE /v1/games/{public_key}/lobbies/{id}                                  → 200 { "ok": true }  (host)
+POST /v1/games/{game_id}/lobbies/{id}/invite  { "to_user_id": "…" }   → 200 { "ok": true }
+POST /v1/games/{game_id}/lobbies/{id}/leave                             → 200 { "ok": true }
+DELETE /v1/games/{game_id}/lobbies/{id}                                  → 200 { "ok": true }  (host)
 
-GET  /v1/games/{public_key}/lobbies/events?after={cursor}
+GET  /v1/games/{game_id}/lobbies/events?after={cursor}
 → 200 { "events": [ { "id": "…", "type": "invite" | "member_joined" | "member_left" | "lobby_closed",
          "lobby_id", "join_code": "…|null", "from_user_id": "…|null", "user_id": "…|null",
          "pseudo": "…|null", "payload": "…|null" } ], "cursor": "…", "dropped": false }
 
-GET  /v1/games/{public_key}/launch-context   → 200 { "join_code": "K7P3QX" | null }
+GET  /v1/games/{game_id}/launch-context   → 200 { "join_code": "K7P3QX" | null }
 ```
 
 - Arcane provides the **meeting point only**. There is no relay, no NAT traversal, no

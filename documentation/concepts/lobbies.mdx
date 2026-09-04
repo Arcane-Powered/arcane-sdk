@@ -19,7 +19,7 @@ Arcane ships that first half only.
 ```rust
 use arcane_sdk::{ArcaneClient, LobbyEvent, Visibility};
 
-let client = ArcaneClient::init(PUBLIC_KEY)?;
+let client = ArcaneClient::init(GAME_ID)?;
 
 // Host: open a lobby and put my endpoint in it.
 let lobby = client.p2p().create_lobby(4, Visibility::FriendsAndCode, my_endpoint())?;

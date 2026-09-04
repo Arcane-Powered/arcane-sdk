@@ -4,7 +4,7 @@ description: "FFI entry points for Unity, Unreal, and other native engines."
 keywords: ["ffi", "c abi", "unity", "unreal", "arcane_sdk_init", "singleton", "header"]
 ---
 
-Minimal C ABI for engines that cannot call Rust directly. Build as `cdylib` or `staticlib`, include [`include/arcane_sdk.h`](https://github.com/Arcane-Powered/arcane-sdk/blob/main/include/arcane_sdk.h), then init at launch with your portal public key.
+Minimal C ABI for engines that cannot call Rust directly. Build as `cdylib` or `staticlib`, include [`include/arcane_sdk.h`](https://github.com/Arcane-Powered/arcane-sdk/blob/main/include/arcane_sdk.h), then init at launch with your title's game id.
 
 The client is a **process-wide singleton** — you init once and read from getters, with no handle to carry through C# or Blueprint.
 
@@ -50,10 +50,10 @@ Two conventions, by function kind. Both are in the header as named constants.
 ### `arcane_sdk_init`
 
 ```c
-int arcane_sdk_init(const char *public_key, char *err_buf, size_t err_len);
+int arcane_sdk_init(const char *game_id, char *err_buf, size_t err_len);
 ```
 
-Checks ownership and builds the singleton. Call once at launch. `public_key` is the **portal public key** (NUL-terminated UTF-8).
+Checks ownership and builds the singleton. Call once at launch. `game_id` is the **game id** of your title in the Arcane portal (NUL-terminated UTF-8).
 
 On `2`, `err_buf` holds `code: message — hint (context…)`. Parse up to the first `:` for the stable code.
 
@@ -131,7 +131,6 @@ long long arcane_sdk_checked_at(void);         /* unix seconds, or -1 */
 
 int  arcane_sdk_user_id(char *buf, size_t len);
 int  arcane_sdk_game_id(char *buf, size_t len);
-int  arcane_sdk_public_key(char *buf, size_t len);
 int  arcane_sdk_device_hash(char *buf, size_t len);
 int  arcane_sdk_session_json(char *buf, size_t len);
 int  arcane_sdk_achievements_json(char *buf, size_t len);
@@ -188,7 +187,7 @@ if (arcane_sdk_friends_json(json, sizeof(json)) > 0) {
 }
 ```
 
-`in_game` is `true` for a friend playing this title right now — always `false` when the SDK has no `game_id`. `stale` is `true` when the desktop app answered from its cache because it is offline; the list is still usable. A `-4` means the call failed — read `arcane_sdk_last_error_json` for the code.
+`in_game` is `true` for a friend playing this title right now — the one whose `game_id` you passed to `arcane_sdk_init`. `stale` is `true` when the desktop app answered from its cache because it is offline; the list is still usable. A `-4` means the call failed — read `arcane_sdk_last_error_json` for the code.
 
 ### Lobbies
 
@@ -234,7 +233,7 @@ Buffer sizing: user ids and device hashes fit comfortably in 64 bytes; allow 256
 
 int boot(void) {
   char err[512];
-  int rc = arcane_sdk_init("pk_...", err, sizeof(err));
+  int rc = arcane_sdk_init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413", err, sizeof(err));
 
   if (rc == ARCANE_ERR_ARGUMENT) {
     return 0;                      /* null or non-UTF-8 key */

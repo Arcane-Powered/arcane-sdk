@@ -15,13 +15,13 @@
 
 - **Arcane Powered** — the platform / desktop launcher
 - **Arcane SDK** — the integration layer games link to talk to Arcane Powered (Rust + C ABI)
-- **Portal public key** — identifier generated in the Arcane portal for a title; pass it to `ArcaneClient::init` (the crate parameter is named `public_key`)
-- **Client** — the `ArcaneClient` a game builds once at launch; holds `user_id`, `game_id`, ownership, device hash
+- **Game id** — the identifier of a title in the Arcane portal; pass it to `ArcaneClient::init` (the crate parameter is named `game_id`)
+- **Client** — the `ArcaneClient` a game builds once at launch; holds the `game_id` it was built with, plus `user_id`, ownership, device hash
 - **Ownership ticket** — cached JWT proving offline ownership for a title + device (one platform surface)
 - **DRM root** — `{app_data}/Arcane Powered/drm/`
 - **Session** — `session.json` under the DRM root, written by Arcane desktop; names the signed-in account
 - Prefer "platform integration" for the SDK overall; ownership is the default launch check inside `ArcaneClient::init`, not a separate integration step
-- Never call the portal public key a "game id" in prose — say "public key" / "portal public key". `game_id` is now a distinct concept: the canonical title id on the client
+- Call the value passed to `init` the **game id** — never a "public key". There is one identifier, not two: `game_id()` returns exactly what `init` was given
 - Building the client *is* the ownership check — never imply a second ownership call is needed
 - The client does not revalidate on its own; say so wherever `refresh` is mentioned
 

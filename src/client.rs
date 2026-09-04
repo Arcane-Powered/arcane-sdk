@@ -12,32 +12,32 @@ use crate::paths::{load_cached_drm_flag, load_session, SessionState};
 use crate::session::{Session, SessionSnapshot, TrackingState};
 use crate::ticket::{check_ownership_offline, OwnershipCheck};
 
-/// Longest public key the SDK will accept, in bytes.
-pub const MAX_PUBLIC_KEY_LEN: usize = 256;
+/// Longest game id the SDK will accept, in bytes.
+pub const MAX_GAME_ID_LEN: usize = 256;
 
-/// Reject a malformed public key before any filesystem or network work happens,
-/// so a typo surfaces as `invalid_public_key` instead of a confusing
-/// `ticket_missing` several layers down.
+/// Reject a malformed game id before any filesystem or network work happens, so
+/// a typo surfaces as `invalid_game_id` instead of a confusing `ticket_missing`
+/// several layers down.
 ///
-/// The charset is also what makes it safe to interpolate the key straight into
+/// The charset is also what makes it safe to interpolate the id straight into
 /// the loopback URL and the `arcane-powered://` deep link.
-pub(crate) fn validate_public_key(public_key: &str) -> Result<(), SdkError> {
-    if public_key.is_empty() {
-        return Err(SdkError::invalid_public_key("The public key is empty.")
-            .with_hint("Pass the public key generated for this title in the Arcane portal."));
+pub(crate) fn validate_game_id(game_id: &str) -> Result<(), SdkError> {
+    if game_id.is_empty() {
+        return Err(SdkError::invalid_game_id("The game id is empty.")
+            .with_hint("Pass the game id shown for this title in the Arcane portal."));
     }
-    if public_key.len() > MAX_PUBLIC_KEY_LEN {
-        return Err(SdkError::invalid_public_key("The public key is too long.")
-            .with_hint("Pass the public key from the Arcane portal, not a file path or a token.")
-            .with_context("length", public_key.len())
-            .with_context("max_length", MAX_PUBLIC_KEY_LEN));
+    if game_id.len() > MAX_GAME_ID_LEN {
+        return Err(SdkError::invalid_game_id("The game id is too long.")
+            .with_hint("Pass the game id from the Arcane portal, not a file path or a token.")
+            .with_context("length", game_id.len())
+            .with_context("max_length", MAX_GAME_ID_LEN));
     }
-    if let Some((index, bad)) = public_key
+    if let Some((index, bad)) = game_id
         .char_indices()
         .find(|(_, c)| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')))
     {
-        return Err(SdkError::invalid_public_key(
-            "The public key contains a character that is not allowed.",
+        return Err(SdkError::invalid_game_id(
+            "The game id contains a character that is not allowed.",
         )
         .with_hint(
             "Allowed characters are ASCII letters, digits, and `_`, `-`, `.`. \
@@ -52,8 +52,9 @@ pub(crate) fn validate_public_key(public_key: &str) -> Result<(), SdkError> {
 /// The handle a game holds for its whole session.
 ///
 /// Create it once at launch with [`ArcaneClient::init`]. It caches the ownership
-/// result, the signed-in `user_id`, the title's `game_id` and the device
-/// fingerprint, so nothing downstream has to pass the public key around again.
+/// result, the signed-in `user_id` and the device fingerprint, alongside the
+/// `game_id` it was built with, so nothing downstream has to pass the id around
+/// again.
 ///
 /// Ownership is never revalidated on its own: it reflects the state as of the
 /// last [`init`](ArcaneClient::init) or [`refresh`](ArcaneClient::refresh). The
@@ -65,8 +66,7 @@ pub(crate) fn validate_public_key(public_key: &str) -> Result<(), SdkError> {
 /// when the last clone is dropped, or on [`shutdown`](ArcaneClient::shutdown).
 #[derive(Debug, Clone)]
 pub struct ArcaneClient {
-    public_key: String,
-    game_id: Option<String>,
+    game_id: String,
     user_id: Option<String>,
     device_hash: String,
     ownership: OwnershipStatus,
@@ -80,7 +80,10 @@ pub struct ArcaneClient {
 impl ArcaneClient {
     /// Verify ownership and build the client. Call once, at launch.
     ///
-    /// 1. Validates `public_key`.
+    /// `game_id` is the id of your title in the Arcane portal — the same value
+    /// [`ArcaneClient::game_id`] reports for the rest of the session.
+    ///
+    /// 1. Validates `game_id`.
     /// 2. If the cached `drm_enabled` flag is `false`, returns immediately with
     ///    [`OwnershipStatus::DrmDisabled`] — no ticket required.
     /// 3. Otherwise verifies the cached ownership ticket offline.
@@ -94,30 +97,29 @@ impl ArcaneClient {
     ///
     /// # Errors
     ///
-    /// `invalid_public_key`, `ticket_missing`, `ticket_expired`, `ticket_invalid`,
+    /// `invalid_game_id`, `ticket_missing`, `ticket_expired`, `ticket_invalid`,
     /// `device_mismatch`, `clock_rollback`, `not_owned`, `network_required`,
     /// `not_authenticated`, `arcane_unavailable`, `ambiguous_session`, `internal`.
-    pub fn init(public_key: &str) -> Result<Self, SdkError> {
-        validate_public_key(public_key)?;
-        let client = Self::resolve_ownership(public_key)?;
+    pub fn init(game_id: &str) -> Result<Self, SdkError> {
+        validate_game_id(game_id)?;
+        let client = Self::resolve_ownership(game_id)?;
         client.session.begin(client.tracking_state());
         Ok(client)
     }
 
-    fn resolve_ownership(public_key: &str) -> Result<Self, SdkError> {
-        if let Some(false) = load_cached_drm_flag(public_key) {
-            return Self::drm_disabled(public_key);
+    fn resolve_ownership(game_id: &str) -> Result<Self, SdkError> {
+        if let Some(false) = load_cached_drm_flag(game_id) {
+            return Self::drm_disabled(game_id);
         }
 
-        match check_ownership_offline(public_key) {
-            Ok(check) => Ok(Self::from_check(public_key, check)),
+        match check_ownership_offline(game_id) {
+            Ok(check) => Ok(Self::from_check(game_id, check)),
             Err(err) if err.should_refresh_via_desktop() && !offline_only() => {
-                let outcome = refresh_ownership_via_desktop(public_key)?;
-                match check_ownership_offline(public_key) {
+                let outcome = refresh_ownership_via_desktop(game_id)?;
+                match check_ownership_offline(game_id) {
                     Ok(check) => {
-                        let mut client = Self::from_check(public_key, check);
+                        let mut client = Self::from_check(game_id, check);
                         client.user_id = client.user_id.or(outcome.user_id);
-                        client.game_id = client.game_id.or(outcome.game_id);
                         Ok(client)
                     }
                     // The desktop confirmed DRM is off for this title, so there is
@@ -125,9 +127,8 @@ impl ArcaneClient {
                     Err(retry_err)
                         if !outcome.drm_enabled && retry_err.should_refresh_via_desktop() =>
                     {
-                        let mut client = Self::drm_disabled(public_key)?;
+                        let mut client = Self::drm_disabled(game_id)?;
                         client.user_id = client.user_id.or(outcome.user_id);
-                        client.game_id = client.game_id.or(outcome.game_id);
                         Ok(client)
                     }
                     Err(retry_err) => Err(retry_err),
@@ -164,17 +165,16 @@ impl ArcaneClient {
             .with_context("env", OFFLINE_ONLY_ENV));
         }
 
-        let outcome = refresh_ownership_via_desktop(&self.public_key)?;
+        let outcome = refresh_ownership_via_desktop(&self.game_id)?;
 
-        let mut next = match check_ownership_offline(&self.public_key) {
-            Ok(check) => Self::from_check(&self.public_key, check),
+        let mut next = match check_ownership_offline(&self.game_id) {
+            Ok(check) => Self::from_check(&self.game_id, check),
             Err(err) if !outcome.drm_enabled && err.should_refresh_via_desktop() => {
-                Self::drm_disabled(&self.public_key)?
+                Self::drm_disabled(&self.game_id)?
             }
             Err(err) => return Err(err),
         };
         next.user_id = next.user_id.or(outcome.user_id).or(self.user_id.clone());
-        next.game_id = next.game_id.or(outcome.game_id).or(self.game_id.clone());
         next.session = Arc::clone(&self.session);
         next.achievements = Arc::clone(&self.achievements);
         next.p2p = Arc::clone(&self.p2p);
@@ -184,14 +184,9 @@ impl ArcaneClient {
         Ok(status)
     }
 
-    /// The public key this client was initialised with.
-    pub fn public_key(&self) -> &str {
-        &self.public_key
-    }
-
-    /// Canonical title id, when Arcane has reported one.
-    pub fn game_id(&self) -> Option<&str> {
-        self.game_id.as_deref()
+    /// The game id this client was initialised with.
+    pub fn game_id(&self) -> &str {
+        &self.game_id
     }
 
     /// The signed-in Arcane account, when one is known.
@@ -252,12 +247,12 @@ impl ArcaneClient {
     /// frame. [`Achievements::is_unlocked`] only reads memory.
     ///
     /// ```no_run
-    /// # let client = arcane_sdk::ArcaneClient::init("pk_...")?;
+    /// # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
     /// client.achievements().unlock("first_blood")?;
     /// # Ok::<(), arcane_sdk::SdkError>(())
     /// ```
     pub fn achievements(&self) -> Achievements<'_> {
-        Achievements::new(&self.public_key, &self.achievements)
+        Achievements::new(&self.game_id, &self.achievements)
     }
 
     /// This player's friends on Arcane, with `online` and `in_game` for this
@@ -268,18 +263,13 @@ impl ArcaneClient {
     /// list of its own: the Arcane desktop app caches it and flags a stale
     /// answer.
     ///
-    /// `in_game` comes from this client's [`game_id`](ArcaneClient::game_id),
-    /// which is copied into a clone when the clone is made: a clone taken
-    /// before a [`refresh`](ArcaneClient::refresh) that discovered a `game_id`
-    /// still reports every friend as not in game.
-    ///
     /// ```no_run
-    /// # let client = arcane_sdk::ArcaneClient::init("pk_...")?;
+    /// # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
     /// client.friends().list()?;
     /// # Ok::<(), arcane_sdk::SdkError>(())
     /// ```
     pub fn friends(&self) -> Friends<'_> {
-        Friends::new(self.game_id())
+        Friends::new(&self.game_id)
     }
 
     /// P2P lobbies for this title: create one, join by code or by id, invite a
@@ -297,13 +287,13 @@ impl ArcaneClient {
     ///
     /// ```no_run
     /// # use arcane_sdk::Visibility;
-    /// # let client = arcane_sdk::ArcaneClient::init("pk_...")?;
+    /// # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
     /// # let my_endpoint = b"udp://203.0.113.7:7777";
     /// let lobby = client.p2p().create_lobby(4, Visibility::FriendsAndCode, my_endpoint)?;
     /// # Ok::<(), arcane_sdk::SdkError>(())
     /// ```
     pub fn p2p(&self) -> P2p<'_> {
-        P2p::new(&self.public_key, &self.p2p)
+        P2p::new(&self.game_id, &self.p2p)
     }
 
     /// A copy of the current play session state: tracking, playtime, FPS
@@ -323,27 +313,25 @@ impl ArcaneClient {
         self.session.end();
     }
 
-    fn from_check(public_key: &str, check: OwnershipCheck) -> Self {
+    fn from_check(game_id: &str, check: OwnershipCheck) -> Self {
         let p2p = Arc::new(P2pState::new());
         Self {
-            public_key: public_key.to_string(),
-            game_id: check.game_id,
+            game_id: game_id.to_string(),
             user_id: check.user_id,
             device_hash: check.device_hash,
             ownership: check.status,
             ticket_expires_at: check.ticket_expires_at,
             checked_at: now_unix(),
-            session: Arc::new(Session::dormant(public_key, Arc::clone(&p2p))),
+            session: Arc::new(Session::dormant(game_id, Arc::clone(&p2p))),
             achievements: Arc::new(AchievementCache::new()),
             p2p,
         }
     }
 
-    fn drm_disabled(public_key: &str) -> Result<Self, SdkError> {
+    fn drm_disabled(game_id: &str) -> Result<Self, SdkError> {
         let p2p = Arc::new(P2pState::new());
         Ok(Self {
-            public_key: public_key.to_string(),
-            game_id: None,
+            game_id: game_id.to_string(),
             user_id: match load_session() {
                 SessionState::SignedIn(user_id) => Some(user_id),
                 _ => None,
@@ -352,7 +340,7 @@ impl ArcaneClient {
             ownership: OwnershipStatus::DrmDisabled,
             ticket_expires_at: None,
             checked_at: now_unix(),
-            session: Arc::new(Session::dormant(public_key, Arc::clone(&p2p))),
+            session: Arc::new(Session::dormant(game_id, Arc::clone(&p2p))),
             achievements: Arc::new(AchievementCache::new()),
             p2p,
         })
@@ -364,49 +352,54 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_portal_shaped_keys() {
-        for key in ["pk_live_abc123", "pk-test.01", "ABC", "0"] {
-            assert!(validate_public_key(key).is_ok(), "rejected {key}");
+    fn accepts_portal_shaped_ids() {
+        for id in [
+            "9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413",
+            "game.01_beta",
+            "ABC",
+            "0",
+        ] {
+            assert!(validate_game_id(id).is_ok(), "rejected {id}");
         }
     }
 
     #[test]
-    fn rejects_empty_key() {
-        let err = validate_public_key("").unwrap_err();
-        assert_eq!(err.code(), "invalid_public_key");
+    fn rejects_an_empty_id() {
+        let err = validate_game_id("").unwrap_err();
+        assert_eq!(err.code(), "invalid_game_id");
         assert!(err.hint().is_some());
     }
 
     #[test]
-    fn rejects_oversized_key() {
-        let err = validate_public_key(&"a".repeat(MAX_PUBLIC_KEY_LEN + 1)).unwrap_err();
-        assert_eq!(err.code(), "invalid_public_key");
+    fn rejects_an_oversized_id() {
+        let err = validate_game_id(&"a".repeat(MAX_GAME_ID_LEN + 1)).unwrap_err();
+        assert_eq!(err.code(), "invalid_game_id");
         assert!(err
             .context()
             .iter()
-            .any(|(k, v)| k == "length" && v == &(MAX_PUBLIC_KEY_LEN + 1).to_string()));
+            .any(|(k, v)| k == "length" && v == &(MAX_GAME_ID_LEN + 1).to_string()));
     }
 
     #[test]
     fn rejects_characters_that_would_escape_a_url_or_path() {
-        for key in [
-            "pk_abc/../evil",
-            "pk abc",
-            "pk_abc?x=1",
-            "pk_abc#frag",
-            "pk_abc\n",
-            " pk_abc",
-            "pk_abc ",
-            "pk_é",
+        for id in [
+            "9a1f8c3e/../evil",
+            "9a1f8c3e 4b27",
+            "9a1f8c3e?x=1",
+            "9a1f8c3e#frag",
+            "9a1f8c3e\n",
+            " 9a1f8c3e",
+            "9a1f8c3e ",
+            "9a1f8c3é",
         ] {
-            let err = validate_public_key(key).unwrap_err();
-            assert_eq!(err.code(), "invalid_public_key", "accepted {key:?}");
+            let err = validate_game_id(id).unwrap_err();
+            assert_eq!(err.code(), "invalid_game_id", "accepted {id:?}");
         }
     }
 
     #[test]
     fn reports_where_the_bad_character_is() {
-        let err = validate_public_key("pk_ab/cd").unwrap_err();
+        let err = validate_game_id("9a1f8/c3e").unwrap_err();
         let context: Vec<_> = err
             .context()
             .iter()

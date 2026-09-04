@@ -5,8 +5,8 @@
 //! ├── machine_id
 //! ├── jwks.json
 //! ├── session.json                     written by Arcane desktop on sign-in/out
-//! ├── flags/{public_key}.json
-//! └── tickets/{user_id}/{public_key}.ticket
+//! ├── flags/{game_id}.json
+//! └── tickets/{user_id}/{game_id}.ticket
 //! ```
 //!
 //! `session.json` is what lets the SDK pick *this* account's ticket instead of
@@ -56,10 +56,10 @@ pub(crate) fn tickets_root() -> Result<PathBuf, SdkError> {
     Ok(drm_data_root()?.join("tickets"))
 }
 
-pub(crate) fn ticket_path(user_id: &str, public_key: &str) -> Result<PathBuf, SdkError> {
+pub(crate) fn ticket_path(user_id: &str, game_id: &str) -> Result<PathBuf, SdkError> {
     Ok(tickets_root()?
         .join(user_id)
-        .join(format!("{public_key}.ticket")))
+        .join(format!("{game_id}.ticket")))
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,11 +96,11 @@ pub(crate) fn load_session() -> SessionState {
     }
 }
 
-pub(crate) fn load_cached_drm_flag(public_key: &str) -> Option<bool> {
+pub(crate) fn load_cached_drm_flag(game_id: &str) -> Option<bool> {
     let path = drm_data_root()
         .ok()?
         .join("flags")
-        .join(format!("{public_key}.json"));
+        .join(format!("{game_id}.json"));
     let raw = fs::read_to_string(path).ok()?;
     let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
     value.get("drm_enabled")?.as_bool()
@@ -133,15 +133,15 @@ fn read_ticket_at(path: &Path) -> Result<ResolvedTicket, SdkError> {
 /// Find the ticket belonging to the **currently signed-in** account.
 ///
 /// Resolution order:
-/// 1. `session.json` names a user → read exactly `tickets/{user_id}/{key}.ticket`.
+/// 1. `session.json` names a user → read exactly `tickets/{user_id}/{game_id}.ticket`.
 ///    No fallback: another account's ticket must never satisfy this account.
 /// 2. `session.json` records a signed-out state → `not_authenticated`.
 /// 3. No `session.json` (older Arcane desktop) → scan `tickets/*/`. Exactly one
 ///    match is used; several matches are `ambiguous_session` rather than a guess.
-pub(crate) fn resolve_ticket(public_key: &str) -> Result<ResolvedTicket, SdkError> {
+pub(crate) fn resolve_ticket(game_id: &str) -> Result<ResolvedTicket, SdkError> {
     match load_session() {
         SessionState::SignedIn(user_id) => {
-            let path = ticket_path(&user_id, public_key)?;
+            let path = ticket_path(&user_id, game_id)?;
             if !path.exists() {
                 return Err(SdkError::ticket_missing(
                     "No ownership ticket is cached for this title on the signed-in account.",
@@ -150,7 +150,7 @@ pub(crate) fn resolve_ticket(public_key: &str) -> Result<ResolvedTicket, SdkErro
                     "Open the Arcane desktop app once while online so it can mint a ticket \
                      for this account.",
                 )
-                .with_context("public_key", public_key)
+                .with_context("game_id", game_id)
                 .with_context("user_id", &user_id)
                 .with_context("expected_path", path.display()));
             }
@@ -160,25 +160,25 @@ pub(crate) fn resolve_ticket(public_key: &str) -> Result<ResolvedTicket, SdkErro
             "Nobody is signed in to Arcane on this machine.",
         )
         .with_hint("Sign in to the Arcane desktop app, then retry.")
-        .with_context("public_key", public_key)
+        .with_context("game_id", game_id)
         .with_context(
             "session_path",
             session_path()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| "<unresolved>".into()),
         )),
-        SessionState::Unknown => resolve_ticket_by_scan(public_key),
+        SessionState::Unknown => resolve_ticket_by_scan(game_id),
     }
 }
 
 /// Compatibility path for Arcane desktop builds that do not write `session.json`.
-fn resolve_ticket_by_scan(public_key: &str) -> Result<ResolvedTicket, SdkError> {
+fn resolve_ticket_by_scan(game_id: &str) -> Result<ResolvedTicket, SdkError> {
     let root = tickets_root()?;
     if !root.exists() {
         return Err(
             SdkError::ticket_missing("No ownership tickets are cached on this machine.")
                 .with_hint("Sign in to the Arcane desktop app once while online, then retry.")
-                .with_context("public_key", public_key)
+                .with_context("game_id", game_id)
                 .with_context("tickets_root", root.display()),
         );
     }
@@ -191,7 +191,7 @@ fn resolve_ticket_by_scan(public_key: &str) -> Result<ResolvedTicket, SdkError> 
 
     let mut matches: Vec<PathBuf> = Vec::new();
     for entry in entries.flatten() {
-        let candidate = entry.path().join(format!("{public_key}.ticket"));
+        let candidate = entry.path().join(format!("{game_id}.ticket"));
         if candidate.exists() {
             matches.push(candidate);
         }
@@ -199,10 +199,10 @@ fn resolve_ticket_by_scan(public_key: &str) -> Result<ResolvedTicket, SdkError> 
 
     match matches.len() {
         0 => Err(SdkError::ticket_missing(format!(
-            "No ownership ticket is cached for `{public_key}`."
+            "No ownership ticket is cached for `{game_id}`."
         ))
         .with_hint("Open the Arcane desktop app once while online, then retry.")
-        .with_context("public_key", public_key)
+        .with_context("game_id", game_id)
         .with_context("tickets_root", root.display())),
         1 => read_ticket_at(&matches[0]),
         n => Err(SdkError::ambiguous_session(format!(
@@ -213,7 +213,7 @@ fn resolve_ticket_by_scan(public_key: &str) -> Result<ResolvedTicket, SdkError> 
             "Open the Arcane desktop app once so it records the active session, then retry. \
              This needs an Arcane build that writes session.json.",
         )
-        .with_context("public_key", public_key)
+        .with_context("game_id", game_id)
         .with_context("tickets_root", root.display())
         .with_context("candidates", n)),
     }

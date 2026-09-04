@@ -1,7 +1,7 @@
 ---
 title: "Rust API"
 description: "Public Arcane SDK surface for integrating with Arcane Powered from Rust."
-keywords: ["rust", "api", "ArcaneClient", "public key", "SdkError"]
+keywords: ["rust", "api", "ArcaneClient", "game id", "SdkError"]
 ---
 
 Crate name: `arcane_sdk` (package `arcane-sdk`).
@@ -12,11 +12,10 @@ The whole public surface is one type you build at launch, plus its errors. Error
 
 ```rust
 impl ArcaneClient {
-    pub fn init(public_key: &str) -> Result<ArcaneClient, SdkError>;
+    pub fn init(game_id: &str) -> Result<ArcaneClient, SdkError>;
     pub fn refresh(&mut self) -> Result<OwnershipStatus, SdkError>;
 
-    pub fn public_key(&self) -> &str;
-    pub fn game_id(&self) -> Option<&str>;
+    pub fn game_id(&self) -> &str;
     pub fn user_id(&self) -> Option<&str>;
     pub fn device_hash(&self) -> &str;
     pub fn ownership(&self) -> OwnershipStatus;
@@ -43,24 +42,24 @@ Build the client and check ownership. Call once at launch.
 ```rust
 use arcane_sdk::ArcaneClient;
 
-const PUBLIC_KEY: &str = "pk_..."; // from the Arcane portal
+const GAME_ID: &str = "9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413"; // the game id from the Arcane portal
 
-let client = ArcaneClient::init(PUBLIC_KEY)?;
+let client = ArcaneClient::init(GAME_ID)?;
 # Ok::<(), arcane_sdk::SdkError>(())
 ```
 
-Validates the public key, short-circuits to `DrmDisabled` when the cached flag says DRM is off, otherwise verifies the cached ticket. On `ticket_missing` / `ticket_expired` it contacts the Arcane desktop loopback (and may open the app) to refresh, then re-verifies. See [Ownership model](/concepts/ownership).
+Validates the game id, short-circuits to `DrmDisabled` when the cached flag says DRM is off, otherwise verifies the cached ticket. On `ticket_missing` / `ticket_expired` it contacts the Arcane desktop loopback (and may open the app) to refresh, then re-verifies. See [Ownership model](/concepts/ownership).
 
 It then opens the play session and starts the `arcane-session` thread. That never blocks init and never fails it: if the desktop app is unreachable, tracking stays `Pending` and retries every 60 seconds, without ever opening the deep link. See [Session](/concepts/session).
 
-**Errors:** `invalid_public_key`, `ticket_missing`, `ticket_expired`, `ticket_invalid`, `device_mismatch`, `clock_rollback`, `not_owned`, `network_required`, `not_authenticated`, `arcane_unavailable`, `ambiguous_session`, `internal`. Full causes and fixes: [Errors](/concepts/errors#error-codes).
+**Errors:** `invalid_game_id`, `ticket_missing`, `ticket_expired`, `ticket_invalid`, `device_mismatch`, `clock_rollback`, `not_owned`, `network_required`, `not_authenticated`, `arcane_unavailable`, `ambiguous_session`, `internal`. Full causes and fixes: [Errors](/concepts/errors#error-codes).
 
 ### `refresh`
 
 Re-run the check against Arcane desktop and update the client in place. Nothing calls this for you — there is no background revalidation.
 
 ```rust
-let mut client = ArcaneClient::init(PUBLIC_KEY)?;
+let mut client = ArcaneClient::init(GAME_ID)?;
 // … hours later …
 let status = client.refresh()?;
 # Ok::<(), arcane_sdk::SdkError>(())
@@ -68,15 +67,15 @@ let status = client.refresh()?;
 
 On failure the client keeps its previous state.
 
-**Errors:** same as `init` minus `invalid_public_key`.
+**Errors:** same as `init` minus `invalid_game_id`.
 
 ### Accessors
 
 All read cached state — no I/O, no failure.
 
-`game_id` and `user_id` are `Option` because an older Arcane desktop build may not report them, and because a DRM-disabled title may have no ticket file to read them from.
+`game_id()` is the value you passed to `init`, so it always answers. `user_id` is an `Option` because an older Arcane desktop build may not report it, and because a DRM-disabled title may have no ticket file to read it from.
 
-They are **plain copied fields**: a clone carries the values held when the clone was made, and `refresh()` updates only the client it is called on. A clone taken before a `refresh()` that discovers a `game_id` keeps `None` — and so reports `in_game: false` for every friend. The play session and the achievement cache are shared between clones; these two are not.
+`user_id` is a **plain copied field**: a clone carries the value held when the clone was made, and `refresh()` updates only the client it is called on. The play session and the achievement cache are shared between clones; `user_id` is not.
 
 ### `frame`
 
@@ -199,7 +198,7 @@ for friend in &list.friends {
 # Ok::<(), arcane_sdk::SdkError>(())
 ```
 
-`in_game` is `true` when the friend is playing the same `game_id` as this client; it is `false` for every friend when the client has no `game_id` — an older desktop build, or a clone taken before the `refresh()` that discovered one (see [Accessors](#accessors)).
+`in_game` is `true` when the friend is playing the same `game_id` as this client — the id passed to `init`; a friend playing anything else is `online` but not `in_game`.
 
 **Errors:** `not_authenticated`, `network_required` (including under `ARCANE_OFFLINE_ONLY`, raised before any call), `arcane_unavailable`, `feature_unavailable`.
 
@@ -397,7 +396,7 @@ pub enum LobbyEvent {
 #[non_exhaustive]
 pub enum ErrorCode { /* one variant per code in the Errors table */ }
 
-pub const MAX_PUBLIC_KEY_LEN: usize = 256;
+pub const MAX_GAME_ID_LEN: usize = 256;
 pub const MAX_ACHIEVEMENT_KEY_LEN: usize = 64;
 pub const MAX_LOBBY_PAYLOAD_LEN: usize = 4096;
 pub const JOIN_CODE_LEN: usize = 6;
@@ -416,7 +415,7 @@ Use `rlib` from Rust games; link `cdylib` / `staticlib` for the [C ABI](/referen
 ## Try it
 
 ```bash
-cargo run --example client_init -- pk_your_portal_key
+cargo run --example client_init -- 9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413
 ```
 
 Prints every client field, renders a fake loop calling `frame()`, prints the session snapshot and ends with `shutdown()` — or the full error breakdown (code, message, hint, context, JSON) on failure.

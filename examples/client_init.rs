@@ -1,7 +1,7 @@
 //! Manual end-to-end check against a real Arcane desktop app.
 //!
 //! ```bash
-//! cargo run --example client_init -- pk_your_portal_key
+//! cargo run --example client_init -- 9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413
 //! ```
 //!
 //! It renders a fake three-second loop calling `frame()`, prints the session
@@ -20,17 +20,16 @@ use std::time::Duration;
 use arcane_sdk::ArcaneClient;
 
 fn main() -> ExitCode {
-    let Some(public_key) = std::env::args().nth(1) else {
-        eprintln!("usage: client_init <public_key>");
+    let Some(game_id) = std::env::args().nth(1) else {
+        eprintln!("usage: client_init <game_id>");
         return ExitCode::FAILURE;
     };
 
-    match ArcaneClient::init(&public_key) {
+    match ArcaneClient::init(&game_id) {
         Ok(client) => {
             println!("ownership   {}", client.ownership());
             println!("owned       {}", client.is_owned());
-            println!("public_key  {}", client.public_key());
-            println!("game_id     {:?}", client.game_id());
+            println!("game_id     {}", client.game_id());
             println!("user_id     {:?}", client.user_id());
             println!("device_hash {}", client.device_hash());
             println!("expires_at  {:?}", client.ticket_expires_at());
