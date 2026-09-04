@@ -15,6 +15,9 @@ client.is_owned();  // ownership as of the last check
 
 client.frame();     // once per rendered frame — an atomic load, for FPS sampling
 client.session();   // tracking state, playtime, FPS samples
+
+client.achievements().unlock("first_blood")?;   // idempotent, one loopback call
+
 client.shutdown();  // ends the session and reports the final playtime
 ```
 

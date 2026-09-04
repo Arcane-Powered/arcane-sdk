@@ -254,3 +254,50 @@ POST /v1/games/{public_key}/session/end
 | Desktop older than these routes | `404` without a JSON body → `feature_unavailable`, tracking stays `Pending`, retried silently. |
 | `unknown_session` on a heartbeat | The SDK drops the session id and starts a new session immediately. |
 | Never reachable for the whole run | That session's playtime is lost. The SDK buffers nothing on disk. |
+
+---
+
+## 9. Achievements
+
+**Status: new. Absent routes degrade to `feature_unavailable`; they never fail `init`.**
+
+Same conventions as §8: `http://127.0.0.1:39284`, JSON bodies, `{ "error", "message",
+"details?" }` error bodies. A `404` **without** a JSON body (unknown route, desktop too
+old) maps to `feature_unavailable`.
+
+```
+GET /v1/games/{public_key}/achievements
+→ 200 { "achievements": [ { "key": "first_blood", "title": "…", "description": "…",
+         "icon_url": "…|null", "hidden": false, "unlocked_at": "2026-…|null" } ] }
+
+POST /v1/games/{public_key}/achievements/{key}/unlock
+→ 200 { "key": "first_blood", "unlocked_at": "…", "already_unlocked": false, "queued": false }
+→ 404 unknown_achievement · 403 not_owned
+```
+
+- `unlocked_at` is RFC 3339 on the wire. The SDK exposes it as a Unix timestamp
+  (`i64`); a timestamp it cannot parse reads as "still locked" rather than a wrong date.
+- `queued: true` means the desktop app is offline and has stored the unlock for later.
+  The SDK treats it as a success and updates its cache.
+- The unlock is **idempotent**: a repeat answers `200` with `already_unlocked: true`,
+  carrying the original `unlocked_at`. A game may call it every time its condition holds.
+- `{key}` is interpolated raw, and the SDK validates it against the same charset the
+  backend and the desktop enforce — `^[a-z0-9_.-]{1,64}$`, minus keys made only of dots
+  (`.`, `..`) which an HTTP client would normalise into a different route — before
+  building the URL, so an invalid key never leaves the process (`invalid_argument`).
+  A `400 invalid_key` from the desktop maps to the same code.
+- Both calls are synchronous on the calling thread, one round trip each. The SDK never
+  polls achievements in the background and never opens the deep link for them.
+- `GET /achievements` is not required to reflect an unlock that is still queued, so a
+  game that lists right after an offline unlock may see that key locked again until the
+  queue drains. The SDK's own cache keeps the unlock until the next `list`.
+
+### What the SDK does around this
+
+| Situation | SDK behaviour |
+|---|---|
+| Desktop unreachable | `arcane_unavailable` on both calls. Nothing is retried, nothing is buffered on disk |
+| Desktop older than these routes | Bare `404` → `feature_unavailable` |
+| `404 unknown_achievement` | `unknown_achievement`, with the key in the error context |
+| `ARCANE_OFFLINE_ONLY` set | `network_required`, raised before any call |
+| `list` never called | `is_unlocked` answers `None` — the SDK does not guess |

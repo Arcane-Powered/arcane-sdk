@@ -31,8 +31,14 @@ pub enum ErrorCode {
     /// The Arcane desktop app does not know this route yet — it predates the
     /// feature the SDK asked for.
     FeatureUnavailable,
+    /// The Arcane desktop app knows the route but not the achievement the game
+    /// asked to unlock.
+    UnknownAchievement,
     /// The public key argument is empty, oversized, or has forbidden characters.
     InvalidPublicKey,
+    /// An argument other than the public key is empty, oversized, or has
+    /// forbidden characters.
+    InvalidArgument,
     /// Several accounts hold a ticket for this title and Arcane has not recorded
     /// which one is signed in.
     AmbiguousSession,
@@ -56,7 +62,9 @@ impl ErrorCode {
             Self::NotAuthenticated => "not_authenticated",
             Self::ArcaneUnavailable => "arcane_unavailable",
             Self::FeatureUnavailable => "feature_unavailable",
+            Self::UnknownAchievement => "unknown_achievement",
             Self::InvalidPublicKey => "invalid_public_key",
+            Self::InvalidArgument => "invalid_argument",
             Self::AmbiguousSession => "ambiguous_session",
             Self::NotInitialized => "not_initialized",
             Self::Internal => "internal",
@@ -231,8 +239,16 @@ impl SdkError {
         Self::new(ErrorCode::FeatureUnavailable, message)
     }
 
+    pub(crate) fn unknown_achievement(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::UnknownAchievement, message)
+    }
+
     pub(crate) fn invalid_public_key(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::InvalidPublicKey, message)
+    }
+
+    pub(crate) fn invalid_argument(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::InvalidArgument, message)
     }
 
     pub(crate) fn ambiguous_session(message: impl Into<String>) -> Self {
@@ -325,7 +341,9 @@ mod tests {
         assert!(!SdkError::not_owned("x").is_retryable());
         assert!(!SdkError::device_mismatch("x").is_retryable());
         assert!(!SdkError::invalid_public_key("x").is_retryable());
+        assert!(!SdkError::invalid_argument("x").is_retryable());
         assert!(!SdkError::feature_unavailable("x").is_retryable());
+        assert!(!SdkError::unknown_achievement("x").is_retryable());
     }
 
     #[test]
@@ -333,6 +351,19 @@ mod tests {
         assert_eq!(
             SdkError::feature_unavailable("x").code(),
             "feature_unavailable"
+        );
+    }
+
+    #[test]
+    fn the_achievement_codes_are_stable() {
+        assert_eq!(
+            SdkError::unknown_achievement("x").code(),
+            "unknown_achievement"
+        );
+        assert_eq!(SdkError::invalid_argument("x").code(), "invalid_argument");
+        assert_eq!(
+            SdkError::invalid_public_key("x").code(),
+            "invalid_public_key"
         );
     }
 

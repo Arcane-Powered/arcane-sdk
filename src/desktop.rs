@@ -130,34 +130,42 @@ impl DesktopCall {
     }
 
     pub(crate) fn into_sdk_error(self) -> SdkError {
+        let url = self.url;
         match self.failure {
             CallFailure::Transport(detail) => {
                 SdkError::arcane_unavailable(format!("Arcane desktop is not reachable: {detail}"))
                     .with_hint("Launch the Arcane Powered desktop app, then retry.")
-                    .with_context("url", self.url)
+                    .with_context("url", url)
             }
-            CallFailure::Status {
-                error: Some(body), ..
-            } => map_desktop_error(&body),
-            CallFailure::Status {
-                code: 404, body, ..
-            } => SdkError::feature_unavailable(
-                "This Arcane desktop build does not support that feature yet.",
-            )
-            .with_hint("Update the Arcane Powered desktop app.")
-            .with_context("url", self.url)
-            .with_context("body", truncate(&body, 200)),
-            CallFailure::Status { code, body, .. } => {
-                SdkError::arcane_unavailable("Arcane desktop returned an unexpected status.")
+            CallFailure::Status { code, body, error } => {
+                if let Some(known) = error.as_ref().and_then(map_known_desktop_error) {
+                    return known;
+                }
+                // A 404 the SDK has no code for is an unknown route, whatever the
+                // desktop app called it in the body.
+                if code == 404 {
+                    return SdkError::feature_unavailable(
+                        "This Arcane desktop build does not support that feature yet.",
+                    )
+                    .with_hint("Update the Arcane Powered desktop app.")
+                    .with_context("url", url)
+                    .with_context("body", truncate(&body, 200));
+                }
+                match error {
+                    Some(body) => unknown_desktop_error(&body),
+                    None => SdkError::arcane_unavailable(
+                        "Arcane desktop returned an unexpected status.",
+                    )
                     .with_hint("Restart the Arcane Powered desktop app, then retry.")
-                    .with_context("url", self.url)
+                    .with_context("url", url)
                     .with_context("http_status", code)
-                    .with_context("body", truncate(&body, 200))
+                    .with_context("body", truncate(&body, 200)),
+                }
             }
             CallFailure::Decode { detail, body } => {
                 SdkError::arcane_unavailable(format!("Unexpected Arcane desktop payload: {detail}"))
                     .with_hint("The Arcane desktop app may be older than this SDK — update it.")
-                    .with_context("url", self.url)
+                    .with_context("url", url)
                     .with_context("body", truncate(&body, 200))
             }
         }
@@ -319,13 +327,23 @@ pub(crate) fn ensure_arcane_desktop(public_key: &str) -> Result<HealthResponse, 
 
 /// Map a loopback JSON error body to a stable [`SdkError`].
 pub(crate) fn map_desktop_error(body: &SdkErrorBody) -> SdkError {
-    let detail = if body.message.trim().is_empty() {
+    map_known_desktop_error(body).unwrap_or_else(|| unknown_desktop_error(body))
+}
+
+fn detail_of(body: &SdkErrorBody) -> String {
+    if body.message.trim().is_empty() {
         body.error.clone()
     } else {
         body.message.clone()
-    };
+    }
+}
 
-    match body.error.as_str() {
+/// The codes this SDK knows, or `None` so the caller can decide what an
+/// unrecognised one means for the route it was talking to.
+fn map_known_desktop_error(body: &SdkErrorBody) -> Option<SdkError> {
+    let detail = detail_of(body);
+
+    Some(match body.error.as_str() {
         "not_owned" => SdkError::not_owned("You do not own this game.")
             .with_hint("Buy it on the Arcane Store or marketplace, then retry.")
             .with_context("detail", detail),
@@ -337,6 +355,17 @@ pub(crate) fn map_desktop_error(body: &SdkErrorBody) -> SdkError {
         "not_authenticated" => {
             SdkError::not_authenticated("Nobody is signed in to the Arcane desktop app.")
                 .with_hint("Sign in to the Arcane desktop app, then retry.")
+                .with_context("detail", detail)
+        }
+        "invalid_key" => SdkError::invalid_argument("Arcane rejected the achievement key.")
+            .with_hint("Achievement keys are lowercase, exactly as defined in the Arcane portal.")
+            .with_context("detail", detail),
+        "unknown_achievement" => {
+            SdkError::unknown_achievement("Arcane does not know this achievement for this title.")
+                .with_hint(
+                    "Check the achievement key against the Arcane portal, and that the \
+                     achievement is published for this title.",
+                )
                 .with_context("detail", detail)
         }
         "game_not_found" => SdkError::ticket_invalid("Arcane does not know this title.")
@@ -353,11 +382,15 @@ pub(crate) fn map_desktop_error(body: &SdkErrorBody) -> SdkError {
         "internal" => SdkError::internal("The Arcane desktop app hit an internal error.")
             .with_hint("Restart the Arcane Powered desktop app, then retry.")
             .with_context("detail", detail),
-        other => SdkError::ticket_invalid("Arcane desktop refused the ownership refresh.")
-            .with_hint("This error code is newer than your SDK — update arcane-sdk.")
-            .with_context("desktop_error", other)
-            .with_context("detail", detail),
-    }
+        _ => return None,
+    })
+}
+
+fn unknown_desktop_error(body: &SdkErrorBody) -> SdkError {
+    SdkError::ticket_invalid("Arcane desktop returned an error code this SDK does not know.")
+        .with_hint("This error code is newer than your SDK — update arcane-sdk.")
+        .with_context("desktop_error", body.error.as_str())
+        .with_context("detail", detail_of(body))
 }
 
 /// Ask the desktop to refresh (or issue) an ownership ticket for `public_key`.
@@ -465,6 +498,22 @@ mod tests {
         let err = map_desktop_error(&body("offline", "Cannot refresh while offline."));
         assert_eq!(err.code(), "network_required");
         assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn maps_invalid_key() {
+        let err = map_desktop_error(&body("invalid_key", "keys are lowercase"));
+        assert_eq!(err.code(), "invalid_argument");
+        assert!(err.hint().unwrap().contains("lowercase"));
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn maps_unknown_achievement() {
+        let err = map_desktop_error(&body("unknown_achievement", "no such key for this game"));
+        assert_eq!(err.code(), "unknown_achievement");
+        assert!(err.hint().unwrap().contains("Arcane portal"));
+        assert!(!err.is_retryable());
     }
 
     #[test]

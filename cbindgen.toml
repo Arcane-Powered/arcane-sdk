@@ -29,6 +29,9 @@ include = [
   "arcane_sdk_frame",
   "arcane_sdk_set_graphics",
   "arcane_sdk_session_json",
+  "arcane_sdk_achievements_json",
+  "arcane_sdk_achievement_unlock",
+  "arcane_sdk_achievement_is_unlocked",
   "arcane_sdk_is_initialized",
   "arcane_sdk_ownership",
   "arcane_sdk_ticket_expires_at",
@@ -41,7 +44,7 @@ include = [
 ]
 item_types = ["constants", "functions"]
 # Rust-only; an unprefixed macro of this name would collide in a C project.
-exclude = ["MAX_PUBLIC_KEY_LEN"]
+exclude = ["MAX_PUBLIC_KEY_LEN", "MAX_ACHIEVEMENT_KEY_LEN"]
 
 [fn]
 prefix = ""

@@ -24,10 +24,20 @@
 //! [`ArcaneClient::frame`]. It never blocks or fails `init`. See
 //! [`SessionSnapshot`].
 //!
+//! Achievements are opt-in and cost nothing until used: one line unlocks one,
+//! and it is idempotent, so a game can call it every time its condition holds.
+//!
+//! ```no_run
+//! # let client = arcane_sdk::ArcaneClient::init("pk_...")?;
+//! client.achievements().unlock("first_blood")?;
+//! # Ok::<(), arcane_sdk::SdkError>(())
+//! ```
+//!
 //! Failures are [`SdkError`], carrying a stable [`code`](SdkError::code), a
 //! player-facing [`message`](SdkError::message), a developer-facing
 //! [`hint`](SdkError::hint) and a [`context`](SdkError::context) key/value list.
 
+mod achievements;
 mod client;
 mod desktop;
 mod device;
@@ -36,6 +46,7 @@ mod paths;
 mod session;
 mod ticket;
 
+pub use achievements::{Achievement, Achievements, Unlock, MAX_ACHIEVEMENT_KEY_LEN};
 pub use client::{ArcaneClient, MAX_PUBLIC_KEY_LEN};
 pub use error::{ErrorCode, OwnershipStatus, SdkError};
 pub use session::{SessionSnapshot, TrackingState};

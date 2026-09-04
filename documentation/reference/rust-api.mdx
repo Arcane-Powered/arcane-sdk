@@ -27,11 +27,12 @@ impl ArcaneClient {
     pub fn frame(&self);
     pub fn set_graphics(&self, resolution: &str, preset: &str);
     pub fn session(&self) -> SessionSnapshot;
+    pub fn achievements(&self) -> Achievements<'_>;
     pub fn shutdown(self);
 }
 ```
 
-`ArcaneClient` is `Debug + Clone`, and `Send + Sync`. Clones share one play session — it ends when the last one is dropped, or on `shutdown`.
+`ArcaneClient` is `Debug + Clone`, and `Send + Sync`. Clones share one play session — it ends when the last one is dropped, or on `shutdown` — and one achievement cache.
 
 ### `init`
 
@@ -101,6 +102,53 @@ println!("{} · {}s · {:?}", session.tracking, session.played_seconds, session.
 
 A copy of the session state, read from memory. Never fails.
 
+### `achievements`
+
+```rust
+client.achievements().unlock("first_blood")?;
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+Borrows an `Achievements<'_>` accessor. It holds no state, so there is nothing to keep around. See [Achievements](/concepts/achievements).
+
+## `Achievements`
+
+```rust
+impl Achievements<'_> {
+    pub fn list(&self) -> Result<Vec<Achievement>, SdkError>;
+    pub fn unlock(&self, key: &str) -> Result<Unlock, SdkError>;
+    pub fn is_unlocked(&self, key: &str) -> Option<bool>;
+}
+```
+
+`list` and `unlock` are **synchronous** — one loopback round trip each, on the calling thread, around a millisecond. Call them when something happens, never per frame. `is_unlocked` only reads memory.
+
+### `list`
+
+Every achievement the title defines, with this player's state, and it fills the client's cache so `is_unlocked` can answer afterwards.
+
+**Errors:** `not_owned`, `not_authenticated`, `network_required`, `arcane_unavailable`, `feature_unavailable`.
+
+### `unlock`
+
+Idempotent: unlocking twice succeeds and answers `already_unlocked`, so a game can call it every time its condition holds. A `queued` answer (desktop app offline) is also a success. The cache is updated either way.
+
+```rust
+let unlock = client.achievements().unlock("first_blood")?;
+if unlock.queued { /* stored locally, synchronised later */ }
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+**Errors:** `invalid_argument` when the key is empty, over `MAX_ACHIEVEMENT_KEY_LEN` bytes, made only of dots, or outside `a–z 0–9 _ - .` — keys are lowercase — raised before any network call, and also when Arcane rejects the key; `unknown_achievement`; plus the codes of `list`.
+
+### `is_unlocked`
+
+```rust
+client.achievements().is_unlocked("first_blood");   // Some(true) | Some(false) | None
+```
+
+Reads the cache `list` filled. `None` means the SDK has nothing to answer with: `list` has never succeeded, or the key was not among the achievements it returned. Never fails, no I/O.
+
 ### `shutdown`
 
 ```rust
@@ -158,13 +206,30 @@ pub enum TrackingState {
     Disabled,     // offline-only mode, or nobody to attribute playtime to
 }
 
+pub struct Achievement {
+    pub key: String,                  // what you pass to unlock
+    pub title: String,
+    pub description: String,
+    pub icon_url: Option<String>,
+    pub hidden: bool,                 // hidden until unlocked, per the portal
+    pub unlocked_at: Option<i64>,     // unix timestamp, None while locked
+}
+
+pub struct Unlock {
+    pub key: String,
+    pub unlocked_at: i64,             // unix timestamp Arcane recorded
+    pub already_unlocked: bool,       // the player already had it — still Ok
+    pub queued: bool,                 // desktop app offline; synchronised later
+}
+
 #[non_exhaustive]
 pub enum ErrorCode { /* one variant per code in the Errors table */ }
 
 pub const MAX_PUBLIC_KEY_LEN: usize = 256;
+pub const MAX_ACHIEVEMENT_KEY_LEN: usize = 64;
 ```
 
-`OwnershipStatus` implements `Display` (`"owned"` / `"drm_disabled"`), and `TrackingState` does too (`"active"` / `"pending"` / `"disabled"`). `SessionSnapshot` is `Debug + Clone`.
+`OwnershipStatus` implements `Display` (`"owned"` / `"drm_disabled"`), and `TrackingState` does too (`"active"` / `"pending"` / `"disabled"`). `SessionSnapshot` is `Debug + Clone`; `Achievement` and `Unlock` are `Debug + Clone + PartialEq`.
 
 ## Crate types
 

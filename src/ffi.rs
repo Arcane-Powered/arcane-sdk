@@ -6,7 +6,8 @@
 //! Two return conventions:
 //!
 //! - **Actions** (`arcane_sdk_init`, `arcane_sdk_refresh`,
-//!   `arcane_sdk_set_graphics`) return `0` on success, `1` on a bad argument,
+//!   `arcane_sdk_set_graphics`, `arcane_sdk_achievement_unlock`) return `0` on
+//!   success, `1` on a bad argument,
 //!   `2` on an SDK error whose `"code: message"` rendering is written into
 //!   `err_buf`.
 //! - **Getters** return the number of bytes written (excluding the NUL) when they
@@ -19,6 +20,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_longlong};
 use std::sync::RwLock;
 
+use crate::achievements;
 use crate::client::ArcaneClient;
 use crate::error::{OwnershipStatus, SdkError};
 
@@ -88,6 +90,15 @@ fn write_err(err: &SdkError, buf: *mut c_char, len: usize) {
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, copy_len);
         *buf.add(copy_len - 1) = 0;
     }
+}
+
+/// Clone the singleton out of its lock, so a blocking loopback call never holds
+/// the lock the render thread and the lifecycle entry points need. The clone
+/// shares the session and the achievement cache, so updates still land on the
+/// singleton.
+fn client_snapshot() -> Option<ArcaneClient> {
+    let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
+    guard.as_ref().cloned()
 }
 
 /// Read a client field, or return the appropriate negative code.
@@ -250,6 +261,116 @@ pub unsafe extern "C" fn arcane_sdk_set_graphics(
 #[no_mangle]
 pub unsafe extern "C" fn arcane_sdk_session_json(buf: *mut c_char, len: usize) -> c_int {
     with_client(buf, len, |c| Some(c.session().to_json()))
+}
+
+/// Write every achievement of this title as JSON into `buf`:
+/// `{"achievements":[{"key","title","description","icon_url","hidden","unlocked_at"}]}`.
+///
+/// `unlocked_at` is a Unix timestamp, or `null` while the achievement is locked.
+/// This makes one synchronous loopback call — call it on a loading screen or the
+/// achievements screen, never from the render loop. It also fills the cache
+/// `arcane_sdk_achievement_is_unlocked` reads.
+///
+/// Returns the bytes written, or `-1` when not initialised, `-2` / `-3` for the
+/// buffer, `-4` when the call failed — the failure is then readable with
+/// `arcane_sdk_last_error_json`.
+///
+/// # Safety
+///
+/// `buf` must be null or point to at least `len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_achievements_json(buf: *mut c_char, len: usize) -> c_int {
+    let Some(client) = client_snapshot() else {
+        let err = SdkError::not_initialized("The Arcane SDK client is not initialised.")
+            .with_hint("Call arcane_sdk_init once at launch before reading achievements.");
+        store_error(&err);
+        return ARCANE_ERR_NOT_INITIALIZED;
+    };
+    match client.achievements().list() {
+        Ok(list) => {
+            clear_error();
+            write_str(&achievements::to_json(&list), buf, len)
+        }
+        Err(err) => {
+            store_error(&err);
+            ARCANE_ERR_UNAVAILABLE
+        }
+    }
+}
+
+/// Unlock an achievement for the signed-in player.
+///
+/// `key` is the achievement key from the Arcane portal, NUL-terminated UTF-8.
+/// Idempotent — call it every time the condition holds. One synchronous loopback
+/// call, so never call it from the render loop.
+///
+/// Returns 0 on success (including an already-unlocked or queued answer), 1 if
+/// `key` is null or not UTF-8 or the client is not initialised, 2 on an SDK
+/// error written to `err_buf` as `"code: message"`.
+///
+/// # Safety
+///
+/// `key` must be a valid NUL-terminated C string. `err_buf` must be null or
+/// point to at least `err_len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_achievement_unlock(
+    key: *const c_char,
+    err_buf: *mut c_char,
+    err_len: usize,
+) -> c_int {
+    if key.is_null() {
+        return ARCANE_ERR_ARGUMENT;
+    }
+    let Ok(key) = CStr::from_ptr(key).to_str() else {
+        return ARCANE_ERR_ARGUMENT;
+    };
+
+    let Some(client) = client_snapshot() else {
+        let err = SdkError::not_initialized("The Arcane SDK client is not initialised.")
+            .with_hint("Call arcane_sdk_init once at launch before arcane_sdk_achievement_unlock.");
+        write_err(&err, err_buf, err_len);
+        return ARCANE_ERR_ARGUMENT;
+    };
+    match client.achievements().unlock(key) {
+        Ok(_) => {
+            clear_error();
+            ARCANE_OK
+        }
+        Err(err) => {
+            write_err(&err, err_buf, err_len);
+            ARCANE_ERR_SDK
+        }
+    }
+}
+
+/// Whether an achievement is unlocked, from the cache the last
+/// `arcane_sdk_achievements_json` call filled.
+///
+/// Reads memory only. Returns 1 (unlocked), 0 (locked), `-1` when the client is
+/// not initialised, `-2` when `key` is null or not UTF-8, and `-4` when the SDK
+/// has nothing to answer with: the list was never loaded, or it did not carry
+/// this key.
+///
+/// # Safety
+///
+/// `key` must be a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_achievement_is_unlocked(key: *const c_char) -> c_int {
+    if key.is_null() {
+        return ARCANE_ERR_BAD_BUFFER;
+    }
+    let Ok(key) = CStr::from_ptr(key).to_str() else {
+        return ARCANE_ERR_BAD_BUFFER;
+    };
+
+    let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
+    let Some(client) = guard.as_ref() else {
+        return ARCANE_ERR_NOT_INITIALIZED;
+    };
+    match client.achievements().is_unlocked(key) {
+        Some(unlocked) => c_int::from(unlocked),
+        None => ARCANE_ERR_UNAVAILABLE,
+    }
 }
 
 /// Whether a client is currently initialised. Returns 1 or 0.
@@ -462,6 +583,42 @@ mod tests {
         assert_eq!(
             unsafe { arcane_sdk_set_graphics(c"1920x1080".as_ptr(), c"ultra".as_ptr()) },
             ARCANE_ERR_ARGUMENT
+        );
+    }
+
+    #[test]
+    fn the_achievement_entry_points_are_safe_before_init() {
+        let _guard = GLOBAL_STATE.lock().unwrap_or_else(|e| e.into_inner());
+
+        arcane_sdk_shutdown();
+        let mut buf = [0 as c_char; 256];
+
+        assert_eq!(
+            unsafe { arcane_sdk_achievements_json(buf.as_mut_ptr(), buf.len()) },
+            ARCANE_ERR_NOT_INITIALIZED
+        );
+        assert_eq!(
+            unsafe {
+                arcane_sdk_achievement_unlock(c"first_blood".as_ptr(), buf.as_mut_ptr(), buf.len())
+            },
+            ARCANE_ERR_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { arcane_sdk_achievement_is_unlocked(c"first_blood".as_ptr()) },
+            ARCANE_ERR_NOT_INITIALIZED
+        );
+    }
+
+    #[test]
+    fn the_achievement_entry_points_reject_a_null_key() {
+        let mut buf = [0 as c_char; 64];
+        assert_eq!(
+            unsafe { arcane_sdk_achievement_unlock(std::ptr::null(), buf.as_mut_ptr(), buf.len()) },
+            ARCANE_ERR_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { arcane_sdk_achievement_is_unlocked(std::ptr::null()) },
+            ARCANE_ERR_BAD_BUFFER
         );
     }
 
