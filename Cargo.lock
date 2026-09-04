@@ -4,8 +4,9 @@ version = 4
 
 [[package]]
 name = "arcane-sdk"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
+ "base64",
  "dirs",
  "hex",
  "jsonwebtoken",

@@ -126,6 +126,7 @@ Use `err.is_retryable()` to decide whether a retry button makes sense. The full 
 - [Session](/concepts/session) — playtime, FPS sampling, `shutdown`
 - [Achievements](/concepts/achievements) — `client.achievements().unlock("first_blood")?`, one line, idempotent
 - [Friends](/concepts/friends) — `client.friends().list()?`, with `online` and `in_game`
+- [Lobbies](/concepts/lobbies) — `client.p2p().create_lobby(...)?`, a join code, invites, and your own netcode
 - [Ownership model](/concepts/ownership) — what init does under the hood
 - [Errors](/concepts/errors) — this code → this problem → this fix
 - [Rust API](/reference/rust-api) · [C ABI](/reference/c-abi)

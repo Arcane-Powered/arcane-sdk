@@ -24,6 +24,7 @@ The client does that work **once** and holds the result:
 | Play session | `session()` | the [session](/concepts/session) opened by `init` |
 | Achievements | `achievements()` | the [achievement](/concepts/achievements) routes, plus the cache `list()` fills |
 | Friends | `friends()` | the [friends](/concepts/friends) route on the Arcane desktop app |
+| P2P lobbies | `p2p()` | the [lobby](/concepts/lobbies) routes, plus the event queue the session thread fills |
 
 More Arcane surfaces will hang off this client as they ship — that is the point of having it.
 
@@ -46,7 +47,7 @@ client.refresh()?;
 ```
 
 <Warning>
-  **Ownership** is never revalidated on its own: `ownership()` reflects the last `init` or `refresh`, and a session running for hours keeps whatever `init` decided until you call `refresh()`. The one background thread the client runs — `arcane-session` — only reports playtime and FPS. It never re-checks ownership and never opens the Arcane desktop app.
+  **Ownership** is never revalidated on its own: `ownership()` reflects the last `init` or `refresh`, and a session running for hours keeps whatever `init` decided until you call `refresh()`. The one background thread the client runs — `arcane-session` — reports playtime and FPS, and polls lobby events once the game has called `p2p()`. It never re-checks ownership and never opens the Arcane desktop app.
 </Warning>
 
 `refresh()` contacts the Arcane desktop app, re-runs the ownership check, and updates the client in place. On failure the client keeps its previous state, so a failed refresh never silently downgrades a player mid-session.
@@ -62,16 +63,20 @@ client.session();                            // tracking, playtime, samples
 client.shutdown();                           // end it now, 2-second timeout
 ```
 
-Achievements and friends hang off the same client, and cost nothing until you call them:
+Achievements, friends and lobbies hang off the same client, and cost nothing until you call them:
 
 ```rust
 client.achievements().unlock("first_blood")?;      // idempotent, one loopback call
 client.achievements().is_unlocked("first_blood");  // from the cache list() filled
 client.friends().list()?;                          // friends, online, in_game
+client.p2p().create_lobby(4, Visibility::Code, my_endpoint)?;   // a lobby and a join code
+client.p2p().poll_events();                        // what happened since last time
 # Ok::<(), arcane_sdk::SdkError>(())
 ```
 
-Cloning the client **shares** that session — it ends when the last clone is dropped, or on `shutdown()` — and the achievement cache with it. Full behaviour — sampling windows, the player's setting, what is lost offline — is in [Session](/concepts/session). Friends have nothing to share: the SDK caches no list, so `friends().list()` always asks the Arcane desktop app. See [Friends](/concepts/friends).
+Calling `p2p()` is the one accessor with a side effect: it arms lobby event polling on the session thread, which then asks the Arcane desktop app for events on every tick — every 5 seconds while you are in an open lobby. A game that never calls it never polls. See [Lobbies](/concepts/lobbies).
+
+Cloning the client **shares** that session — it ends when the last clone is dropped, or on `shutdown()` — plus the achievement cache and the lobby state: events polled on one clone are drained by `poll_events()` on any of them. Full behaviour — sampling windows, the player's setting, what is lost offline — is in [Session](/concepts/session). Friends have nothing to share: the SDK caches no list, so `friends().list()` always asks the Arcane desktop app. See [Friends](/concepts/friends).
 
 ## Which account's ticket
 
@@ -99,6 +104,9 @@ arcane_sdk_achievement_unlock("first_blood", err, sizeof(err));
 
 char friends[8192];
 arcane_sdk_friends_json(friends, sizeof(friends));
+
+char lobby[8192];
+arcane_sdk_lobby_create(4, ARCANE_LOBBY_FRIENDS_AND_CODE, "dWRwOi8v...", lobby, sizeof(lobby));
 
 arcane_sdk_shutdown();  /* ends the play session, then drops the client */
 ```

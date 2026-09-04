@@ -15,6 +15,11 @@
 //! retrying. It surfaces no error of its own: the last one is kept in the
 //! session state, where `{client:?}` shows it.
 //!
+//! The same thread carries lobby event polling, but only once the game has
+//! called [`crate::ArcaneClient::p2p`]: it then asks the desktop app for events
+//! on every tick, every 5 seconds while a lobby is open. Heartbeats keep their
+//! own 60-second schedule either way. See [`LobbyPollingState`].
+//!
 //! Playtime is measured with [`Instant`], so it is immune to wall-clock changes.
 //! If the desktop app is never reachable, the session's playtime is lost — the
 //! SDK keeps no buffer on disk.
@@ -31,6 +36,7 @@ use serde_json::json;
 use crate::desktop::{post_json, DesktopCall, GAMES_PATH_PREFIX};
 use crate::device::now_unix;
 use crate::error::SdkError;
+use crate::p2p::{poll_once, LobbyPollingState, P2pState};
 
 const TICK: Duration = Duration::from_secs(60);
 const FIRST_WINDOW_AT: Duration = Duration::from_secs(60);
@@ -105,6 +111,9 @@ pub struct SessionSnapshot {
     pub samples_taken: u32,
     /// Average frame rate of the most recent sample.
     pub last_fps_avg: Option<f32>,
+    /// Whether the session thread is polling Arcane for lobby events, and why
+    /// not when it is not.
+    pub lobby_events: LobbyPollingState,
 }
 
 impl SessionSnapshot {
@@ -116,6 +125,7 @@ impl SessionSnapshot {
             "fps_sampling": self.fps_sampling,
             "samples_taken": self.samples_taken,
             "last_fps_avg": self.last_fps_avg,
+            "lobby_events": self.lobby_events.as_str(),
         })
         .to_string()
     }
@@ -171,12 +181,14 @@ pub(crate) struct SessionInner {
     started: Instant,
     state: Mutex<State>,
     wake: Condvar,
+    p2p: Arc<P2pState>,
 }
 
 impl SessionInner {
-    fn new(public_key: &str) -> Self {
+    fn new(public_key: &str, p2p: Arc<P2pState>) -> Self {
         Self {
             public_key: public_key.to_string(),
+            p2p,
             window_open: AtomicBool::new(false),
             frames: AtomicU64::new(0),
             started: Instant::now(),
@@ -219,7 +231,14 @@ impl SessionInner {
     }
 
     fn snapshot(&self) -> SessionSnapshot {
+        let polling = self.p2p.polling();
         let state = self.lock();
+        // No session thread runs while tracking is off, so nothing polls
+        // whatever the game armed.
+        let lobby_events = match state.tracking {
+            TrackingState::Disabled => LobbyPollingState::Off,
+            _ => polling,
+        };
         let played_seconds = match state.tracking {
             TrackingState::Disabled => 0,
             _ => self.seconds_at(self.started.elapsed()),
@@ -231,6 +250,7 @@ impl SessionInner {
             fps_sampling: state.fps_sampling,
             samples_taken: state.samples_taken,
             last_fps_avg: state.last_fps_avg,
+            lobby_events,
         }
     }
 
@@ -369,6 +389,12 @@ impl SessionInner {
         self.set_fps_sampling(response.fps_sampling);
     }
 
+    fn poll_lobby_events(&self) {
+        if let Some(err) = poll_once(&self.public_key, &self.p2p) {
+            self.lock().last_error = Some(err);
+        }
+    }
+
     fn record_error(&self, call: DesktopCall) {
         let error = call.into_sdk_error();
         self.lock().last_error = Some(error);
@@ -421,6 +447,11 @@ impl SessionInner {
         self.post_end(&session_id, seconds, &pending);
     }
 
+    pub(crate) fn wake_now(&self) {
+        let _state = self.lock();
+        self.wake.notify_all();
+    }
+
     fn request_stop(&self) {
         {
             let mut state = self.lock();
@@ -446,6 +477,7 @@ impl SessionInner {
 fn run(inner: Arc<SessionInner>) {
     let tick = tick_period();
     let mut next_tick = Duration::ZERO;
+    let mut next_poll = Duration::ZERO;
     loop {
         if inner.stopped() {
             return;
@@ -458,6 +490,11 @@ fn run(inner: Arc<SessionInner>) {
             next_tick = inner.started.elapsed() + tick;
         }
 
+        if inner.p2p.armed() && inner.started.elapsed() >= next_poll {
+            inner.poll_lobby_events();
+            next_poll = inner.started.elapsed() + inner.p2p.poll_period(tick);
+        }
+
         if inner.stopped() {
             return;
         }
@@ -465,9 +502,13 @@ fn run(inner: Arc<SessionInner>) {
         let elapsed = inner.started.elapsed();
         let deadline = {
             let state = inner.lock();
-            inner
+            let mut deadline = inner
                 .next_window_deadline(&state)
-                .map_or(next_tick, |window| window.min(next_tick))
+                .map_or(next_tick, |window| window.min(next_tick));
+            if inner.p2p.armed() {
+                deadline = deadline.min(next_poll);
+            }
+            deadline
         };
         if inner.wait(deadline.saturating_sub(elapsed).max(MIN_WAIT)) {
             return;
@@ -491,9 +532,9 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    pub(crate) fn dormant(public_key: &str) -> Self {
+    pub(crate) fn dormant(public_key: &str, p2p: Arc<P2pState>) -> Self {
         Self {
-            inner: Arc::new(SessionInner::new(public_key)),
+            inner: Arc::new(SessionInner::new(public_key, p2p)),
             ended: AtomicBool::new(false),
         }
     }
@@ -503,6 +544,7 @@ impl Session {
             return;
         }
         self.inner.lock().tracking = tracking;
+        self.inner.p2p.set_waker(Arc::downgrade(&self.inner));
 
         let worker = Arc::clone(&self.inner);
         let spawned = thread::Builder::new()
@@ -547,7 +589,7 @@ mod tests {
     use super::*;
 
     fn session() -> SessionInner {
-        SessionInner::new("pk_test_title")
+        SessionInner::new("pk_test_title", Arc::new(P2pState::new()))
     }
 
     fn sampling_session() -> SessionInner {
@@ -711,6 +753,31 @@ mod tests {
     }
 
     #[test]
+    fn the_snapshot_carries_the_lobby_polling_state() {
+        let p2p = Arc::new(P2pState::new());
+        let inner = SessionInner::new("pk_test_title", Arc::clone(&p2p));
+        inner.lock().tracking = TrackingState::Pending;
+        assert_eq!(inner.snapshot().lobby_events, LobbyPollingState::Off);
+
+        crate::p2p::P2p::new("pk_test_title", &p2p);
+        assert_eq!(inner.snapshot().lobby_events, LobbyPollingState::Active);
+    }
+
+    #[test]
+    fn a_disabled_session_polls_nothing_however_armed_it_is() {
+        let p2p = Arc::new(P2pState::new());
+        let inner = SessionInner::new("pk_test_title", Arc::clone(&p2p));
+        crate::p2p::P2p::new("pk_test_title", &p2p);
+
+        assert_eq!(inner.lock().tracking, TrackingState::Disabled);
+        assert_eq!(
+            inner.snapshot().lobby_events,
+            LobbyPollingState::Off,
+            "no session thread runs, so nothing is polling"
+        );
+    }
+
+    #[test]
     fn a_disabled_session_reports_no_playtime() {
         let inner = session();
         let snapshot = inner.snapshot();
@@ -733,6 +800,7 @@ mod tests {
         assert_eq!(parsed["samples_taken"], 0);
         assert_eq!(parsed["fps_sampling"], false);
         assert_eq!(parsed["last_fps_avg"], serde_json::Value::Null);
+        assert_eq!(parsed["lobby_events"], "off");
         assert!(parsed["played_seconds"].is_u64());
     }
 }

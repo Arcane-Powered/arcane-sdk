@@ -29,11 +29,12 @@ impl ArcaneClient {
     pub fn session(&self) -> SessionSnapshot;
     pub fn achievements(&self) -> Achievements<'_>;
     pub fn friends(&self) -> Friends<'_>;
+    pub fn p2p(&self) -> P2p<'_>;
     pub fn shutdown(self);
 }
 ```
 
-`ArcaneClient` is `Debug + Clone`, and `Send + Sync`. Clones share one play session — it ends when the last one is dropped, or on `shutdown` — and one achievement cache. There is no friends cache to share: `friends().list()` always asks the Arcane desktop app.
+`ArcaneClient` is `Debug + Clone`, and `Send + Sync`. Clones share one play session — it ends when the last one is dropped, or on `shutdown` — one achievement cache, and one lobby event queue. There is no friends cache to share: `friends().list()` always asks the Arcane desktop app.
 
 ### `init`
 
@@ -123,6 +124,15 @@ client.friends().list()?;
 
 Borrows a `Friends<'_>` accessor, carrying only this client's `game_id` so `in_game` can be derived. See [Friends](/concepts/friends).
 
+### `p2p`
+
+```rust
+let lobby = client.p2p().create_lobby(4, Visibility::FriendsAndCode, my_endpoint)?;
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+Borrows a `P2p<'_>` accessor. **This is the one accessor with a side effect:** the first call arms lobby event polling on the `arcane-session` thread. A game that never calls `p2p()` never polls. See [Lobbies](/concepts/lobbies).
+
 ## `Achievements`
 
 ```rust
@@ -193,6 +203,87 @@ for friend in &list.friends {
 
 **Errors:** `not_authenticated`, `network_required` (including under `ARCANE_OFFLINE_ONLY`, raised before any call), `arcane_unavailable`, `feature_unavailable`.
 
+## `P2p`
+
+```rust
+impl P2p<'_> {
+    pub fn create_lobby(&self, max_players: u8, visibility: Visibility, payload: &[u8])
+        -> Result<Lobby, SdkError>;
+    pub fn join_by_code(&self, join_code: &str, payload: &[u8]) -> Result<Lobby, SdkError>;
+    pub fn join(&self, lobby_id: &str, payload: &[u8]) -> Result<Lobby, SdkError>;
+    pub fn get_lobby(&self, lobby_id: &str) -> Result<Lobby, SdkError>;
+    pub fn invite(&self, lobby_id: &str, to_user_id: &str) -> Result<(), SdkError>;
+    pub fn leave(&self, lobby_id: &str) -> Result<(), SdkError>;
+    pub fn close(&self, lobby_id: &str) -> Result<(), SdkError>;
+    pub fn launch_join_code(&self) -> Option<String>;
+    pub fn poll_events(&self) -> Vec<LobbyEvent>;
+}
+```
+
+Arcane hosts the lobby, the join code and the invitations, and carries one opaque `payload` per member. There is **no transport**: your game connects with its own netcode. See [Lobbies](/concepts/lobbies).
+
+Every call but `poll_events` and a cached `launch_join_code` is **synchronous** — one loopback round trip on the calling thread. Never per frame.
+
+### `create_lobby`, `join_by_code`, `join`
+
+All three answer the same `Lobby` snapshot. `payload` is your connection blob, at most `MAX_LOBBY_PAYLOAD_LEN` (4096) raw bytes, base64 on the wire and never read by Arcane. A join code is uppercased before it is checked.
+
+```rust
+let lobby = client.p2p().create_lobby(4, Visibility::Code, my_endpoint)?;
+let joined = client.p2p().join_by_code("k7p3qx", my_endpoint)?;   // case-insensitive
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+**Errors:** `invalid_argument` for an oversized payload, a join code that is not six characters of `A–H J–N P–Z 2–9`, or a `lobby_id` outside `A–Za–z0–9-` — all raised before any network call; `lobby_not_found`, `lobby_full`, `lobby_closed`, `not_friends`, `not_owned`, `not_authenticated`, `network_required`, `arcane_unavailable`, `feature_unavailable`.
+
+### `get_lobby`
+
+```rust
+let lobby = client.p2p().get_lobby(&lobby_id)?;
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+The lobby as Arcane knows it right now — the answer to a `Resync`, or to any moment you would rather ask than replay events. It joins nothing and leaves nothing, so it never changes what this client is in or how fast the session thread polls.
+
+**Errors:** `invalid_argument` for a malformed id, `lobby_not_found`, `lobby_closed`, `not_friends`, plus the codes of `create_lobby`.
+
+### `invite`, `leave`, `close`
+
+`invite` sends one friend an invitation: an `Invite` event if they are already playing this title, the code for their next launch otherwise. `leave` takes this player out; `close` ends a lobby this player hosts, and its members get `LobbyClosed`. There is no host migration.
+
+A `leave` or `close` that never reached Arcane leaves the player in the lobby, and the SDK with them: it stops treating the lobby as open only on success, or when Arcane says it is already gone (`lobby_not_found`, `lobby_closed`).
+
+**Errors:** as above, plus `not_friends` from `invite` when that account is not a friend.
+
+### `launch_join_code`
+
+```rust
+if let Some(code) = client.p2p().launch_join_code() {
+    let lobby = client.p2p().join_by_code(&code, my_endpoint)?;
+}
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+The code the launcher stashed when the player started the game from a friend's "Join". Read from the Arcane desktop app on the **first** call and cached for the client's lifetime — the desktop app clears it once served. Never fails: `None` covers a normal launch, an older desktop app, and `ARCANE_OFFLINE_ONLY`.
+
+### `poll_events`
+
+Drains the queue the session thread fills — memory only, no I/O, no failure. Events come oldest first and exactly once. Once a second is plenty; the queue keeps the 256 most recent events if you never call it.
+
+```rust
+for event in client.p2p().poll_events() {
+    match event {
+        LobbyEvent::MemberJoined { payload, .. } => connect_to(&payload),
+        LobbyEvent::MemberLeft { user_id, .. } => drop_peer(&user_id),
+        LobbyEvent::LobbyClosed { .. } => back_to_menu(),
+        LobbyEvent::Invite { lobby_id, .. } => offer_to_join(&lobby_id),
+    }
+}
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+`client.session().lobby_events` says whether the polling behind it is `Off`, `Active`, or `Unavailable` because the desktop app predates the routes.
+
 ## `SdkError`
 
 ```rust
@@ -234,6 +325,7 @@ pub struct SessionSnapshot {
     pub fps_sampling: bool,           // the player's setting, from the desktop app
     pub samples_taken: u32,
     pub last_fps_avg: Option<f32>,
+    pub lobby_events: LobbyPollingState,   // Off while the session itself is off
 }
 
 pub enum TrackingState {
@@ -270,14 +362,48 @@ pub struct Friend {
     pub in_game: bool,                // playing this title right now
 }
 
+pub enum LobbyPollingState {
+    Off,              // the game never called p2p(), or the play session is off
+    Active,           // the session thread is collecting lobby events
+    Unavailable,      // the desktop app predates the lobby routes
+}
+
+pub enum Visibility { Friends, Code, FriendsAndCode }
+
+pub struct Lobby {
+    pub lobby_id: String,
+    pub join_code: Option<String>,     // None for a friends-only lobby, and for non-hosts
+    pub host_user_id: String,
+    pub host_payload: Vec<u8>,         // the host's connection blob, decoded
+    pub members: Vec<LobbyMember>,
+    pub max_players: u8,
+}
+
+pub struct LobbyMember {
+    pub user_id: String,
+    pub pseudo: String,
+    pub payload: Vec<u8>,
+}
+
+pub enum LobbyEvent {
+    Invite       { lobby_id: String, join_code: Option<String>,
+                   from_user_id: String, pseudo: String },
+    MemberJoined { lobby_id: String, user_id: String, pseudo: String, payload: Vec<u8> },
+    MemberLeft   { lobby_id: String, user_id: String },
+    LobbyClosed  { lobby_id: String },
+    Resync,                            // events were dropped — re-read with get_lobby
+}
+
 #[non_exhaustive]
 pub enum ErrorCode { /* one variant per code in the Errors table */ }
 
 pub const MAX_PUBLIC_KEY_LEN: usize = 256;
 pub const MAX_ACHIEVEMENT_KEY_LEN: usize = 64;
+pub const MAX_LOBBY_PAYLOAD_LEN: usize = 4096;
+pub const JOIN_CODE_LEN: usize = 6;
 ```
 
-`OwnershipStatus` implements `Display` (`"owned"` / `"drm_disabled"`), and `TrackingState` does too (`"active"` / `"pending"` / `"disabled"`). `SessionSnapshot` is `Debug + Clone`; `Achievement`, `Unlock`, `Friend` and `FriendList` are `Debug + Clone + PartialEq`.
+`OwnershipStatus` implements `Display` (`"owned"` / `"drm_disabled"`), and so do `TrackingState` (`"active"` / `"pending"` / `"disabled"`), `LobbyPollingState` (`"off"` / `"active"` / `"unavailable"`) and `Visibility` (`"friends"` / `"code"` / `"friends_and_code"`). `SessionSnapshot` is `Debug + Clone`; `Achievement`, `Unlock`, `Friend`, `FriendList`, `Lobby`, `LobbyMember` and `LobbyEvent` are `Debug + Clone + PartialEq`. `LobbyEvent::lobby_id()` reads the lobby id of any variant, and `None` for `Resync`, which is about every lobby this client is in.
 
 ## Crate types
 

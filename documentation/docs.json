@@ -23,6 +23,7 @@
           "concepts/session",
           "concepts/achievements",
           "concepts/friends",
+          "concepts/lobbies",
           "concepts/errors"
         ]
       },

@@ -39,7 +39,7 @@ match ArcaneClient::init(PUBLIC_KEY) {
 | Code | Problem | What to do | Retryable |
 |------|---------|------------|-----------|
 | `invalid_public_key` | Empty, over 256 bytes, or a character outside `A–Z a–z 0–9 _ - .` | Check the value you compiled in — the context names the bad character and its index | no |
-| `invalid_argument` | An argument other than the public key is empty, oversized, or has a forbidden character — today, an [achievement](/concepts/achievements) key over 64 bytes or outside `a–z 0–9 _ - .` (keys are lowercase) | Check the key against the Arcane portal. Raised before any network call, or when Arcane rejects the key | no |
+| `invalid_argument` | An argument other than the public key is empty, oversized, or has a forbidden character: an [achievement](/concepts/achievements) key over 64 bytes or outside `a–z 0–9 _ - .` (keys are lowercase), a [lobby](/concepts/lobbies) payload over 4096 bytes, a join code that is not six characters of `A–H J–N P–Z 2–9`, or a lobby / user id outside `A–Za–z0–9-` | Check the value. Raised before any network call, or when Arcane rejects it | no |
 | `ticket_missing` | No ticket cached for the signed-in account, or an empty ticket while DRM is on | Open Arcane desktop once while online. `init` normally refreshes this for you | yes |
 | `ticket_expired` | JWT past `exp` (beyond ±5 min skew) | `init` normally refreshes this for you; otherwise reconnect online via Arcane | yes |
 | `ticket_invalid` | Bad JWT, missing/unreadable JWKS, unknown `kid`, wrong title, `own=false`, corrupt file | Refresh via Arcane. If `expected` ≠ `ticket_gid` in the context, your public key is wrong | no |
@@ -49,8 +49,12 @@ match ArcaneClient::init(PUBLIC_KEY) {
 | `network_required` | No usable offline ticket and the refresh needs the network | Connect to the internet, open Arcane, retry | yes |
 | `not_authenticated` | Nobody is signed in — either Arcane says so, or `session.json` records a signed-out state | Sign in to the Arcane desktop app, then retry | yes |
 | `arcane_unavailable` | Could not reach or launch the Arcane desktop app | Install or launch Arcane Powered. Context shows the port and how long the SDK waited | yes |
-| `feature_unavailable` | The Arcane desktop app does not know the route the SDK asked for — it predates the feature | Update the Arcane Powered desktop app. Never returned by `init`: an older desktop only degrades the [play session](/concepts/session) to `Pending`, and makes [achievements](/concepts/achievements) and [friends](/concepts/friends) return this code | no |
+| `feature_unavailable` | The Arcane desktop app does not know the route the SDK asked for — it predates the feature | Update the Arcane Powered desktop app. Never returned by `init`: an older desktop only degrades the [play session](/concepts/session) to `Pending`, and makes [achievements](/concepts/achievements), [friends](/concepts/friends) and [lobbies](/concepts/lobbies) return this code | no |
 | `unknown_achievement` | The desktop app knows the route, but the title defines no achievement with that key | Check the key against the Arcane portal, and that the achievement is published. The context carries `achievement_key` | no |
+| `lobby_not_found` | No open [lobby](/concepts/lobbies) with that id or join code | The code may be mistyped, or the lobby ended. Ask the host for a fresh one | no |
+| `lobby_full` | The lobby already holds `max_players` | Offer another lobby, or host one. A retry only helps once somebody leaves | no |
+| `lobby_closed` | The host closed the lobby, or their play session expired | There is no host migration — open a new lobby | no |
+| `not_friends` | The lobby is open to the host's friends and this account is not one of them | Ask the host for a join code, or become friends on Arcane first | no |
 | `ambiguous_session` | Several accounts hold a ticket for this title and Arcane has not recorded which is signed in | Open Arcane desktop once so it records the session. Needs a build that writes `session.json` | no |
 | `not_initialized` | A C ABI getter was called before `arcane_sdk_init` | Call `arcane_sdk_init` once at launch first | no |
 | `internal` | Filesystem / path failure | Check permissions on the Arcane DRM directory — context names the path | no |
@@ -85,6 +89,12 @@ An already-unlocked or `queued` answer is a **success**, not an error — see [A
 
 A `stale` answer — the desktop app served its own cache because it is offline — is a **success**, not an error. See [Friends](/concepts/friends).
 
+### `P2p::create_lobby` / `join_by_code` / `join` / `get_lobby` / `invite` / `leave` / `close` — the `arcane_sdk_lobby_*` functions
+
+`invalid_argument` (oversized payload, malformed join code or id — all raised before any call), `lobby_not_found`, `lobby_full`, `lobby_closed`, `not_friends`, `not_owned`, `not_authenticated`, `network_required` (also under `ARCANE_OFFLINE_ONLY`, raised before any call), `arcane_unavailable`, `feature_unavailable`.
+
+`P2p::poll_events` / `arcane_sdk_lobby_events_json` and `P2p::launch_join_code` / `arcane_sdk_launch_join_code` never fail. A lobby object Arcane sends without an id, or carrying a payload over 4096 bytes, is refused as `arcane_unavailable` rather than half-read. A desktop app that predates the lobby routes makes `launch_join_code` answer `None` and stops event polling silently — read `client.session().lobby_events` for that, it is `Unavailable`. See [Lobbies](/concepts/lobbies).
+
 ### `ArcaneClient::frame`, `set_graphics`, `session`, `shutdown`
 
 Never fail and never return a `Result`. Before the desktop app acknowledges the session they are simply no-ops that keep counting locally.
@@ -108,7 +118,7 @@ Both mean **launch the game**. `is_owned()` distinguishes them if you need to.
 
 Two conventions, by function kind.
 
-### Actions — `arcane_sdk_init`, `arcane_sdk_refresh`, `arcane_sdk_set_graphics`, `arcane_sdk_achievement_unlock`
+### Actions — `arcane_sdk_init`, `arcane_sdk_refresh`, `arcane_sdk_set_graphics`, `arcane_sdk_achievement_unlock`, `arcane_sdk_lobby_invite`, `arcane_sdk_lobby_leave`, `arcane_sdk_lobby_close`
 
 | Return | Meaning |
 |--------|---------|
@@ -118,7 +128,7 @@ Two conventions, by function kind.
 
 `arcane_sdk_frame` and `arcane_sdk_shutdown` return nothing and cannot fail.
 
-### Getters — `arcane_sdk_user_id`, `arcane_sdk_game_id`, `arcane_sdk_public_key`, `arcane_sdk_device_hash`, `arcane_sdk_session_json`, `arcane_sdk_achievements_json`, `arcane_sdk_friends_json`, `arcane_sdk_last_error_json`
+### Getters — `arcane_sdk_user_id`, `arcane_sdk_game_id`, `arcane_sdk_public_key`, `arcane_sdk_device_hash`, `arcane_sdk_session_json`, `arcane_sdk_achievements_json`, `arcane_sdk_friends_json`, `arcane_sdk_lobby_create`, `arcane_sdk_lobby_join_code`, `arcane_sdk_lobby_join`, `arcane_sdk_launch_join_code`, `arcane_sdk_lobby_events_json`, `arcane_sdk_last_error_json`
 
 | Return | Meaning |
 |--------|---------|
@@ -127,6 +137,8 @@ Two conventions, by function kind.
 | `-2` | Null buffer or zero length |
 | `-3` | Buffer too small — the buffer is left as an empty string, never truncated |
 | `-4` | Value not available (for example no `game_id` reported yet, or the achievement list could not be fetched — read `arcane_sdk_last_error_json` for why) |
+
+`arcane_sdk_lobby_events_json` drains its queue **only** once the JSON is in your buffer: a `-3` leaves every event queued for a retry with a bigger buffer.
 
 `arcane_sdk_ownership` returns `0` (owned), `1` (DRM disabled) or `-1` (not initialised). `arcane_sdk_ticket_expires_at` and `arcane_sdk_checked_at` return a Unix timestamp or `-1`. `arcane_sdk_achievement_is_unlocked` returns `1`, `0`, `-1` (not initialised), `-2` (null / non-UTF-8 key) or `-4` (nothing cached for that key).
 

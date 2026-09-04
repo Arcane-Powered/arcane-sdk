@@ -42,6 +42,19 @@
 //! # Ok::<(), arcane_sdk::SdkError>(())
 //! ```
 //!
+//! P2P lobbies are the last opt-in surface: Arcane hosts the lobby, the join
+//! code and the invitations, and carries each member's opaque connection blob.
+//! The game keeps its own netcode — there is no relay and no transport here.
+//!
+//! ```no_run
+//! # use arcane_sdk::Visibility;
+//! # let client = arcane_sdk::ArcaneClient::init("pk_...")?;
+//! # let my_endpoint = b"udp://203.0.113.7:7777";
+//! let lobby = client.p2p().create_lobby(4, Visibility::FriendsAndCode, my_endpoint)?;
+//! for event in client.p2p().poll_events() { /* … */ }
+//! # Ok::<(), arcane_sdk::SdkError>(())
+//! ```
+//!
 //! Failures are [`SdkError`], carrying a stable [`code`](SdkError::code), a
 //! player-facing [`message`](SdkError::message), a developer-facing
 //! [`hint`](SdkError::hint) and a [`context`](SdkError::context) key/value list.
@@ -52,6 +65,7 @@ mod desktop;
 mod device;
 mod error;
 mod friends;
+mod p2p;
 mod paths;
 mod session;
 mod ticket;
@@ -60,6 +74,10 @@ pub use achievements::{Achievement, Achievements, Unlock, MAX_ACHIEVEMENT_KEY_LE
 pub use client::{ArcaneClient, MAX_PUBLIC_KEY_LEN};
 pub use error::{ErrorCode, OwnershipStatus, SdkError};
 pub use friends::{Friend, FriendList, Friends};
+pub use p2p::{
+    Lobby, LobbyEvent, LobbyMember, LobbyPollingState, P2p, Visibility, JOIN_CODE_LEN,
+    MAX_LOBBY_PAYLOAD_LEN,
+};
 pub use session::{SessionSnapshot, TrackingState};
 
 pub mod ffi;

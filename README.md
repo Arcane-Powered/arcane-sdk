@@ -19,12 +19,17 @@ client.session();   // tracking state, playtime, FPS samples
 client.achievements().unlock("first_blood")?;   // idempotent, one loopback call
 client.friends().list()?;                       // friends, with online and in_game
 
+// P2P: Arcane hosts the lobby and the join code, your netcode does the rest.
+let lobby = client.p2p().create_lobby(4, Visibility::FriendsAndCode, my_endpoint)?;
+for event in client.p2p().poll_events() { /* MemberJoined → connect_to(payload) */ }
+
 client.shutdown();  // ends the session and reports the final playtime
 ```
 
 One background thread (`arcane-session`) reports playtime once a minute and
-samples FPS in 30-second windows while the player allows it. Ownership itself is
-never revalidated on its own.
+samples FPS in 30-second windows while the player allows it. It also polls lobby
+events — but only once the game has called `p2p()`, and every 5 seconds instead
+of 60 while a lobby is open. Ownership itself is never revalidated on its own.
 
 Native engines get the same client as a C ABI singleton — see [`include/arcane_sdk.h`](./include/arcane_sdk.h).
 

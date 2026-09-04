@@ -23,6 +23,9 @@ include = [
   "ARCANE_ERR_UNAVAILABLE",
   "ARCANE_OWNERSHIP_OWNED",
   "ARCANE_OWNERSHIP_DRM_DISABLED",
+  "ARCANE_LOBBY_FRIENDS",
+  "ARCANE_LOBBY_CODE",
+  "ARCANE_LOBBY_FRIENDS_AND_CODE",
   "arcane_sdk_init",
   "arcane_sdk_refresh",
   "arcane_sdk_shutdown",
@@ -33,6 +36,15 @@ include = [
   "arcane_sdk_achievement_unlock",
   "arcane_sdk_achievement_is_unlocked",
   "arcane_sdk_friends_json",
+  "arcane_sdk_lobby_create",
+  "arcane_sdk_lobby_join_code",
+  "arcane_sdk_lobby_join",
+  "arcane_sdk_lobby_get",
+  "arcane_sdk_lobby_invite",
+  "arcane_sdk_lobby_leave",
+  "arcane_sdk_lobby_close",
+  "arcane_sdk_launch_join_code",
+  "arcane_sdk_lobby_events_json",
   "arcane_sdk_is_initialized",
   "arcane_sdk_ownership",
   "arcane_sdk_ticket_expires_at",
@@ -45,7 +57,12 @@ include = [
 ]
 item_types = ["constants", "functions"]
 # Rust-only; an unprefixed macro of this name would collide in a C project.
-exclude = ["MAX_PUBLIC_KEY_LEN", "MAX_ACHIEVEMENT_KEY_LEN"]
+exclude = [
+  "MAX_PUBLIC_KEY_LEN",
+  "MAX_ACHIEVEMENT_KEY_LEN",
+  "MAX_LOBBY_PAYLOAD_LEN",
+  "JOIN_CODE_LEN",
+]
 
 [fn]
 prefix = ""

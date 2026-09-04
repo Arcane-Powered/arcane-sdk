@@ -27,7 +27,7 @@ cargo install cbindgen --version 0.29.4 --locked
 
 Two conventions, by function kind. Both are in the header as named constants.
 
-**Actions** — `arcane_sdk_init`, `arcane_sdk_refresh`, `arcane_sdk_set_graphics`, `arcane_sdk_achievement_unlock`:
+**Actions** — `arcane_sdk_init`, `arcane_sdk_refresh`, `arcane_sdk_set_graphics`, `arcane_sdk_achievement_unlock`, `arcane_sdk_lobby_invite`, `arcane_sdk_lobby_leave`, `arcane_sdk_lobby_close`:
 
 | Return | Constant | Meaning |
 |--------|----------|---------|
@@ -109,6 +109,18 @@ int arcane_sdk_achievement_is_unlocked(const char *key);   /* 1, 0, or -4 */
 
 Reads the cache the last `arcane_sdk_achievements_json` filled — memory only, no call. Returns `1` (unlocked), `0` (locked), `-1` (not initialised), `-2` (null / non-UTF-8 key), or `-4` when the list has never been loaded or did not carry that key.
 
+### `arcane_sdk_lobby_invite`, `arcane_sdk_lobby_leave`, `arcane_sdk_lobby_close`
+
+```c
+int arcane_sdk_lobby_invite(const char *lobby_id, const char *to_user_id, char *err_buf, size_t err_len);
+int arcane_sdk_lobby_leave(const char *lobby_id, char *err_buf, size_t err_len);
+int arcane_sdk_lobby_close(const char *lobby_id, char *err_buf, size_t err_len);
+```
+
+Invite one friend to a [lobby](/concepts/lobbies), leave one, or close one you host. Each is one synchronous loopback call — never from the render loop. Returns `1` on a null / non-UTF-8 id or before init, `2` on an SDK error written to `err_buf`: `not_friends`, `lobby_not_found`, `lobby_closed`, `invalid_argument` for a malformed id (raised before any call).
+
+`close` ends the lobby for everyone; its members get a `lobby_closed` event. There is no host migration.
+
 ## Getters
 
 ```c
@@ -125,6 +137,16 @@ int  arcane_sdk_session_json(char *buf, size_t len);
 int  arcane_sdk_achievements_json(char *buf, size_t len);
 int  arcane_sdk_friends_json(char *buf, size_t len);
 int  arcane_sdk_last_error_json(char *buf, size_t len);
+
+int  arcane_sdk_lobby_create(uint8_t max_players, int visibility,
+                             const char *payload_b64, char *buf, size_t len);
+int  arcane_sdk_lobby_join_code(const char *join_code, const char *payload_b64,
+                                char *buf, size_t len);
+int  arcane_sdk_lobby_join(const char *lobby_id, const char *payload_b64,
+                           char *buf, size_t len);
+int  arcane_sdk_lobby_get(const char *lobby_id, char *buf, size_t len);
+int  arcane_sdk_launch_join_code(char *buf, size_t len);
+int  arcane_sdk_lobby_events_json(char *buf, size_t len);
 ```
 
 `arcane_sdk_ownership` returns `ARCANE_OWNERSHIP_OWNED` (`0`) or `ARCANE_OWNERSHIP_DRM_DISABLED` (`1`). Both mean *launch the game*.
@@ -137,11 +159,12 @@ int  arcane_sdk_last_error_json(char *buf, size_t len);
 char json[256];
 if (arcane_sdk_session_json(json, sizeof(json)) > 0) {
   /* {"session_id":"…","tracking":"active","played_seconds":1830,
-      "fps_sampling":true,"samples_taken":6,"last_fps_avg":59.8} */
+      "fps_sampling":true,"samples_taken":6,"last_fps_avg":59.8,
+      "lobby_events":"active"} */
 }
 ```
 
-`tracking` is `"active"`, `"pending"` or `"disabled"`.
+`tracking` is `"active"`, `"pending"` or `"disabled"`; `lobby_events` is `"off"`, `"active"` or `"unavailable"` — see [Lobbies](/concepts/lobbies).
 
 `arcane_sdk_achievements_json` is the C form of the Rust `list()`: it makes one synchronous loopback call, writes every [achievement](/concepts/achievements) of the title, and fills the cache `arcane_sdk_achievement_is_unlocked` reads. Call it on a loading or achievements screen, never per frame.
 
@@ -167,7 +190,41 @@ if (arcane_sdk_friends_json(json, sizeof(json)) > 0) {
 
 `in_game` is `true` for a friend playing this title right now — always `false` when the SDK has no `game_id`. `stale` is `true` when the desktop app answered from its cache because it is offline; the list is still usable. A `-4` means the call failed — read `arcane_sdk_last_error_json` for the code.
 
-Buffer sizing: user ids and device hashes fit comfortably in 64 bytes; allow 256 for the session JSON, 512 for `err_buf`, 1024 for the error JSON, and size the achievement and friends JSON to your title and the player's friend list (a few hundred bytes per entry). A short buffer is never a silent truncation — you get `-3` and an empty string.
+### Lobbies
+
+`arcane_sdk_lobby_create`, `arcane_sdk_lobby_join_code`, `arcane_sdk_lobby_join` and `arcane_sdk_lobby_get` each make one synchronous loopback call and write the same [lobby](/concepts/lobbies) object — `arcane_sdk_lobby_get` reads one without joining or leaving anything:
+
+```c
+char json[8192];
+int n = arcane_sdk_lobby_create(4, ARCANE_LOBBY_FRIENDS_AND_CODE, "dWRwOi8v...", json, sizeof(json));
+/* {"lobby_id":"…","join_code":"K7P3QX","host_user_id":"…","host_payload":"…",
+    "members":[{"user_id":"…","pseudo":"…","payload":"…"}],"max_players":4} */
+```
+
+`visibility` is `ARCANE_LOBBY_FRIENDS` (`0`), `ARCANE_LOBBY_CODE` (`1`) or `ARCANE_LOBBY_FRIENDS_AND_CODE` (`2`). `payload_b64` is your connection blob **already base64-encoded**, at most 4096 raw bytes — a null pointer means no payload. Payloads come back base64 too; Arcane never reads them. `join_code` is `null` for a friends-only lobby and for a member who is not the host.
+
+A `-2` means a bad argument — a payload that is not base64, an unknown visibility, a null or non-UTF-8 id. A `-4` means the call failed: read `arcane_sdk_last_error_json` for `lobby_not_found`, `lobby_full`, `lobby_closed`, `not_friends`, or `invalid_argument` when the join code or payload was rejected before any call.
+
+```c
+char code[8];
+if (arcane_sdk_launch_join_code(code, sizeof(code)) > 0) {
+  /* the player started the game from a friend's "Join" */
+}
+```
+
+`arcane_sdk_launch_join_code` reads the launcher's stashed code on the first call and caches it for the process; `-4` when there is none, when the desktop app predates the route, or in offline-only mode.
+
+```c
+char json[8192];
+if (arcane_sdk_lobby_events_json(json, sizeof(json)) > 0) {
+  /* {"events":[{"type":"member_joined","lobby_id":"…","user_id":"…",
+      "pseudo":"…","payload":"…"}]} */
+}
+```
+
+`arcane_sdk_lobby_events_json` reads memory only — the `arcane-session` thread does the polling, armed by the first lobby call — and **drains the queue only once the JSON is safely in your buffer**. A `-3` leaves every event queued, so retry with a bigger buffer and lose nothing. Event objects carry `type` first, then `lobby_id`, then the fields of that type: `invite` has `join_code`, `from_user_id`, `pseudo`; `member_joined` has `user_id`, `pseudo`, `payload`; `member_left` has `user_id`; `lobby_closed` has nothing more. A `{"type":"resync"}` event has no `lobby_id` at all: Arcane dropped events before this client fetched them, so re-read the lobbies you are in with `arcane_sdk_lobby_get`.
+
+Buffer sizing: user ids and device hashes fit comfortably in 64 bytes; allow 256 for the session JSON, 512 for `err_buf`, 1024 for the error JSON, 8 for a join code, and size the achievement, friends and lobby JSON to your title (a few hundred bytes per entry, plus your payloads at 4/3 their raw size once base64-encoded). A short buffer is never a silent truncation — you get `-3` and an empty string.
 
 ## Example
 
@@ -204,6 +261,22 @@ int boot(void) {
 void on_boss_defeated(void) {
   char err[512];
   arcane_sdk_achievement_unlock("boss.01", err, sizeof(err));   /* idempotent */
+}
+
+void host_a_game(void) {
+  char json[8192], err[512];
+  if (arcane_sdk_lobby_create(4, ARCANE_LOBBY_FRIENDS_AND_CODE, my_endpoint_b64(),
+                              json, sizeof(json)) > 0) {
+    /* show the join_code from the JSON, then invite a friend */
+    arcane_sdk_lobby_invite(lobby_id_from(json), "user-b", err, sizeof(err));
+  }
+}
+
+void pump_lobby(void) {          /* once a second is plenty — memory only */
+  char json[8192];
+  if (arcane_sdk_lobby_events_json(json, sizeof(json)) > 0) {
+    /* {"events":[…]} — connect to each member_joined payload */
+  }
 }
 
 void open_friends_menu(void) {

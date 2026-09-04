@@ -19,13 +19,14 @@ client.frame();   // once per rendered frame
 
 ## What runs in the background
 
-One thread, named `arcane-session`. It sleeps on a condition variable, wakes about once a minute, posts a heartbeat of roughly 200 bytes to the Arcane desktop app on `127.0.0.1:39284`, and goes back to sleep. There is no busy loop, no fine-grained timer, and no second thread.
+One thread, named `arcane-session`. It sleeps on a condition variable, wakes about once a minute, posts a heartbeat of roughly 200 bytes to the Arcane desktop app on `127.0.0.1:39284`, and goes back to sleep. There is no busy loop, no fine-grained timer, and no second thread. It is also the thread that polls [lobby events](/concepts/lobbies), once a game has asked for them.
 
 | Path | What it costs |
 |------|---------------|
 | `frame()` | One relaxed atomic load. Inside a sampling window, one relaxed increment as well. No lock, no allocation, no clock read |
 | `set_graphics()` | A short lock. Call it when settings change, never per frame |
 | `arcane-session` thread | Asleep ~59 s out of 60, 64 KiB stack, one small loopback POST per wake |
+| Lobby event polling | Nothing at all until the game calls `p2p()`. Then one small loopback GET per tick |
 | `shutdown()` | One synchronous POST, 2-second timeout — the only blocking call of the lifecycle |
 
 The session never opens the `arcane-powered://` deep link. If the desktop app is not running, tracking degrades quietly; it never interrupts the player.
@@ -84,6 +85,24 @@ println!("{} · {}s", session.tracking, session.played_seconds);
 | `fps_sampling` | `bool` — the player's setting |
 | `samples_taken` | `u32` |
 | `last_fps_avg` | `Option<f32>` |
+| `lobby_events` | `Off` / `Active` / `Unavailable` |
+
+## Lobby events and the tick
+
+The session thread carries one more job, and only if you ask for it: polling the Arcane desktop app for [lobby events](/concepts/lobbies).
+
+- Nothing is polled until the game calls `client.p2p()` for the first time. That call arms it.
+- Once armed, the thread asks for events on **every tick**: every **5 seconds while this client is in an open lobby** — created or joined, and not yet left, closed, or ended by a `LobbyClosed` event — and every 60 seconds otherwise.
+- **Heartbeats keep their own 60-second schedule** either way. A faster lobby tick does not mean a faster heartbeat.
+- If the Arcane desktop app predates the lobby routes, polling stops silently and for good, and `session().lobby_events` reads `Unavailable`.
+
+```rust
+match client.session().lobby_events {
+    LobbyPollingState::Off => {}            // the game never called p2p()
+    LobbyPollingState::Active => {}         // events are being collected
+    LobbyPollingState::Unavailable => {}    // desktop app too old — update it
+}
+```
 
 ## Ending the session
 
