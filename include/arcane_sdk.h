@@ -221,6 +221,18 @@ int arcane_sdk_lobby_create(uint8_t max_players,
 // `buf` must be null or point to at least `len` writable bytes.
 int arcane_sdk_lobby_events_json(char *buf, size_t len);
 
+// Read a lobby as Arcane knows it right now and write it as JSON into `buf`.
+//
+// Use it after a `resync` event, or whenever you would rather ask than replay
+// events. Same JSON, return values and threading rules as
+// `arcane_sdk_lobby_create`; it joins nothing and leaves nothing.
+//
+// # Safety
+//
+// `lobby_id` must be null or a valid NUL-terminated C string. `buf` must be
+// null or point to at least `len` writable bytes.
+int arcane_sdk_lobby_get(const char *lobby_id, char *buf, size_t len);
+
 // Invite one friend to a lobby.
 //
 // Both ids are NUL-terminated UTF-8. One synchronous loopback call. Returns 0

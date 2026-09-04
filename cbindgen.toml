@@ -39,6 +39,7 @@ include = [
   "arcane_sdk_lobby_create",
   "arcane_sdk_lobby_join_code",
   "arcane_sdk_lobby_join",
+  "arcane_sdk_lobby_get",
   "arcane_sdk_lobby_invite",
   "arcane_sdk_lobby_leave",
   "arcane_sdk_lobby_close",

@@ -1149,6 +1149,17 @@ const LOBBY: Reply = Reply {
                          {"user_id":"user-b","pseudo":"Bo","payload":null}]}"#,
 };
 
+/// Lobby calls the game made, without the event polling the session thread does
+/// on its own once `p2p()` armed it.
+fn lobby_calls(stub: &Stub) -> Vec<Request> {
+    stub.requests()
+        .into_iter()
+        .filter(|request| {
+            request.line.contains("/lobbies") && !request.line.contains("/lobbies/events")
+        })
+        .collect()
+}
+
 /// Serve every lobby route with `lobby`, and the polled routes with an empty
 /// answer so the session thread never disarms itself mid-test.
 fn lobby_stub(lobby: Reply) -> Stub {
@@ -1251,17 +1262,35 @@ fn joining_by_id_inviting_leaving_and_closing_hit_their_routes() {
     assert_eq!(closed.len(), 1, "close is a DELETE: {:?}", stub.requests());
 }
 
+const LOBBY_NOT_FOUND: Reply = Reply {
+    status: "404 Not Found",
+    body: r#"{"error":"lobby_not_found","message":"no such lobby"}"#,
+};
+
+const LOBBY_FULL: Reply = Reply {
+    status: "409 Conflict",
+    body: r#"{"error":"lobby_full","message":"it is full"}"#,
+};
+
+const LOBBY_GONE: Reply = Reply {
+    status: "410 Gone",
+    body: r#"{"error":"lobby_closed","message":"the host closed it"}"#,
+};
+
+const NOT_FRIENDS: Reply = Reply {
+    status: "403 Forbidden",
+    body: r#"{"error":"not_friends","message":"friends only"}"#,
+};
+
 #[test]
 fn the_lobby_error_codes_map_from_their_desktop_bodies() {
-    for (status, error, code) in [
-        ("404 Not Found", "lobby_not_found", "lobby_not_found"),
-        ("409 Conflict", "lobby_full", "lobby_full"),
-        ("410 Gone", "lobby_closed", "lobby_closed"),
-        ("403 Forbidden", "not_friends", "not_friends"),
+    for (reply, code) in [
+        (LOBBY_NOT_FOUND, "lobby_not_found"),
+        (LOBBY_FULL, "lobby_full"),
+        (LOBBY_GONE, "lobby_closed"),
+        (NOT_FRIENDS, "not_friends"),
     ] {
-        let body: &'static str =
-            Box::leak(format!(r#"{{"error":"{error}","message":"nope"}}"#).into_boxed_str());
-        let _stub = lobby_stub(Reply { status, body });
+        let _stub = lobby_stub(reply);
 
         let err = ArcaneClient::init(PUBLIC_KEY)
             .expect("init")
@@ -1329,7 +1358,7 @@ fn a_malformed_join_code_or_an_oversized_payload_fails_before_any_request() {
     assert_eq!(err.code(), "invalid_argument");
 
     assert!(
-        stub.matching("/lobbies").is_empty(),
+        lobby_calls(&stub).is_empty(),
         "a rejected argument must never leave the process: {:?}",
         stub.requests()
     );
@@ -1364,7 +1393,7 @@ fn offline_only_mode_refuses_the_lobby_calls_without_a_request() {
     assert_eq!(client.p2p().launch_join_code(), None);
 
     assert!(
-        stub.matching("/lobbies").is_empty() && stub.matching("/launch-context").is_empty(),
+        lobby_calls(&stub).is_empty() && stub.matching("/launch-context").is_empty(),
         "offline-only mode must not reach the desktop: {:?}",
         stub.requests()
     );
@@ -1744,6 +1773,10 @@ fn the_lobby_entry_points_are_safe_before_init() {
         -1
     );
     assert_eq!(
+        unsafe { ffi::arcane_sdk_lobby_get(c"lobby-1".as_ptr(), buf.as_mut_ptr(), buf.len()) },
+        -1
+    );
+    assert_eq!(
         unsafe { ffi::arcane_sdk_lobby_leave(c"lobby-1".as_ptr(), buf.as_mut_ptr(), buf.len()) },
         1
     );
@@ -1758,4 +1791,221 @@ fn the_lobby_entry_points_are_safe_before_init() {
         },
         1
     );
+}
+
+#[test]
+fn a_transport_failure_does_not_cache_the_launch_join_code_away() {
+    let stub = Stub::start_with(|request| {
+        if request.line.contains("/v1/health") {
+            HEALTHY
+        } else if request.line.contains("/lobbies/events") {
+            NO_EVENTS
+        } else if request.line.contains("/launch-context") {
+            Reply {
+                status: "200 OK",
+                body: r#"{"join_code":"K7P3QX"}"#,
+            }
+        } else {
+            DRM_OFF
+        }
+    });
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+
+    // Point the SDK at a port nothing listens on, so the read fails outright.
+    let live_port = std::env::var("ARCANE_SDK_PORT").expect("port");
+    let dead = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let dead_port = dead.local_addr().expect("addr").port();
+    drop(dead);
+    std::env::set_var("ARCANE_SDK_PORT", dead_port.to_string());
+
+    assert_eq!(
+        client.p2p().launch_join_code(),
+        None,
+        "a call that never got through has no answer to cache"
+    );
+
+    std::env::set_var("ARCANE_SDK_PORT", &live_port);
+
+    assert_eq!(
+        client.p2p().launch_join_code().as_deref(),
+        Some("K7P3QX"),
+        "the next call asks again rather than repeating a failure"
+    );
+    assert_eq!(stub.matching("/launch-context").len(), 1);
+}
+
+#[test]
+fn a_desktop_without_the_launch_context_route_is_asked_once() {
+    let stub = Stub::start_with(|request| {
+        if request.line.contains("/v1/health") {
+            HEALTHY
+        } else if request.line.contains("/lobbies/events") {
+            NO_EVENTS
+        } else if request.line.contains("/launch-context") {
+            Reply {
+                status: "404 Not Found",
+                body: "Not Found",
+            }
+        } else {
+            DRM_OFF
+        }
+    });
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+
+    assert_eq!(client.p2p().launch_join_code(), None);
+    assert_eq!(client.p2p().launch_join_code(), None);
+
+    assert_eq!(
+        stub.matching("/launch-context").len(),
+        1,
+        "an older desktop app has no code to hold, and that answer is final"
+    );
+}
+
+#[test]
+fn reading_a_lobby_maps_the_object_without_joining_it() {
+    let stub = lobby_stub(LOBBY);
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+
+    let lobby = client.p2p().get_lobby("lobby-1").expect("get");
+
+    assert_eq!(lobby.lobby_id, "lobby-1");
+    assert_eq!(lobby.host_payload, HOST_PAYLOAD);
+    assert_eq!(lobby.members.len(), 2);
+
+    let read = stub.matching("/lobbies/lobby-1");
+    assert_eq!(read.len(), 1);
+    assert!(read[0]
+        .line
+        .starts_with("GET /v1/games/pk_test_title/lobbies/lobby-1 "));
+
+    let err = client.p2p().get_lobby("lobby/../evil").expect_err("bad id");
+    assert_eq!(err.code(), "invalid_argument");
+}
+
+#[test]
+fn reading_a_lobby_maps_the_error_codes_too() {
+    for (reply, code) in [
+        (LOBBY_NOT_FOUND, "lobby_not_found"),
+        (LOBBY_GONE, "lobby_closed"),
+        (NOT_FRIENDS, "not_friends"),
+    ] {
+        let _stub = lobby_stub(reply);
+
+        let err = ArcaneClient::init(PUBLIC_KEY)
+            .expect("init")
+            .p2p()
+            .get_lobby("lobby-1")
+            .expect_err("the desktop refused");
+
+        assert_eq!(err.code(), code);
+        assert!(err
+            .context()
+            .iter()
+            .any(|(k, v)| k == "lobby_id" && v == "lobby-1"));
+    }
+}
+
+#[test]
+fn a_dropped_answer_delivers_one_resync_the_game_can_act_on() {
+    let stub = Stub::start_with(|request| {
+        if request.line.contains("/v1/health") {
+            HEALTHY
+        } else if request.line.contains("after=c-1") {
+            Reply {
+                status: "200 OK",
+                body: r#"{"events":[],"cursor":"c-1"}"#,
+            }
+        } else if request.line.contains("/lobbies/events") {
+            Reply {
+                status: "200 OK",
+                body: r#"{"events":[{"id":"9","type":"lobby_closed","lobby_id":"lobby-1"}],
+                          "cursor":"c-1","dropped":true}"#,
+            }
+        } else if request.line.contains("/lobbies") {
+            LOBBY
+        } else {
+            DRM_OFF
+        }
+    });
+    std::env::set_var("ARCANE_SESSION_TICK_MS", "150");
+
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+    let collected = drain_events(&client, 2);
+
+    assert_eq!(
+        collected,
+        vec![
+            LobbyEvent::Resync,
+            LobbyEvent::LobbyClosed {
+                lobby_id: "lobby-1".into(),
+            },
+        ],
+        "the resync comes first, so the game knows the rest may have holes"
+    );
+    assert_eq!(collected[0].lobby_id(), None);
+
+    stub.wait_for("after=c-1", 1);
+    thread::sleep(Duration::from_millis(400));
+    assert!(
+        client.p2p().poll_events().is_empty(),
+        "a lobby the SDK already saw is not delivered again"
+    );
+
+    // The game's answer to a resync: ask Arcane what the lobby looks like now.
+    let lobby = client.p2p().get_lobby("lobby-1").expect("get");
+    assert_eq!(lobby.lobby_id, "lobby-1");
+}
+
+#[test]
+fn the_c_abi_reads_a_lobby_and_renders_a_resync() {
+    let _stub = Stub::start_with(|request| {
+        if request.line.contains("/v1/health") {
+            HEALTHY
+        } else if request.line.contains("/lobbies/events") {
+            Reply {
+                status: "200 OK",
+                body: r#"{"events":[],"cursor":"c-1","dropped":true}"#,
+            }
+        } else if request.line.contains("/lobbies") {
+            LOBBY
+        } else {
+            DRM_OFF
+        }
+    });
+    std::env::set_var("ARCANE_SESSION_TICK_MS", "150");
+
+    assert_eq!(
+        unsafe { ffi::arcane_sdk_init(c"pk_test_title".as_ptr(), std::ptr::null_mut(), 0) },
+        0
+    );
+
+    let mut buf = [0 as c_char; 4096];
+    let written =
+        unsafe { ffi::arcane_sdk_lobby_get(c"lobby-1".as_ptr(), buf.as_mut_ptr(), buf.len()) };
+    assert!(written > 0);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&read_c_string(&buf)).expect("the C ABI writes valid json");
+    assert_eq!(parsed["lobby_id"], "lobby-1");
+    assert_eq!(parsed["join_code"], "K7P3QX");
+
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let written = unsafe { ffi::arcane_sdk_lobby_events_json(buf.as_mut_ptr(), buf.len()) };
+        assert!(written > 0);
+        let rendered = read_c_string(&buf);
+        if rendered.contains("resync") {
+            assert_eq!(rendered, r#"{"events":[{"type":"resync"}]}"#);
+            break;
+        }
+        assert!(Instant::now() < deadline, "no resync arrived: {rendered}");
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    assert_eq!(
+        unsafe { ffi::arcane_sdk_lobby_get(std::ptr::null(), buf.as_mut_ptr(), buf.len()) },
+        -2
+    );
+
+    ffi::arcane_sdk_shutdown();
 }

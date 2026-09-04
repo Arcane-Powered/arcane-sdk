@@ -39,7 +39,7 @@ use crate::desktop::{
     delete_json, get_json, offline_only, post_json, DesktopCall, GAMES_PATH_PREFIX,
     OFFLINE_ONLY_ENV,
 };
-use crate::error::SdkError;
+use crate::error::{ErrorCode, SdkError};
 use crate::session::SessionInner;
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -56,6 +56,11 @@ pub const JOIN_CODE_LEN: usize = 6;
 
 const MAX_ID_LEN: usize = 64;
 const MAX_QUEUED_EVENTS: usize = 256;
+const MAX_SEEN_EVENT_IDS: usize = 256;
+
+/// What [`MAX_LOBBY_PAYLOAD_LEN`] bytes take once base64-encoded, so an
+/// oversized answer is refused before it is decoded.
+const BASE64_LEN_LIMIT: usize = MAX_LOBBY_PAYLOAD_LEN.div_ceil(3) * 4;
 
 /// Who can join a lobby.
 ///
@@ -151,16 +156,22 @@ pub enum LobbyEvent {
     /// The lobby is over: the host closed it or their play session expired.
     /// There is no host migration — open a new lobby.
     LobbyClosed { lobby_id: String },
+    /// Arcane dropped events before this client fetched them, so the queue has
+    /// a hole in it. Re-read the lobbies you are in with [`P2p::get_lobby`]
+    /// instead of trusting what the earlier events built up.
+    Resync,
 }
 
 impl LobbyEvent {
-    /// The lobby this event is about.
-    pub fn lobby_id(&self) -> &str {
+    /// The lobby this event is about, or `None` for a
+    /// [`Resync`](LobbyEvent::Resync), which is about all of them.
+    pub fn lobby_id(&self) -> Option<&str> {
         match self {
             Self::Invite { lobby_id, .. }
             | Self::MemberJoined { lobby_id, .. }
             | Self::MemberLeft { lobby_id, .. }
-            | Self::LobbyClosed { lobby_id } => lobby_id,
+            | Self::LobbyClosed { lobby_id } => Some(lobby_id),
+            Self::Resync => None,
         }
     }
 }
@@ -168,7 +179,9 @@ impl LobbyEvent {
 /// Whether the session thread is polling Arcane for lobby events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LobbyPollingState {
-    /// The game has never called `p2p()`, so nothing is polled.
+    /// Nothing is polled: the game has never called `p2p()`, or the play
+    /// session itself is off (`ARCANE_OFFLINE_ONLY`, or nobody to attribute it
+    /// to), so no thread is running to poll with.
     Off,
     /// Armed: the session thread asks for events on every tick.
     Active,
@@ -198,7 +211,9 @@ impl std::fmt::Display for LobbyPollingState {
 struct Shared {
     polling: LobbyPollingState,
     cursor: Option<String>,
-    events: VecDeque<LobbyEvent>,
+    events: VecDeque<(u64, LobbyEvent)>,
+    next_seq: u64,
+    seen: VecDeque<String>,
     lobbies: Vec<String>,
 }
 
@@ -220,6 +235,8 @@ impl P2pState {
                 polling: LobbyPollingState::Off,
                 cursor: None,
                 events: VecDeque::new(),
+                next_seq: 0,
+                seen: VecDeque::new(),
                 lobbies: Vec::new(),
             }),
             launch_code: Mutex::new(None),
@@ -299,43 +316,65 @@ impl P2pState {
 
     fn take_events(&self) -> Vec<LobbyEvent> {
         let mut shared = self.lock();
-        shared.events.drain(..).collect()
+        shared.events.drain(..).map(|(_, event)| event).collect()
     }
 
-    /// The queued events as C ABI JSON, and how many were rendered — so the
-    /// caller can drop exactly those once they are safely in the buffer.
-    pub(crate) fn events_json(&self) -> (String, usize) {
+    /// The queued events as C ABI JSON, and the sequence number of the last one
+    /// rendered — so the caller can drop exactly those, and only those, once
+    /// they are safely in the buffer. Every event carries a number that only
+    /// grows, so an event queued in between is never dropped unread.
+    pub(crate) fn events_json(&self) -> (String, Option<u64>) {
         let shared = self.lock();
-        (render_events(shared.events.iter()), shared.events.len())
+        let rendered = render_events(shared.events.iter().map(|(_, event)| event));
+        (rendered, shared.events.back().map(|(seq, _)| *seq))
     }
 
-    pub(crate) fn discard(&self, count: usize) {
+    pub(crate) fn discard(&self, through: u64) {
         let mut shared = self.lock();
-        for _ in 0..count.min(shared.events.len()) {
+        while shared
+            .events
+            .front()
+            .is_some_and(|(seq, _)| *seq <= through)
+        {
             shared.events.pop_front();
         }
     }
 
-    fn ingest(&self, events: Vec<LobbyEvent>, cursor: Option<String>) {
+    /// Queue what a poll returned. An event Arcane already sent — the cursor did
+    /// not advance, or the desktop app replayed it — is dropped rather than
+    /// delivered twice.
+    fn ingest(&self, events: Vec<Incoming>, cursor: Option<String>) {
         let mut shared = self.lock();
         if let Some(cursor) = cursor.filter(|value| !value.is_empty()) {
             shared.cursor = Some(cursor);
         }
-        for event in events {
+        for Incoming { id, event } in events {
+            if let Some(id) = &id {
+                if shared.seen.contains(id) {
+                    continue;
+                }
+                if shared.seen.len() >= MAX_SEEN_EVENT_IDS {
+                    shared.seen.pop_front();
+                }
+                shared.seen.push_back(id.clone());
+            }
             if let LobbyEvent::LobbyClosed { lobby_id } = &event {
                 shared.lobbies.retain(|open| open != lobby_id);
             }
             if shared.events.len() >= MAX_QUEUED_EVENTS {
                 shared.events.pop_front();
             }
-            shared.events.push_back(event);
+            let seq = shared.next_seq;
+            shared.next_seq += 1;
+            shared.events.push_back((seq, event));
         }
     }
 
     /// Retire polling for good: the desktop app does not know the route.
     fn retire(&self) {
+        let mut shared = self.lock();
         self.armed.store(false, Ordering::Relaxed);
-        self.lock().polling = LobbyPollingState::Unavailable;
+        shared.polling = LobbyPollingState::Unavailable;
     }
 }
 
@@ -351,7 +390,7 @@ pub(crate) fn poll_once(public_key: &str, state: &P2pState) -> Option<SdkError> 
             Ok(response) => response,
             Err(call) => {
                 let err = call.into_sdk_error();
-                if err.error_code() == crate::error::ErrorCode::FeatureUnavailable {
+                if err.error_code() == ErrorCode::FeatureUnavailable {
                     state.retire();
                     return None;
                 }
@@ -359,9 +398,23 @@ pub(crate) fn poll_once(public_key: &str, state: &P2pState) -> Option<SdkError> 
             }
         };
 
-    let events = response.events.into_iter().filter_map(map_event).collect();
+    let mut events: Vec<Incoming> = Vec::new();
+    if response.dropped {
+        events.push(Incoming {
+            id: None,
+            event: LobbyEvent::Resync,
+        });
+    }
+    events.extend(response.events.into_iter().filter_map(map_event));
     state.ingest(events, response.cursor);
     None
+}
+
+/// One event as it arrived, with the id Arcane deduplicates on.
+#[derive(Debug)]
+struct Incoming {
+    id: Option<String>,
+    event: LobbyEvent,
 }
 
 /// The lobby accessor, borrowed from the client.
@@ -470,6 +523,28 @@ impl<'a> P2p<'a> {
         self.entered(map_lobby(wire)?)
     }
 
+    /// Read a lobby as Arcane knows it right now.
+    ///
+    /// Use it after a [`LobbyEvent::Resync`], or whenever you would rather ask
+    /// than replay events. One synchronous loopback round trip; it does not
+    /// join or leave anything, so it never changes what this client is in.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_argument` for a malformed id (raised before any call),
+    /// `lobby_not_found`, `lobby_closed`, `not_friends`, plus the codes of
+    /// [`P2p::create_lobby`].
+    pub fn get_lobby(&self, lobby_id: &str) -> Result<Lobby, SdkError> {
+        validate_id("lobby_id", lobby_id)?;
+        self.guard_offline("Reading a lobby")?;
+
+        let wire: WireLobby =
+            get_json(&format!("{}/{lobby_id}", self.lobbies_path()), CALL_TIMEOUT)
+                .map_err(|call| call.into_sdk_error().with_context("lobby_id", lobby_id))?;
+
+        map_lobby(wire)
+    }
+
     /// Invite one friend to a lobby.
     ///
     /// Arcane delivers it to their launcher: they get an
@@ -518,10 +593,8 @@ impl<'a> P2p<'a> {
             None,
             CALL_TIMEOUT,
         );
-        self.state.exit(lobby_id);
-        sent.map_err(|call| call.into_sdk_error().with_context("lobby_id", lobby_id))?;
 
-        Ok(())
+        self.left(lobby_id, sent)
     }
 
     /// Close a lobby this player hosts. Its members get a
@@ -537,10 +610,8 @@ impl<'a> P2p<'a> {
 
         let sent: Result<WireOk, DesktopCall> =
             delete_json(&format!("{}/{lobby_id}", self.lobbies_path()), CALL_TIMEOUT);
-        self.state.exit(lobby_id);
-        sent.map_err(|call| call.into_sdk_error().with_context("lobby_id", lobby_id))?;
 
-        Ok(())
+        self.left(lobby_id, sent)
     }
 
     /// The join code this game was launched with, when the player started it
@@ -574,13 +645,23 @@ impl<'a> P2p<'a> {
             return None;
         }
 
-        let fetched: Option<String> = get_json::<WireLaunchContext>(
+        let fetched = match get_json::<WireLaunchContext>(
             &format!("{GAMES_PATH_PREFIX}/{}/launch-context", self.public_key),
             CALL_TIMEOUT,
-        )
-        .ok()
-        .and_then(|context| context.join_code)
-        .and_then(|code| normalize_join_code(&code).ok());
+        ) {
+            Ok(context) => context
+                .join_code
+                .and_then(|code| normalize_join_code(&code).ok()),
+            // A desktop app that does not know the route has no code to hold,
+            // so that answer is final. A call that never got through is not an
+            // answer at all: leave the cache empty and let the next call ask.
+            Err(call) => {
+                if call.into_sdk_error().error_code() != ErrorCode::FeatureUnavailable {
+                    return None;
+                }
+                None
+            }
+        };
 
         *cached = Some(fetched.clone());
         fetched
@@ -606,12 +687,31 @@ impl<'a> P2p<'a> {
         self.state.take_events()
     }
 
-    pub(crate) fn events_json(&self) -> (String, usize) {
+    pub(crate) fn events_json(&self) -> (String, Option<u64>) {
         self.state.events_json()
     }
 
-    pub(crate) fn discard(&self, count: usize) {
-        self.state.discard(count);
+    pub(crate) fn discard(&self, through: u64) {
+        self.state.discard(through);
+    }
+
+    /// Stop treating the lobby as open only once it really is: a call that
+    /// failed to reach Arcane leaves the player in it, and the faster poll with
+    /// them.
+    fn left(&self, lobby_id: &str, sent: Result<WireOk, DesktopCall>) -> Result<(), SdkError> {
+        let Err(call) = sent else {
+            self.state.exit(lobby_id);
+            return Ok(());
+        };
+
+        let error = call.into_sdk_error().with_context("lobby_id", lobby_id);
+        if matches!(
+            error.error_code(),
+            ErrorCode::LobbyNotFound | ErrorCode::LobbyClosed
+        ) {
+            self.state.exit(lobby_id);
+        }
+        Err(error)
     }
 
     fn entered(&self, lobby: Lobby) -> Result<Lobby, SdkError> {
@@ -657,7 +757,12 @@ pub(crate) fn encode_payload(payload: &[u8]) -> Result<String, SdkError> {
 /// base64 at all — the caller reports a bad argument rather than sending bytes
 /// the game did not mean.
 pub(crate) fn decode_payload_arg(raw: &str) -> Option<Vec<u8>> {
-    BASE64.decode(raw.trim()).ok()
+    let raw = raw.trim();
+    if raw.len() > BASE64_LEN_LIMIT {
+        return None;
+    }
+    let decoded = BASE64.decode(raw).ok()?;
+    (decoded.len() <= MAX_LOBBY_PAYLOAD_LEN).then_some(decoded)
 }
 
 /// Uppercase a join code and check it against the unambiguous alphabet the
@@ -753,10 +858,16 @@ struct WireEvents {
     events: Vec<WireEvent>,
     #[serde(default)]
     cursor: Option<String>,
+    /// Set when the desktop app's ring buffer evicted events this client never
+    /// fetched.
+    #[serde(default)]
+    dropped: bool,
 }
 
 #[derive(Debug, Deserialize)]
 struct WireEvent {
+    #[serde(default)]
+    id: Option<String>,
     #[serde(rename = "type", default)]
     kind: String,
     #[serde(default)]
@@ -774,6 +885,14 @@ struct WireEvent {
 }
 
 fn map_lobby(wire: WireLobby) -> Result<Lobby, SdkError> {
+    if wire.lobby_id.trim().is_empty() {
+        return Err(
+            SdkError::arcane_unavailable("Arcane desktop returned a lobby without an id.")
+                .with_hint("The Arcane desktop app may be older than this SDK — update it.")
+                .with_context("field", "lobby_id"),
+        );
+    }
+
     Ok(Lobby {
         lobby_id: wire.lobby_id,
         join_code: wire.join_code.filter(|code| !code.trim().is_empty()),
@@ -796,14 +915,14 @@ fn map_lobby(wire: WireLobby) -> Result<Lobby, SdkError> {
 
 /// An event whose payload the desktop app mangled is still delivered — there is
 /// no caller to hand an error to on the session thread — with an empty payload.
-fn map_event(wire: WireEvent) -> Option<LobbyEvent> {
+fn map_event(wire: WireEvent) -> Option<Incoming> {
     let lobby_id = wire.lobby_id;
     if lobby_id.is_empty() {
         return None;
     }
     let payload = || decode_payload(wire.payload.as_deref(), "payload").unwrap_or_default();
 
-    Some(match wire.kind.as_str() {
+    let event = match wire.kind.as_str() {
         "invite" => LobbyEvent::Invite {
             lobby_id,
             join_code: wire.join_code.filter(|code| !code.trim().is_empty()),
@@ -822,18 +941,38 @@ fn map_event(wire: WireEvent) -> Option<LobbyEvent> {
         },
         "lobby_closed" => LobbyEvent::LobbyClosed { lobby_id },
         _ => return None,
-    })
+    };
+
+    Some(Incoming { id: wire.id, event })
 }
 
+/// The inbound half of the 4 KiB limit: Arcane carries at most that much, so an
+/// answer holding more is not a payload this SDK sent and is refused rather
+/// than kept in memory.
 fn decode_payload(encoded: Option<&str>, field: &str) -> Result<Vec<u8>, SdkError> {
     let Some(encoded) = encoded.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(Vec::new());
     };
-    BASE64.decode(encoded).map_err(|e| {
-        SdkError::arcane_unavailable(format!("Unexpected Arcane desktop payload: {e}"))
+    let malformed = |detail: String| {
+        SdkError::arcane_unavailable(format!("Unexpected Arcane desktop payload: {detail}"))
             .with_hint("The Arcane desktop app must relay a payload untouched — update it.")
             .with_context("field", field)
-    })
+    };
+
+    if encoded.len() > BASE64_LEN_LIMIT {
+        return Err(malformed(format!(
+            "it is longer than the {MAX_LOBBY_PAYLOAD_LEN} bytes Arcane carries"
+        )));
+    }
+    let decoded = BASE64
+        .decode(encoded)
+        .map_err(|e| malformed(e.to_string()))?;
+    if decoded.len() > MAX_LOBBY_PAYLOAD_LEN {
+        return Err(malformed(format!(
+            "it is longer than the {MAX_LOBBY_PAYLOAD_LEN} bytes Arcane carries"
+        )));
+    }
+    Ok(decoded)
 }
 
 fn events_path(public_key: &str, cursor: Option<&str>) -> String {
@@ -905,6 +1044,7 @@ enum JsonEvent<'a> {
     LobbyClosed {
         lobby_id: &'a str,
     },
+    Resync,
 }
 
 pub(crate) fn to_json(lobby: &Lobby) -> String {
@@ -957,6 +1097,7 @@ fn render_events<'a>(events: impl Iterator<Item = &'a LobbyEvent>) -> String {
                     JsonEvent::MemberLeft { lobby_id, user_id }
                 }
                 LobbyEvent::LobbyClosed { lobby_id } => JsonEvent::LobbyClosed { lobby_id },
+                LobbyEvent::Resync => JsonEvent::Resync,
             })
             .collect(),
     };
@@ -1107,8 +1248,22 @@ mod tests {
     }
 
     fn parse_events(raw: &str) -> Vec<LobbyEvent> {
+        parse_incoming(raw)
+            .into_iter()
+            .map(|incoming| incoming.event)
+            .collect()
+    }
+
+    fn parse_incoming(raw: &str) -> Vec<Incoming> {
         let wire: WireEvents = serde_json::from_str(raw).expect("wire events");
         wire.events.into_iter().filter_map(map_event).collect()
+    }
+
+    fn queued(events: Vec<LobbyEvent>) -> Vec<Incoming> {
+        events
+            .into_iter()
+            .map(|event| Incoming { id: None, event })
+            .collect()
     }
 
     #[test]
@@ -1145,7 +1300,7 @@ mod tests {
                 payload: b"udp://10.0.0.2:7777".to_vec(),
             }
         );
-        assert_eq!(events[2].lobby_id(), "lobby-1");
+        assert_eq!(events[2].lobby_id(), Some("lobby-1"));
         assert_eq!(
             events[3],
             LobbyEvent::LobbyClosed {
@@ -1244,9 +1399,9 @@ mod tests {
         state.enter("lobby-2");
 
         state.ingest(
-            vec![LobbyEvent::LobbyClosed {
+            queued(vec![LobbyEvent::LobbyClosed {
                 lobby_id: "lobby-1".into(),
-            }],
+            }]),
             Some("c-2".into()),
         );
 
@@ -1273,7 +1428,7 @@ mod tests {
     fn events_are_drained_once_and_in_order() {
         let state = state();
         state.ingest(
-            vec![
+            queued(vec![
                 LobbyEvent::MemberLeft {
                     lobby_id: "lobby-1".into(),
                     user_id: "user-b".into(),
@@ -1281,13 +1436,13 @@ mod tests {
                 LobbyEvent::LobbyClosed {
                     lobby_id: "lobby-1".into(),
                 },
-            ],
+            ]),
             None,
         );
 
         let first = state.take_events();
         assert_eq!(first.len(), 2);
-        assert_eq!(first[0].lobby_id(), "lobby-1");
+        assert_eq!(first[0].lobby_id(), Some("lobby-1"));
         assert!(matches!(first[1], LobbyEvent::LobbyClosed { .. }));
         assert!(state.take_events().is_empty());
     }
@@ -1297,48 +1452,125 @@ mod tests {
         let state = state();
         for index in 0..MAX_QUEUED_EVENTS + 10 {
             state.ingest(
-                vec![LobbyEvent::MemberLeft {
+                queued(vec![LobbyEvent::MemberLeft {
                     lobby_id: format!("lobby-{index}"),
                     user_id: "user-b".into(),
-                }],
+                }]),
                 None,
             );
         }
 
         let drained = state.take_events();
         assert_eq!(drained.len(), MAX_QUEUED_EVENTS);
-        assert_eq!(drained[0].lobby_id(), "lobby-10");
+        assert_eq!(drained[0].lobby_id(), Some("lobby-10"));
     }
 
     #[test]
     fn rendering_the_queue_does_not_drain_it_and_discard_takes_exactly_what_was_rendered() {
         let state = state();
         state.ingest(
-            vec![LobbyEvent::MemberLeft {
+            queued(vec![LobbyEvent::MemberLeft {
                 lobby_id: "lobby-1".into(),
                 user_id: "user-b".into(),
-            }],
+            }]),
             None,
         );
 
-        let (rendered, count) = state.events_json();
-        assert_eq!(count, 1);
+        let (rendered, through) = state.events_json();
+        assert_eq!(through, Some(0));
         assert_eq!(
             rendered,
             r#"{"events":[{"type":"member_left","lobby_id":"lobby-1","user_id":"user-b"}]}"#
         );
 
         state.ingest(
-            vec![LobbyEvent::LobbyClosed {
+            queued(vec![LobbyEvent::LobbyClosed {
                 lobby_id: "lobby-1".into(),
-            }],
+            }]),
             None,
         );
-        state.discard(count);
+        state.discard(through.expect("a rendered event"));
 
         let left = state.take_events();
         assert_eq!(left.len(), 1, "an event queued after the render survives");
         assert!(matches!(left[0], LobbyEvent::LobbyClosed { .. }));
+    }
+
+    #[test]
+    fn discarding_drops_what_was_rendered_even_when_the_queue_evicted_in_between() {
+        let state = state();
+        state.ingest(
+            queued(vec![LobbyEvent::MemberLeft {
+                lobby_id: "rendered".into(),
+                user_id: "user-b".into(),
+            }]),
+            None,
+        );
+        let (_, through) = state.events_json();
+
+        for index in 0..MAX_QUEUED_EVENTS {
+            state.ingest(
+                queued(vec![LobbyEvent::MemberLeft {
+                    lobby_id: format!("later-{index}"),
+                    user_id: "user-b".into(),
+                }]),
+                None,
+            );
+        }
+        state.discard(through.expect("a rendered event"));
+
+        let left = state.take_events();
+        assert_eq!(
+            left.len(),
+            MAX_QUEUED_EVENTS,
+            "discard drops the events it rendered, never the ones that replaced them"
+        );
+        assert!(left
+            .iter()
+            .all(|event| event.lobby_id() != Some("rendered")));
+    }
+
+    #[test]
+    fn an_event_arcane_sends_twice_is_delivered_once() {
+        let state = state();
+        let repeat = || {
+            vec![Incoming {
+                id: Some("event-1".into()),
+                event: LobbyEvent::MemberLeft {
+                    lobby_id: "lobby-1".into(),
+                    user_id: "user-b".into(),
+                },
+            }]
+        };
+
+        state.ingest(repeat(), Some("c-1".into()));
+        state.ingest(repeat(), Some("c-1".into()));
+        state.ingest(repeat(), None);
+
+        assert_eq!(
+            state.take_events().len(),
+            1,
+            "a replayed id is dropped, whatever the cursor did"
+        );
+    }
+
+    #[test]
+    fn an_event_without_an_id_is_still_delivered() {
+        let state = state();
+        state.ingest(
+            queued(vec![LobbyEvent::LobbyClosed {
+                lobby_id: "lobby-1".into(),
+            }]),
+            None,
+        );
+        state.ingest(
+            queued(vec![LobbyEvent::LobbyClosed {
+                lobby_id: "lobby-1".into(),
+            }]),
+            None,
+        );
+
+        assert_eq!(state.take_events().len(), 2);
     }
 
     #[test]
@@ -1381,8 +1613,82 @@ mod tests {
 
     #[test]
     fn an_empty_queue_still_renders_a_valid_document() {
-        let (rendered, count) = state().events_json();
+        let (rendered, through) = state().events_json();
         assert_eq!(rendered, r#"{"events":[]}"#);
-        assert_eq!(count, 0);
+        assert_eq!(through, None);
+    }
+
+    #[test]
+    fn a_dropped_answer_becomes_a_resync_event() {
+        let wire: WireEvents = serde_json::from_str(
+            r#"{"events":[{"id":"1","type":"lobby_closed","lobby_id":"lobby-1"}],
+                "cursor":"c-2","dropped":true}"#,
+        )
+        .expect("wire events");
+
+        assert!(wire.dropped);
+        assert_eq!(
+            render_events([LobbyEvent::Resync].iter()),
+            r#"{"events":[{"type":"resync"}]}"#
+        );
+        assert_eq!(LobbyEvent::Resync.lobby_id(), None);
+    }
+
+    #[test]
+    fn an_inbound_payload_larger_than_the_limit_is_refused() {
+        let oversized = BASE64.encode(vec![7u8; MAX_LOBBY_PAYLOAD_LEN + 1]);
+
+        let err = decode_payload(Some(&oversized), "host_payload").expect_err("too long");
+        assert_eq!(err.code(), "arcane_unavailable");
+        assert!(err
+            .context()
+            .iter()
+            .any(|(k, v)| k == "field" && v == "host_payload"));
+
+        assert!(
+            decode_payload(Some(&BASE64.encode(vec![7u8; MAX_LOBBY_PAYLOAD_LEN])), "p").is_ok()
+        );
+        assert!(decode_payload_arg(&oversized).is_none());
+    }
+
+    #[test]
+    fn an_oversized_payload_fails_a_lobby_and_empties_an_event() {
+        let oversized = BASE64.encode(vec![7u8; MAX_LOBBY_PAYLOAD_LEN + 1]);
+
+        let wire: WireLobby = serde_json::from_str(&format!(
+            r#"{{"lobby_id":"lobby-1","host_user_id":"u","host_payload":"{oversized}",
+                 "members":[]}}"#
+        ))
+        .expect("wire lobby");
+        assert_eq!(
+            map_lobby(wire).expect_err("oversized").code(),
+            "arcane_unavailable"
+        );
+
+        let events = parse_events(&format!(
+            r#"{{"events":[{{"type":"member_joined","lobby_id":"lobby-1","user_id":"user-b",
+                 "pseudo":"Bo","payload":"{oversized}"}}]}}"#
+        ));
+        assert_eq!(
+            events[0],
+            LobbyEvent::MemberJoined {
+                lobby_id: "lobby-1".into(),
+                user_id: "user-b".into(),
+                pseudo: "Bo".into(),
+                payload: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_lobby_without_an_id_is_not_a_lobby() {
+        let wire: WireLobby = serde_json::from_str(r#"{}"#).expect("wire lobby");
+
+        let err = map_lobby(wire).expect_err("no lobby_id");
+        assert_eq!(err.code(), "arcane_unavailable");
+        assert!(err
+            .context()
+            .iter()
+            .any(|(k, v)| k == "field" && v == "lobby_id"));
     }
 }

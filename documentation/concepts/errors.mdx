@@ -89,11 +89,11 @@ An already-unlocked or `queued` answer is a **success**, not an error — see [A
 
 A `stale` answer — the desktop app served its own cache because it is offline — is a **success**, not an error. See [Friends](/concepts/friends).
 
-### `P2p::create_lobby` / `join_by_code` / `join` / `invite` / `leave` / `close` — the `arcane_sdk_lobby_*` functions
+### `P2p::create_lobby` / `join_by_code` / `join` / `get_lobby` / `invite` / `leave` / `close` — the `arcane_sdk_lobby_*` functions
 
 `invalid_argument` (oversized payload, malformed join code or id — all raised before any call), `lobby_not_found`, `lobby_full`, `lobby_closed`, `not_friends`, `not_owned`, `not_authenticated`, `network_required` (also under `ARCANE_OFFLINE_ONLY`, raised before any call), `arcane_unavailable`, `feature_unavailable`.
 
-`P2p::poll_events` / `arcane_sdk_lobby_events_json` and `P2p::launch_join_code` / `arcane_sdk_launch_join_code` never fail. A desktop app that predates the lobby routes makes `launch_join_code` answer `None` and stops event polling silently — read `client.session().lobby_events` for that, it is `Unavailable`. See [Lobbies](/concepts/lobbies).
+`P2p::poll_events` / `arcane_sdk_lobby_events_json` and `P2p::launch_join_code` / `arcane_sdk_launch_join_code` never fail. A lobby object Arcane sends without an id, or carrying a payload over 4096 bytes, is refused as `arcane_unavailable` rather than half-read. A desktop app that predates the lobby routes makes `launch_join_code` answer `None` and stops event polling silently — read `client.session().lobby_events` for that, it is `Unavailable`. See [Lobbies](/concepts/lobbies).
 
 ### `ArcaneClient::frame`, `set_graphics`, `session`, `shutdown`
 

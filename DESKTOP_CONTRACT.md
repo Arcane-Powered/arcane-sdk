@@ -361,6 +361,7 @@ POST /v1/games/{public_key}/lobbies
 
 POST /v1/games/{public_key}/lobbies/join       { "join_code": "K7P3QX", "payload": "…" }   → 200 same lobby object
 POST /v1/games/{public_key}/lobbies/{id}/join  { "payload": "…" }                          → 200 same lobby object
+GET  /v1/games/{public_key}/lobbies/{id}                                                   → 200 same lobby object
 → 404 lobby_not_found · 409 lobby_full · 410 lobby_closed · 403 not_friends
 
 POST /v1/games/{public_key}/lobbies/{id}/invite  { "to_user_id": "…" }   → 200 { "ok": true }
@@ -370,7 +371,7 @@ DELETE /v1/games/{public_key}/lobbies/{id}                                  → 
 GET  /v1/games/{public_key}/lobbies/events?after={cursor}
 → 200 { "events": [ { "id": "…", "type": "invite" | "member_joined" | "member_left" | "lobby_closed",
          "lobby_id", "join_code": "…|null", "from_user_id": "…|null", "user_id": "…|null",
-         "pseudo": "…|null", "payload": "…|null" } ], "cursor": "…" }
+         "pseudo": "…|null", "payload": "…|null" } ], "cursor": "…", "dropped": false }
 
 GET  /v1/games/{public_key}/launch-context   → 200 { "join_code": "K7P3QX" | null }
 ```
@@ -396,7 +397,18 @@ GET  /v1/games/{public_key}/launch-context   → 200 { "join_code": "K7P3QX" | n
 - `/lobbies/events` is the only polled route in the SDK, and only once the game has
   called `p2p()` at least once. `cursor` is opaque: the first call omits `after`, and
   every later call sends back the `cursor` of the previous answer. The desktop app must
-  deliver each event **once** for a given cursor chain.
+  deliver each event **once** for a given cursor chain; the SDK also drops an `id` it
+  has already delivered, so a replay costs the game nothing.
+- `dropped: true` means the desktop app's ring buffer evicted events this client never
+  fetched. The SDK turns it into one `LobbyEvent::Resync` (`"type": "resync"` in the C
+  ABI), delivered **before** the events of that same answer, and the cursor keeps its
+  usual meaning. A game that gets one re-reads the lobbies it is in with `GET
+  /lobbies/{id}` rather than trusting what the earlier events built up.
+- `GET /lobbies/{id}` answers the same lobby object as create and join, for exactly
+  that: reading a lobby without joining or leaving anything.
+- A `payload` longer than 4096 raw bytes is refused on the way in as well as on the way
+  out: it fails a lobby object with `arcane_unavailable` and arrives empty inside an
+  event. A lobby object without a `lobby_id` is refused the same way.
 - `launch-context` is set by the launcher when it starts the game from a friend's "Join",
   and the desktop app **clears it once served**. The SDK reads it at most once per
   client and caches the answer.

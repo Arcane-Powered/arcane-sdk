@@ -231,8 +231,14 @@ impl SessionInner {
     }
 
     fn snapshot(&self) -> SessionSnapshot {
-        let lobby_events = self.p2p.polling();
+        let polling = self.p2p.polling();
         let state = self.lock();
+        // No session thread runs while tracking is off, so nothing polls
+        // whatever the game armed.
+        let lobby_events = match state.tracking {
+            TrackingState::Disabled => LobbyPollingState::Off,
+            _ => polling,
+        };
         let played_seconds = match state.tracking {
             TrackingState::Disabled => 0,
             _ => self.seconds_at(self.started.elapsed()),
@@ -750,10 +756,25 @@ mod tests {
     fn the_snapshot_carries_the_lobby_polling_state() {
         let p2p = Arc::new(P2pState::new());
         let inner = SessionInner::new("pk_test_title", Arc::clone(&p2p));
+        inner.lock().tracking = TrackingState::Pending;
         assert_eq!(inner.snapshot().lobby_events, LobbyPollingState::Off);
 
         crate::p2p::P2p::new("pk_test_title", &p2p);
         assert_eq!(inner.snapshot().lobby_events, LobbyPollingState::Active);
+    }
+
+    #[test]
+    fn a_disabled_session_polls_nothing_however_armed_it_is() {
+        let p2p = Arc::new(P2pState::new());
+        let inner = SessionInner::new("pk_test_title", Arc::clone(&p2p));
+        crate::p2p::P2p::new("pk_test_title", &p2p);
+
+        assert_eq!(inner.lock().tracking, TrackingState::Disabled);
+        assert_eq!(
+            inner.snapshot().lobby_events,
+            LobbyPollingState::Off,
+            "no session thread runs, so nothing is polling"
+        );
     }
 
     #[test]

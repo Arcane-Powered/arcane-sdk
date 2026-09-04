@@ -144,6 +144,7 @@ int  arcane_sdk_lobby_join_code(const char *join_code, const char *payload_b64,
                                 char *buf, size_t len);
 int  arcane_sdk_lobby_join(const char *lobby_id, const char *payload_b64,
                            char *buf, size_t len);
+int  arcane_sdk_lobby_get(const char *lobby_id, char *buf, size_t len);
 int  arcane_sdk_launch_join_code(char *buf, size_t len);
 int  arcane_sdk_lobby_events_json(char *buf, size_t len);
 ```
@@ -158,11 +159,12 @@ int  arcane_sdk_lobby_events_json(char *buf, size_t len);
 char json[256];
 if (arcane_sdk_session_json(json, sizeof(json)) > 0) {
   /* {"session_id":"…","tracking":"active","played_seconds":1830,
-      "fps_sampling":true,"samples_taken":6,"last_fps_avg":59.8} */
+      "fps_sampling":true,"samples_taken":6,"last_fps_avg":59.8,
+      "lobby_events":"active"} */
 }
 ```
 
-`tracking` is `"active"`, `"pending"` or `"disabled"`.
+`tracking` is `"active"`, `"pending"` or `"disabled"`; `lobby_events` is `"off"`, `"active"` or `"unavailable"` — see [Lobbies](/concepts/lobbies).
 
 `arcane_sdk_achievements_json` is the C form of the Rust `list()`: it makes one synchronous loopback call, writes every [achievement](/concepts/achievements) of the title, and fills the cache `arcane_sdk_achievement_is_unlocked` reads. Call it on a loading or achievements screen, never per frame.
 
@@ -190,7 +192,7 @@ if (arcane_sdk_friends_json(json, sizeof(json)) > 0) {
 
 ### Lobbies
 
-`arcane_sdk_lobby_create`, `arcane_sdk_lobby_join_code` and `arcane_sdk_lobby_join` each make one synchronous loopback call and write the same [lobby](/concepts/lobbies) object:
+`arcane_sdk_lobby_create`, `arcane_sdk_lobby_join_code`, `arcane_sdk_lobby_join` and `arcane_sdk_lobby_get` each make one synchronous loopback call and write the same [lobby](/concepts/lobbies) object — `arcane_sdk_lobby_get` reads one without joining or leaving anything:
 
 ```c
 char json[8192];
@@ -220,7 +222,7 @@ if (arcane_sdk_lobby_events_json(json, sizeof(json)) > 0) {
 }
 ```
 
-`arcane_sdk_lobby_events_json` reads memory only — the `arcane-session` thread does the polling, armed by the first lobby call — and **drains the queue only once the JSON is safely in your buffer**. A `-3` leaves every event queued, so retry with a bigger buffer and lose nothing. Event objects carry `type` first, then `lobby_id`, then the fields of that type: `invite` has `join_code`, `from_user_id`, `pseudo`; `member_joined` has `user_id`, `pseudo`, `payload`; `member_left` has `user_id`; `lobby_closed` has nothing more.
+`arcane_sdk_lobby_events_json` reads memory only — the `arcane-session` thread does the polling, armed by the first lobby call — and **drains the queue only once the JSON is safely in your buffer**. A `-3` leaves every event queued, so retry with a bigger buffer and lose nothing. Event objects carry `type` first, then `lobby_id`, then the fields of that type: `invite` has `join_code`, `from_user_id`, `pseudo`; `member_joined` has `user_id`, `pseudo`, `payload`; `member_left` has `user_id`; `lobby_closed` has nothing more. A `{"type":"resync"}` event has no `lobby_id` at all: Arcane dropped events before this client fetched them, so re-read the lobbies you are in with `arcane_sdk_lobby_get`.
 
 Buffer sizing: user ids and device hashes fit comfortably in 64 bytes; allow 256 for the session JSON, 512 for `err_buf`, 1024 for the error JSON, 8 for a join code, and size the achievement, friends and lobby JSON to your title (a few hundred bytes per entry, plus your payloads at 4/3 their raw size once base64-encoded). A short buffer is never a silent truncation — you get `-3` and an empty string.
 

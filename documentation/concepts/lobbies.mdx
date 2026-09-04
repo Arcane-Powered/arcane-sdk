@@ -34,6 +34,7 @@ for event in client.p2p().poll_events() {
         LobbyEvent::MemberLeft { user_id, .. } => drop_peer(&user_id),
         LobbyEvent::LobbyClosed { .. } => back_to_menu(),
         LobbyEvent::Invite { lobby_id, .. } => offer_to_join(&lobby_id),
+        LobbyEvent::Resync => resync_from_arcane(),   // see below
     }
 }
 # Ok::<(), arcane_sdk::SdkError>(())
@@ -107,6 +108,23 @@ Put a *reference* in it — an address, a session ticket your own netcode unders
 | `MemberJoined` | `lobby_id`, `user_id`, `pseudo`, `payload` |
 | `MemberLeft` | `lobby_id`, `user_id` |
 | `LobbyClosed` | `lobby_id` |
+| `Resync` | nothing — see below |
+
+`Resync` means Arcane dropped events before this client fetched them, so the queue has a hole in it. When you get one, stop trusting what the earlier events built up and **ask** instead — `get_lobby` returns the same object as `create_lobby` and `join`, without joining or leaving anything:
+
+```rust
+for event in client.p2p().poll_events() {
+    if let LobbyEvent::Resync = event {
+        for lobby_id in my_open_lobbies() {
+            let lobby = client.p2p().get_lobby(&lobby_id)?;
+            reconcile(&lobby.members);
+        }
+    }
+}
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+It arrives before the events of the same poll, so acting on it first and then applying the rest is correct. `LobbyEvent::lobby_id()` answers `None` for it — it is about every lobby you are in, not one.
 
 The polling behind it is **armed by your first call to `client.p2p()`** and not before — a game that never touches lobbies never pays for any of this. Once armed, the session thread asks the Arcane desktop app for events on every tick: every 5 seconds while you are in an open lobby, every 60 seconds otherwise. Heartbeats keep their own 60-second schedule regardless.
 
@@ -156,6 +174,7 @@ A lobby also ends when the host's play session expires. **There is no host migra
 | `not_friends` | The lobby is friends-only and this account is not one |
 | `not_authenticated` | Nobody is signed in to the Arcane desktop app |
 | `feature_unavailable` | The Arcane desktop app predates the lobby routes — update it |
+| `arcane_unavailable` (on a lobby object) | Arcane sent something the SDK will not carry: a payload over 4096 bytes, or a lobby with no id |
 | `arcane_unavailable` | The desktop app is not running |
 | `network_required` | `ARCANE_OFFLINE_ONLY` is set — raised before any call |
 

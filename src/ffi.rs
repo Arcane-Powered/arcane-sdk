@@ -593,6 +593,36 @@ pub unsafe extern "C" fn arcane_sdk_lobby_join(
     lobby_result(client.p2p().join(lobby_id, &payload), buf, len)
 }
 
+/// Read a lobby as Arcane knows it right now and write it as JSON into `buf`.
+///
+/// Use it after a `resync` event, or whenever you would rather ask than replay
+/// events. Same JSON, return values and threading rules as
+/// `arcane_sdk_lobby_create`; it joins nothing and leaves nothing.
+///
+/// # Safety
+///
+/// `lobby_id` must be null or a valid NUL-terminated C string. `buf` must be
+/// null or point to at least `len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_lobby_get(
+    lobby_id: *const c_char,
+    buf: *mut c_char,
+    len: usize,
+) -> c_int {
+    let Some(Some(lobby_id)) = c_str(lobby_id) else {
+        return bad_lobby_argument("The lobby id is null or not UTF-8.");
+    };
+    let client = match lobby_client("arcane_sdk_lobby_get") {
+        Ok(client) => client,
+        Err(err) => {
+            store_error(&err);
+            return ARCANE_ERR_NOT_INITIALIZED;
+        }
+    };
+
+    lobby_result(client.p2p().get_lobby(lobby_id), buf, len)
+}
+
 /// Invite one friend to a lobby.
 ///
 /// Both ids are NUL-terminated UTF-8. One synchronous loopback call. Returns 0
@@ -768,10 +798,10 @@ pub unsafe extern "C" fn arcane_sdk_lobby_events_json(buf: *mut c_char, len: usi
         }
     };
 
-    let (rendered, count) = client.p2p().events_json();
+    let (rendered, through) = client.p2p().events_json();
     let written = write_str(&rendered, buf, len);
-    if written >= 0 {
-        client.p2p().discard(count);
+    if let (true, Some(through)) = (written >= 0, through) {
+        client.p2p().discard(through);
     }
     written
 }
