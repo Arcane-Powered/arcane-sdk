@@ -301,3 +301,44 @@ POST /v1/games/{public_key}/achievements/{key}/unlock
 | `404 unknown_achievement` | `unknown_achievement`, with the key in the error context |
 | `ARCANE_OFFLINE_ONLY` set | `network_required`, raised before any call |
 | `list` never called | `is_unlocked` answers `None` — the SDK does not guess |
+
+---
+
+## 10. Friends
+
+**Status: new. Absent routes degrade to `feature_unavailable`; they never fail `init`.**
+
+Same conventions as §8 and §9: `http://127.0.0.1:39284`, JSON bodies, `{ "error",
+"message", "details?" }` error bodies. A `404` **without** a JSON body (unknown route,
+desktop too old) maps to `feature_unavailable`.
+
+```
+GET /v1/friends
+→ 200 { "friends": [ { "user_id": "…", "pseudo": "…", "online": true,
+         "playing_game_id": "…|null" } ], "stale": false }
+→ 401 not_authenticated
+```
+
+- The route is **not** scoped to a title: it answers for the signed-in account, and the
+  SDK derives `in_game = playing_game_id == game_id()` per friend. A client with no
+  `game_id` reports every friend as not in game rather than guessing.
+- `stale: true` means the desktop app is offline and served its own cache. The SDK
+  passes it through as `FriendList::stale`; it is a successful answer, not an error.
+- The desktop app caches the list for 15 seconds. The SDK caches nothing and calls the
+  route every time the game asks, so the cache is the desktop's to size.
+- `playing_game_id` is the canonical `game_id` of the title the friend is playing, the
+  same value `session/start` reports in §8 — the desktop sets that presence itself, so
+  nothing here depends on the game.
+- One synchronous round trip on the calling thread. The SDK never polls friends in the
+  background and never opens the deep link for them.
+- Friend requests, chat and the overlay are launcher flows. The SDK only reads presence.
+
+### What the SDK does around this
+
+| Situation | SDK behaviour |
+|---|---|
+| Desktop unreachable | `arcane_unavailable`. Nothing is retried, nothing is buffered on disk |
+| Desktop older than this route | Bare `404` → `feature_unavailable` |
+| `401 not_authenticated` | `not_authenticated`, retryable — the player can sign in and retry |
+| `ARCANE_OFFLINE_ONLY` set | `network_required`, raised before any call |
+| No `game_id` on the client | Every `in_game` is `false`; `online` still comes through |

@@ -6,6 +6,7 @@ use crate::achievements::{AchievementCache, Achievements};
 use crate::desktop::{offline_only, refresh_ownership_via_desktop, OFFLINE_ONLY_ENV};
 use crate::device::{device_hash, now_unix};
 use crate::error::{OwnershipStatus, SdkError};
+use crate::friends::Friends;
 use crate::paths::{load_cached_drm_flag, load_session, SessionState};
 use crate::session::{Session, SessionSnapshot, TrackingState};
 use crate::ticket::{check_ownership_offline, OwnershipCheck};
@@ -254,6 +255,28 @@ impl ArcaneClient {
     /// ```
     pub fn achievements(&self) -> Achievements<'_> {
         Achievements::new(&self.public_key, &self.achievements)
+    }
+
+    /// This player's friends on Arcane, with `online` and `in_game` for this
+    /// title.
+    ///
+    /// [`Friends::list`] makes one synchronous loopback call, so call it when a
+    /// menu opens or on a timer of your own — never per frame. The SDK holds no
+    /// list of its own: the Arcane desktop app caches it and flags a stale
+    /// answer.
+    ///
+    /// `in_game` comes from this client's [`game_id`](ArcaneClient::game_id),
+    /// which is copied into a clone when the clone is made: a clone taken
+    /// before a [`refresh`](ArcaneClient::refresh) that discovered a `game_id`
+    /// still reports every friend as not in game.
+    ///
+    /// ```no_run
+    /// # let client = arcane_sdk::ArcaneClient::init("pk_...")?;
+    /// client.friends().list()?;
+    /// # Ok::<(), arcane_sdk::SdkError>(())
+    /// ```
+    pub fn friends(&self) -> Friends<'_> {
+        Friends::new(self.game_id())
     }
 
     /// A copy of the current play session state: tracking, playtime, FPS

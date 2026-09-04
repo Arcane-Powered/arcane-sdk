@@ -33,6 +33,15 @@
 //! # Ok::<(), arcane_sdk::SdkError>(())
 //! ```
 //!
+//! Friends are the same shape: one call gives the list with `online` and
+//! `in_game` for this title, read straight from the Arcane desktop app.
+//!
+//! ```no_run
+//! # let client = arcane_sdk::ArcaneClient::init("pk_...")?;
+//! client.friends().list()?;
+//! # Ok::<(), arcane_sdk::SdkError>(())
+//! ```
+//!
 //! Failures are [`SdkError`], carrying a stable [`code`](SdkError::code), a
 //! player-facing [`message`](SdkError::message), a developer-facing
 //! [`hint`](SdkError::hint) and a [`context`](SdkError::context) key/value list.
@@ -42,6 +51,7 @@ mod client;
 mod desktop;
 mod device;
 mod error;
+mod friends;
 mod paths;
 mod session;
 mod ticket;
@@ -49,6 +59,7 @@ mod ticket;
 pub use achievements::{Achievement, Achievements, Unlock, MAX_ACHIEVEMENT_KEY_LEN};
 pub use client::{ArcaneClient, MAX_PUBLIC_KEY_LEN};
 pub use error::{ErrorCode, OwnershipStatus, SdkError};
+pub use friends::{Friend, FriendList, Friends};
 pub use session::{SessionSnapshot, TrackingState};
 
 pub mod ffi;

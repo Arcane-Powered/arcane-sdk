@@ -870,3 +870,247 @@ fn a_key_the_desktop_rejects_is_reported_as_an_invalid_argument() {
     assert!(!err.is_retryable());
     assert!(err.hint().expect("hint").contains("lowercase"));
 }
+
+const FRIENDS: Reply = Reply {
+    status: "200 OK",
+    body: r#"{"friends":[
+        {"user_id":"user-a","pseudo":"Ada","online":true,
+         "playing_game_id":"game-canonical-id"},
+        {"user_id":"user-b","pseudo":"Bo","online":true,
+         "playing_game_id":"another-game"},
+        {"user_id":"user-c","pseudo":"Cy","online":false,"playing_game_id":null}
+    ],"stale":false}"#,
+};
+
+/// Serve `GET /v1/friends`; everything else follows the ownership path, which
+/// reports `game_id` so `in_game` can be derived.
+fn friends_stub(friends: Reply) -> Stub {
+    Stub::start_with(move |request| {
+        if request.line.contains("/v1/health") {
+            HEALTHY
+        } else if request.line.contains("/v1/friends") {
+            friends
+        } else {
+            DRM_OFF
+        }
+    })
+}
+
+#[test]
+fn listing_friends_marks_the_ones_playing_this_title() {
+    let stub = friends_stub(FRIENDS);
+
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+    assert_eq!(client.game_id(), Some("game-canonical-id"));
+
+    let list = client.friends().list().expect("list");
+
+    assert!(!list.stale);
+    assert_eq!(list.friends.len(), 3);
+
+    assert_eq!(list.friends[0].user_id, "user-a");
+    assert_eq!(list.friends[0].pseudo, "Ada");
+    assert!(list.friends[0].online);
+    assert!(list.friends[0].in_game);
+
+    assert!(list.friends[1].online);
+    assert!(!list.friends[1].in_game, "another title is not this one");
+
+    assert!(!list.friends[2].online);
+    assert!(!list.friends[2].in_game);
+
+    let listed = stub.matching("/v1/friends");
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].line.starts_with("GET /v1/friends"));
+}
+
+#[test]
+fn a_stale_friend_list_is_a_success_that_says_so() {
+    let _stub = friends_stub(Reply {
+        status: "200 OK",
+        body: r#"{"friends":[{"user_id":"user-a","pseudo":"Ada","online":true,
+                  "playing_game_id":"game-canonical-id"}],"stale":true}"#,
+    });
+
+    let list = ArcaneClient::init(PUBLIC_KEY)
+        .expect("init")
+        .friends()
+        .list()
+        .expect("a stale list is still Ok");
+
+    assert!(list.stale);
+    assert!(list.friends[0].in_game);
+}
+
+#[test]
+fn a_client_without_a_game_id_reports_nobody_in_game() {
+    let _stub = Stub::start_with(|request| {
+        if request.line.contains("/v1/health") {
+            HEALTHY
+        } else if request.line.contains("/v1/friends") {
+            FRIENDS
+        } else {
+            Reply {
+                status: "200 OK",
+                body: r#"{"ok":true,"drm_enabled":false}"#,
+            }
+        }
+    });
+
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+    assert_eq!(client.game_id(), None);
+
+    let list = client.friends().list().expect("list");
+
+    assert!(list.friends.iter().all(|friend| !friend.in_game));
+    assert!(list.friends[0].online, "presence still comes through");
+}
+
+#[test]
+fn a_signed_out_desktop_fails_the_friend_list_with_not_authenticated() {
+    let _stub = friends_stub(Reply {
+        status: "401 Unauthorized",
+        body: r#"{"error":"not_authenticated","message":"nobody is signed in"}"#,
+    });
+
+    let err = ArcaneClient::init(PUBLIC_KEY)
+        .expect("init")
+        .friends()
+        .list()
+        .expect_err("signed out");
+
+    assert_eq!(err.code(), "not_authenticated");
+    assert!(err.is_retryable());
+}
+
+#[test]
+fn a_desktop_without_the_friends_route_degrades_to_feature_unavailable() {
+    let _stub = friends_stub(Reply {
+        status: "404 Not Found",
+        body: "Not Found",
+    });
+
+    let err = ArcaneClient::init(PUBLIC_KEY)
+        .expect("init")
+        .friends()
+        .list()
+        .expect_err("no route");
+
+    assert_eq!(err.code(), "feature_unavailable");
+    assert!(err.hint().expect("hint").contains("Update"));
+}
+
+#[test]
+fn offline_only_mode_refuses_the_friend_list_without_a_request() {
+    let stub = friends_stub(FRIENDS);
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+
+    std::env::set_var("ARCANE_OFFLINE_ONLY", "1");
+
+    let err = client.friends().list().expect_err("offline only");
+
+    assert_eq!(err.code(), "network_required");
+    assert!(err.is_retryable());
+    assert!(err
+        .context()
+        .iter()
+        .any(|(k, v)| k == "env" && v == "ARCANE_OFFLINE_ONLY"));
+    assert!(
+        stub.matching("/v1/friends").is_empty(),
+        "offline-only mode must not reach the desktop: {:?}",
+        stub.requests()
+    );
+
+    std::env::remove_var("ARCANE_OFFLINE_ONLY");
+}
+
+#[test]
+fn the_c_abi_writes_the_friend_list_as_json() {
+    let _stub = friends_stub(FRIENDS);
+
+    assert_eq!(
+        unsafe { ffi::arcane_sdk_init(c"pk_test_title".as_ptr(), std::ptr::null_mut(), 0) },
+        0
+    );
+
+    let mut buf = [0 as c_char; 2048];
+    let written = unsafe { ffi::arcane_sdk_friends_json(buf.as_mut_ptr(), buf.len()) };
+    assert!(written > 0);
+
+    let json: Vec<u8> = buf
+        .iter()
+        .take_while(|byte| **byte != 0)
+        .map(|byte| *byte as u8)
+        .collect();
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&json).expect("the C ABI writes valid json");
+
+    assert_eq!(parsed["stale"], false);
+    assert_eq!(parsed["friends"][0]["user_id"], "user-a");
+    assert_eq!(parsed["friends"][0]["pseudo"], "Ada");
+    assert_eq!(parsed["friends"][0]["online"], true);
+    assert_eq!(parsed["friends"][0]["in_game"], true);
+    assert_eq!(parsed["friends"][1]["in_game"], false);
+
+    ffi::arcane_sdk_shutdown();
+}
+
+#[test]
+fn two_list_calls_make_two_requests_because_the_sdk_caches_nothing() {
+    let stub = friends_stub(FRIENDS);
+    let client = ArcaneClient::init(PUBLIC_KEY).expect("init");
+
+    let first = client.friends().list().expect("first list");
+    let second = client.friends().list().expect("second list");
+
+    assert_eq!(first, second);
+    assert_eq!(
+        stub.matching("/v1/friends").len(),
+        2,
+        "the desktop app owns the cache, the SDK holds no list of its own"
+    );
+}
+
+/// A pseudo carrying every character class that has to survive JSON escaping on
+/// the way through the C buffer: a quote, a backslash, a newline, an escaped
+/// NUL, CJK and an emoji.
+const AWKWARD_PSEUDO: &str = "A\"B\\C\nD\u{0}E 日本語 🎮";
+
+const AWKWARD_FRIEND: Reply = Reply {
+    status: "200 OK",
+    body: "{\"friends\":[{\"user_id\":\"user-a\",\
+           \"pseudo\":\"A\\\"B\\\\C\\nD\\u0000E 日本語 🎮\",\"online\":true,\
+           \"playing_game_id\":\"game-canonical-id\"}],\"stale\":false}",
+};
+
+#[test]
+fn the_c_abi_escapes_a_pseudo_that_carries_json_metacharacters() {
+    let _stub = friends_stub(AWKWARD_FRIEND);
+
+    assert_eq!(
+        unsafe { ffi::arcane_sdk_init(c"pk_test_title".as_ptr(), std::ptr::null_mut(), 0) },
+        0
+    );
+
+    let mut buf = [0 as c_char; 2048];
+    assert!(unsafe { ffi::arcane_sdk_friends_json(buf.as_mut_ptr(), buf.len()) } > 0);
+
+    let json: Vec<u8> = buf
+        .iter()
+        .take_while(|byte| **byte != 0)
+        .map(|byte| *byte as u8)
+        .collect();
+    let rendered = String::from_utf8(json).expect("the C ABI writes utf-8");
+
+    assert!(
+        rendered.starts_with("{\"friends\":[{\"user_id\":\"user-a\",\"pseudo\":"),
+        "field order drifted from the header and the docs: {rendered}"
+    );
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&rendered).expect("the C ABI writes valid json");
+    assert_eq!(parsed["friends"][0]["pseudo"], AWKWARD_PSEUDO);
+    assert_eq!(parsed["friends"][0]["in_game"], true);
+
+    ffi::arcane_sdk_shutdown();
+}

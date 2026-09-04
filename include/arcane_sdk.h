@@ -100,6 +100,23 @@ int arcane_sdk_device_hash(char *buf, size_t len);
 // relaxed increment. Does nothing before `arcane_sdk_init` succeeds.
 void arcane_sdk_frame(void);
 
+// Write this player's friends as JSON into `buf`:
+// `{"friends":[{"user_id","pseudo","online","in_game"}],"stale":bool}`.
+//
+// `in_game` is `true` for a friend playing this title right now. `stale` is
+// `true` when the Arcane desktop app answered from its cache because it is
+// offline. This makes one synchronous loopback call — call it when a menu
+// opens or on a timer of your own, never from the render loop.
+//
+// Returns the bytes written, or `-1` when not initialised, `-2` / `-3` for the
+// buffer, `-4` when the call failed — the failure is then readable with
+// `arcane_sdk_last_error_json`.
+//
+// # Safety
+//
+// `buf` must be null or point to at least `len` writable bytes.
+int arcane_sdk_friends_json(char *buf, size_t len);
+
 // Write the canonical title id into `buf`.
 //
 // # Safety

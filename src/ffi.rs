@@ -23,6 +23,7 @@ use std::sync::RwLock;
 use crate::achievements;
 use crate::client::ArcaneClient;
 use crate::error::{OwnershipStatus, SdkError};
+use crate::friends;
 
 /// Action return codes.
 pub const ARCANE_OK: c_int = 0;
@@ -373,6 +374,41 @@ pub unsafe extern "C" fn arcane_sdk_achievement_is_unlocked(key: *const c_char) 
     }
 }
 
+/// Write this player's friends as JSON into `buf`:
+/// `{"friends":[{"user_id","pseudo","online","in_game"}],"stale":bool}`.
+///
+/// `in_game` is `true` for a friend playing this title right now. `stale` is
+/// `true` when the Arcane desktop app answered from its cache because it is
+/// offline. This makes one synchronous loopback call — call it when a menu
+/// opens or on a timer of your own, never from the render loop.
+///
+/// Returns the bytes written, or `-1` when not initialised, `-2` / `-3` for the
+/// buffer, `-4` when the call failed — the failure is then readable with
+/// `arcane_sdk_last_error_json`.
+///
+/// # Safety
+///
+/// `buf` must be null or point to at least `len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_friends_json(buf: *mut c_char, len: usize) -> c_int {
+    let Some(client) = client_snapshot() else {
+        let err = SdkError::not_initialized("The Arcane SDK client is not initialised.")
+            .with_hint("Call arcane_sdk_init once at launch before reading friends.");
+        store_error(&err);
+        return ARCANE_ERR_NOT_INITIALIZED;
+    };
+    match client.friends().list() {
+        Ok(list) => {
+            clear_error();
+            write_str(&friends::to_json(&list), buf, len)
+        }
+        Err(err) => {
+            store_error(&err);
+            ARCANE_ERR_UNAVAILABLE
+        }
+    }
+}
+
 /// Whether a client is currently initialised. Returns 1 or 0.
 #[no_mangle]
 pub extern "C" fn arcane_sdk_is_initialized() -> c_int {
@@ -605,6 +641,19 @@ mod tests {
         );
         assert_eq!(
             unsafe { arcane_sdk_achievement_is_unlocked(c"first_blood".as_ptr()) },
+            ARCANE_ERR_NOT_INITIALIZED
+        );
+    }
+
+    #[test]
+    fn the_friends_entry_point_is_safe_before_init() {
+        let _guard = GLOBAL_STATE.lock().unwrap_or_else(|e| e.into_inner());
+
+        arcane_sdk_shutdown();
+        let mut buf = [0 as c_char; 256];
+
+        assert_eq!(
+            unsafe { arcane_sdk_friends_json(buf.as_mut_ptr(), buf.len()) },
             ARCANE_ERR_NOT_INITIALIZED
         );
     }

@@ -18,8 +18,7 @@
 use std::sync::RwLock;
 use std::time::Duration;
 
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
 
 use crate::desktop::{
     get_json, offline_only, post_json, DesktopCall, GAMES_PATH_PREFIX, OFFLINE_ONLY_ENV,
@@ -324,21 +323,38 @@ impl<'a> Achievements<'a> {
     }
 }
 
+/// The C ABI rendering, in the field order the header and the docs promise —
+/// which `serde_json::json!` would not keep, as it sorts its keys.
+#[derive(Serialize)]
+struct JsonAchievementList<'a> {
+    achievements: Vec<JsonAchievement<'a>>,
+}
+
+#[derive(Serialize)]
+struct JsonAchievement<'a> {
+    key: &'a str,
+    title: &'a str,
+    description: &'a str,
+    icon_url: Option<&'a str>,
+    hidden: bool,
+    unlocked_at: Option<i64>,
+}
+
 pub(crate) fn to_json(achievements: &[Achievement]) -> String {
-    let entries: Vec<serde_json::Value> = achievements
-        .iter()
-        .map(|entry| {
-            json!({
-                "key": entry.key,
-                "title": entry.title,
-                "description": entry.description,
-                "icon_url": entry.icon_url,
-                "hidden": entry.hidden,
-                "unlocked_at": entry.unlocked_at,
+    let rendered = JsonAchievementList {
+        achievements: achievements
+            .iter()
+            .map(|entry| JsonAchievement {
+                key: &entry.key,
+                title: &entry.title,
+                description: &entry.description,
+                icon_url: entry.icon_url.as_deref(),
+                hidden: entry.hidden,
+                unlocked_at: entry.unlocked_at,
             })
-        })
-        .collect();
-    json!({ "achievements": entries }).to_string()
+            .collect(),
+    };
+    serde_json::to_string(&rendered).unwrap_or_else(|_| r#"{"achievements":[]}"#.to_string())
 }
 
 /// Turn the RFC 3339 timestamp the desktop app sends into a unix timestamp.
@@ -632,5 +648,16 @@ mod tests {
             serde_json::Value::Null
         );
         assert_eq!(parsed["achievements"][0]["hidden"], false);
+    }
+
+    #[test]
+    fn the_json_rendering_keeps_the_documented_field_order() {
+        let rendered = to_json(&[achievement("first_blood", Some(1_786_480_000))]);
+
+        assert_eq!(
+            rendered,
+            r#"{"achievements":[{"key":"first_blood","title":"First blood","description":"Win a duel.","icon_url":null,"hidden":false,"unlocked_at":1786480000}]}"#,
+            "field order drifted from the header and the docs"
+        );
     }
 }
