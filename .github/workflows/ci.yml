@@ -36,3 +36,31 @@ jobs:
           chmod +x .github/scripts/generate-header.sh
           .github/scripts/generate-header.sh
           git diff --exit-code -- include/arcane_sdk.h
+
+  unity:
+    name: Unity binding
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install a C# compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mono-mcs
+
+      - name: Compile the runtime sources
+        # The engine-facing files (ArcaneRuntime, ArcaneSettings, the Editor
+        # scripts, the samples) need UnityEngine to compile and are covered by
+        # the package's own EditMode tests instead. Everything under Runtime
+        # that is not behind UNITY_5_3_OR_NEWER compiles standalone, which is
+        # where the marshalling, the JSON reader and the models live.
+        run: |
+          set -euo pipefail
+          mcs -target:library -langversion:latest -warnaserror -out:/tmp/ArcanePowered.dll \
+            bindings/unity/com.arcane-powered.sdk/Runtime/*.cs \
+            bindings/unity/com.arcane-powered.sdk/Runtime/Native/*.cs \
+            bindings/unity/com.arcane-powered.sdk/Runtime/Json/*.cs
+
+      - name: Check the plugin build script
+        run: bash -n bindings/unity/build-plugins.sh

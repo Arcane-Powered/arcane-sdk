@@ -1,0 +1,162 @@
+---
+title: "Unity"
+description: "Check ownership, unlock achievements and host lobbies from C#, with the engine lifecycle handled for you."
+keywords: ["unity", "c#", "upm", "package", "ArcaneRuntime", "native plugin", "P/Invoke", "il2cpp"]
+---
+
+The Unity package (`com.arcane-powered.sdk`) wraps the [C ABI](/reference/c-abi) as a static C# API. It ships in the SDK repository under [`bindings/unity`](https://github.com/Arcane-Powered/arcane-sdk/tree/main/bindings/unity), and needs **Unity 2021.3 or newer** on Windows, macOS or Linux — the platforms the Arcane desktop app runs on. Mono and IL2CPP both work.
+
+The client is a process-wide singleton, so there is no object to carry through your scenes: initialise once at launch, then call `Arcane` from anywhere.
+
+```csharp
+using ArcanePowered;
+
+public sealed class Boot : MonoBehaviour
+{
+    void Start()
+    {
+        // The ownership check already ran, before this scene loaded.
+        ArcaneError error = ArcaneRuntime.InitializationError;
+        if (error != null && error.Code == ArcaneErrorCode.NotOwned)
+        {
+            ShowStorePage();
+            return;
+        }
+
+        Arcane.Achievements.Unlock("first_blood");   // idempotent
+    }
+}
+```
+
+## Get started
+
+<Steps>
+  <Step title="Add the package">
+    In `Packages/manifest.json`:
+
+    ```json
+    {
+      "dependencies": {
+        "com.arcane-powered.sdk": "https://github.com/Arcane-Powered/arcane-sdk.git?path=bindings/unity/com.arcane-powered.sdk"
+      }
+    }
+    ```
+
+    Or copy `com.arcane-powered.sdk/` into your project's `Packages/` folder if you want to edit it.
+  </Step>
+  <Step title="Build the native plugin">
+    The package is C# only — it needs the native library beside it.
+
+    ```bash
+    git clone https://github.com/Arcane-Powered/arcane-sdk
+    cd arcane-sdk
+    bindings/unity/build-plugins.sh ~/games/my-game
+    ```
+
+    That writes `Assets/Plugins/Arcane/<platform>/`, and the package's importer points each binary at the platform it was built for. Build the platform you work on first — that is the one the Editor loads — and add the others with `--target` before you ship.
+
+    A native library is loaded once per Editor session, so **restart the Editor** after the first import.
+  </Step>
+  <Step title="Set the game id for the Editor">
+    Arcane Powered sets `ARCANE_GAME_ID` and `ARCANE_USER_ID` on the game process when a player launches from their library. Nothing launches the Editor that way, so fill in your title's game id under **Project Settings ▸ Arcane Powered**. The package puts it in the process environment before it initialises, where the SDK reads it.
+
+    A variable already set in the environment that started the Editor wins, so a launch profile still decides. See [Local development](/concepts/local-development) for the rest of the local setup — the desktop app must be running and signed in to an account that owns the title.
+  </Step>
+  <Step title="Run">
+    Enter play mode. **Tools ▸ Arcane Powered ▸ Log diagnostics** writes what the SDK can see — plugin, client, game id, account, ownership, session — to the console.
+  </Step>
+</Steps>
+
+## What runs by itself
+
+`ArcaneRuntime` creates itself before the first scene loads. By default it:
+
+- calls `Arcane.Init()` — the ownership check — and leaves the result in `ArcaneRuntime.InitializationError`;
+- calls `Arcane.Frame()` every frame, which is what [FPS sampling](/concepts/session) counts;
+- reports the resolution and quality preset, and again whenever they change;
+- drains the [lobby](/concepts/lobbies) event queue once a second and raises the `Arcane.Lobbies` events on the main thread;
+- calls `Arcane.Shutdown()` when the game quits, and when you leave play mode.
+
+That last one matters in the Editor: the native library stays loaded from one run to the next, so a client left behind would keep a play session open for a game nobody is playing.
+
+Each job is a checkbox in **Project Settings ▸ Arcane Powered**. Turn one off and do it yourself — the static API is the same either way.
+
+## The API
+
+Everything hangs off the static `Arcane` class.
+
+| Member | What it does |
+|--------|--------------|
+| `Arcane.TryInit(out error)` / `Init()` | Check [ownership](/concepts/ownership) and build the client |
+| `Arcane.IsOwned`, `Arcane.Ownership` | Ownership as of the last check |
+| `Arcane.UserId`, `GameId`, `DeviceHash` | Who and what this client is |
+| `Arcane.Session` | Playtime, FPS samples, and what the background thread is doing |
+| `Arcane.Refresh()`, `Shutdown()`, `Frame()`, `SetGraphics(…)` | Lifecycle |
+| `Arcane.Achievements` | `Unlock`, `List`, `IsUnlocked` |
+| `Arcane.Friends` | `List`, with `Online`, `InGame` and `Stale` |
+| `Arcane.Lobbies` | `Create`, `Join`, `JoinByCode`, `Get`, `Invite`, `Leave`, `Close`, `PollEvents`, `LaunchJoinCode` |
+| `Arcane.LastError` | The last failure, for a debug overlay or a crash report |
+
+### Failures are values
+
+Every call that can fail has two forms: `TryX(out ArcaneError)` returns `false`, and `X()` throws `ArcaneException`. The boot path is written against the first, because [`not_owned`](/concepts/errors) is a normal outcome of an ownership check, not an exceptional one.
+
+`ArcaneError` carries the four parts the SDK documents: `Code` to branch on, `Message` you can show a player, and `Hint` plus `Context` for your logs. `Code` is an enum; a code added to the SDK after your copy of the package was built reads as `ArcaneErrorCode.Unknown` and keeps its wire string in `CodeName`, so logging is always right.
+
+```csharp
+ArcaneError error;
+if (!Arcane.Achievements.TryUnlock("boss.01", out error))
+{
+    Debug.LogWarning(error);                     // "unknown_achievement: … — Check the key …"
+    if (error.Retryable) { QueueRetry(); }
+}
+```
+
+Which codes reach you depends on the call — `Init` can return every code in the [Errors table](/concepts/errors#error-codes) except `not_initialized`, achievements add `unknown_achievement`, lobbies add `lobby_not_found`, `lobby_full`, `lobby_closed` and `not_friends`. The package adds two of its own: `plugin_missing` when the native library is not in the project, and `invalid_response` when the plugin and the package are from different releases.
+
+### Blocking calls say so
+
+`Unlock`, `List`, and every lobby call make one synchronous loopback call to the desktop app. They belong on a loading screen or a menu, never in `Update`. Each has an `…Async` twin that runs it on a background thread, and `Arcane.RunOnMainThread` brings the result back to where you can touch the scene:
+
+```csharp
+async void OpenFriendsMenu()
+{
+    ArcaneFriendList friends = await Arcane.Friends.ListAsync();
+    Arcane.RunOnMainThread(() => Populate(friends));
+}
+```
+
+`Arcane.Frame()` is the exception — one atomic operation, meant for the render loop.
+
+### Lobbies
+
+Arcane holds the lobby, the membership and the join code; connecting the players is your netcode's job. Payloads are `byte[]` in C# — the base64 the C ABI wants never reaches your code — and stay under `ArcaneLobby.MaxPayloadBytes`.
+
+```csharp
+ArcaneLobby lobby = Arcane.Lobbies.Create(4, ArcaneLobbyVisibility.FriendsAndCode, MyEndpoint());
+ShowJoinCode(lobby.JoinCode);                      // null for a friends-only lobby
+
+Arcane.Lobbies.MemberJoined    += e => ConnectTo(e.Payload);
+Arcane.Lobbies.LobbyClosed     += e => ReturnToMenu();       // there is no host migration
+Arcane.Lobbies.ResyncRequested += e => Refresh();            // ask, don't replay
+```
+
+Those events are raised on the main thread by the runtime's pump. If you turn the pump off, call `Arcane.Lobbies.PollEvents()` yourself instead — it drains the same queue, so use one or the other.
+
+`Arcane.Lobbies.LaunchJoinCode` is set when the player started the game from a friend's **Join** in the launcher. Check it once at boot, before you show a menu.
+
+## Samples and tests
+
+The package ships two samples, importable from the Package Manager: **Quick start** (boot, ownership, achievements) and **Lobbies** (host, invite, join, events). Its tests run in the Unity Test Runner under **EditMode**, over the documents the C ABI actually writes.
+
+## Troubleshooting
+
+| What you see | What it means |
+|--------------|---------------|
+| `plugin_missing`, or "Native plugin: not loaded" in Project Settings | The binary is not in the project, or the Editor was not restarted after importing it |
+| `missing_game_id` | Nothing set `ARCANE_GAME_ID` — fill in the Editor game id in Project Settings |
+| `arcane_unavailable` | The Arcane desktop app is not running |
+| `not_owned` | The signed-in account does not own the title — grant it in the portal, or disable DRM on the title |
+| `feature_unavailable` | The desktop app predates the route the SDK asked for — update it |
+
+Full fixes for every code: [Errors](/concepts/errors).

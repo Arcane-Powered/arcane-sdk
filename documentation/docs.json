@@ -29,6 +29,10 @@
         ]
       },
       {
+        "group": "Engines",
+        "pages": ["engines/unity"]
+      },
+      {
         "group": "Reference",
         "pages": ["reference/rust-api", "reference/c-abi"]
       }

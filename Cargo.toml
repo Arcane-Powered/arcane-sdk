@@ -10,7 +10,7 @@ homepage = "https://github.com/Arcane-Powered/arcane-sdk"
 documentation = "https://docs.rs/arcane-sdk"
 keywords = ["game", "sdk", "drm", "ownership", "ffi"]
 categories = ["game-development", "api-bindings"]
-exclude = ["documentation/", ".github/"]
+exclude = ["documentation/", ".github/", "bindings/"]
 
 [lib]
 name = "arcane_sdk"
