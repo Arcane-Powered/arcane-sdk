@@ -33,6 +33,9 @@ events — but only once the game has called `p2p()`, and every 5 seconds instea
 of 60 while a lobby is open. Ownership itself is never revalidated on its own.
 
 Native engines get the same client as a C ABI singleton — see [`include/arcane_sdk.h`](./include/arcane_sdk.h).
+Unity gets it wrapped: [`bindings/unity`](./bindings/unity) is a UPM package that checks ownership before your
+first scene, counts frames, pumps lobby events onto the main thread and ends the session on quit. Godot and
+Unreal wrappers come next — see [`bindings/`](./bindings).
 
 Since 0.10, `init` takes **no argument**. Arcane Powered puts the **game id** of the title
 in `ARCANE_GAME_ID` and the signed-in account in `ARCANE_USER_ID` when it launches the

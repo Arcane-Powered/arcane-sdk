@@ -1,0 +1,36 @@
+{
+  "name": "com.arcane-powered.sdk",
+  "version": "0.10.0",
+  "displayName": "Arcane Powered SDK",
+  "description": "Ownership, playtime, achievements, friends and lobbies from Arcane Powered, as a static C# API over the native SDK.",
+  "unity": "2021.3",
+  "documentationUrl": "https://docs.arcane-powered.com/sdk",
+  "changelogUrl": "https://github.com/Arcane-Powered/arcane-sdk/releases",
+  "licensesUrl": "https://github.com/Arcane-Powered/arcane-sdk#license",
+  "license": "MIT OR Apache-2.0",
+  "author": {
+    "name": "Arcane Powered",
+    "url": "https://arcane-powered.com"
+  },
+  "keywords": [
+    "arcane",
+    "drm",
+    "ownership",
+    "achievements",
+    "friends",
+    "lobbies",
+    "multiplayer"
+  ],
+  "samples": [
+    {
+      "displayName": "Quick start",
+      "description": "Boot the SDK, react to the ownership check, and unlock an achievement.",
+      "path": "Samples~/QuickStart"
+    },
+    {
+      "displayName": "Lobbies",
+      "description": "Host a lobby, show its join code, invite a friend, and connect to whoever joins.",
+      "path": "Samples~/Lobbies"
+    }
+  ]
+}
