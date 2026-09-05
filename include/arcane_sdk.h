@@ -133,17 +133,18 @@ int arcane_sdk_game_id(char *buf, size_t len);
 
 // Verify ownership and build the process-wide client. Call once at launch.
 //
-// `game_id` must be a NUL-terminated UTF-8 string — the id of this title in the
-// Arcane portal.
+// You pass no id: Arcane Powered puts the game id of this title in
+// `ARCANE_GAME_ID` and the signed-in account in `ARCANE_USER_ID` when it
+// launches the game, and the SDK reads both. For local development you set
+// them yourself.
 //
-// Returns 0 on success, 1 if `game_id` is null or not UTF-8, 2 on an SDK
-// error written to `err_buf` as `"code: message"`.
+// Returns 0 on success, 2 on an SDK error written to `err_buf` as
+// `"code: message"` — `missing_game_id` when `ARCANE_GAME_ID` is not set.
 //
 // # Safety
 //
-// `game_id` must be a valid NUL-terminated C string. `err_buf` must be null
-// or point to at least `err_len` writable bytes.
-int arcane_sdk_init(const char *game_id, char *err_buf, size_t err_len);
+// `err_buf` must be null or point to at least `err_len` writable bytes.
+int arcane_sdk_init(char *err_buf, size_t err_len);
 
 // Whether a client is currently initialised. Returns 1 or 0.
 int arcane_sdk_is_initialized(void);

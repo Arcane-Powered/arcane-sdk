@@ -9,7 +9,7 @@
 //!
 //! ```no_run
 //! # use arcane_sdk::Visibility;
-//! # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
+//! # let client = arcane_sdk::ArcaneClient::init()?;
 //! # let my_endpoint = b"udp://203.0.113.7:7777";
 //! let lobby = client.p2p().create_lobby(4, Visibility::FriendsAndCode, my_endpoint)?;
 //! println!("join code: {:?}", lobby.join_code);
@@ -624,7 +624,7 @@ impl<'a> P2p<'a> {
     /// offline-only mode. Never fails.
     ///
     /// ```no_run
-    /// # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
+    /// # let client = arcane_sdk::ArcaneClient::init()?;
     /// # let my_endpoint = b"udp://203.0.113.7:7777";
     /// if let Some(code) = client.p2p().launch_join_code() {
     ///     let lobby = client.p2p().join_by_code(&code, my_endpoint)?;
@@ -675,7 +675,7 @@ impl<'a> P2p<'a> {
     ///
     /// ```no_run
     /// # use arcane_sdk::LobbyEvent;
-    /// # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
+    /// # let client = arcane_sdk::ArcaneClient::init()?;
     /// for event in client.p2p().poll_events() {
     ///     if let LobbyEvent::MemberJoined { payload, .. } = event {
     ///         // connect_to(&payload)
