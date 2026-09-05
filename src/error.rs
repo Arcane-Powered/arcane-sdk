@@ -43,7 +43,10 @@ pub enum ErrorCode {
     /// The lobby is visible to the host's friends only, and this player is not
     /// one of them.
     NotFriends,
-    /// The game id argument is empty, oversized, or has forbidden characters.
+    /// `ARCANE_GAME_ID` is unset or empty — the game was not started by Arcane
+    /// Powered, and no developer override is in place.
+    MissingGameId,
+    /// The game id in `ARCANE_GAME_ID` is oversized or has forbidden characters.
     InvalidGameId,
     /// An argument other than the game id is empty, oversized, or has
     /// forbidden characters.
@@ -76,6 +79,7 @@ impl ErrorCode {
             Self::LobbyFull => "lobby_full",
             Self::LobbyClosed => "lobby_closed",
             Self::NotFriends => "not_friends",
+            Self::MissingGameId => "missing_game_id",
             Self::InvalidGameId => "invalid_game_id",
             Self::InvalidArgument => "invalid_argument",
             Self::AmbiguousSession => "ambiguous_session",
@@ -272,6 +276,10 @@ impl SdkError {
         Self::new(ErrorCode::NotFriends, message)
     }
 
+    pub(crate) fn missing_game_id(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::MissingGameId, message)
+    }
+
     pub(crate) fn invalid_game_id(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::InvalidGameId, message)
     }
@@ -369,6 +377,7 @@ mod tests {
         assert!(SdkError::not_authenticated("x").is_retryable());
         assert!(!SdkError::not_owned("x").is_retryable());
         assert!(!SdkError::device_mismatch("x").is_retryable());
+        assert!(!SdkError::missing_game_id("x").is_retryable());
         assert!(!SdkError::invalid_game_id("x").is_retryable());
         assert!(!SdkError::invalid_argument("x").is_retryable());
         assert!(!SdkError::feature_unavailable("x").is_retryable());
@@ -403,6 +412,7 @@ mod tests {
         );
         assert_eq!(SdkError::invalid_argument("x").code(), "invalid_argument");
         assert_eq!(SdkError::invalid_game_id("x").code(), "invalid_game_id");
+        assert_eq!(SdkError::missing_game_id("x").code(), "missing_game_id");
     }
 
     #[test]

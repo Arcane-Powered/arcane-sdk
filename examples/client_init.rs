@@ -1,11 +1,17 @@
 //! Manual end-to-end check against a real Arcane desktop app.
 //!
 //! ```bash
-//! cargo run --example client_init -- 9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413
+//! ARCANE_GAME_ID=9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413 cargo run --example client_init
 //! ```
 //!
 //! It renders a fake three-second loop calling `frame()`, prints the session
 //! snapshot, then ends the session with `shutdown()`.
+//!
+//! The launch environment, set by Arcane Powered in production and by you when
+//! you run the game by hand:
+//!
+//! - `ARCANE_GAME_ID`       the game id of your title in the Arcane portal
+//! - `ARCANE_USER_ID`       the signed-in account (optional — `session.json` otherwise)
 //!
 //! Useful environment overrides (developer tooling — never set these in a game):
 //!
@@ -20,12 +26,7 @@ use std::time::Duration;
 use arcane_sdk::ArcaneClient;
 
 fn main() -> ExitCode {
-    let Some(game_id) = std::env::args().nth(1) else {
-        eprintln!("usage: client_init <game_id>");
-        return ExitCode::FAILURE;
-    };
-
-    match ArcaneClient::init(&game_id) {
+    match ArcaneClient::init() {
         Ok(client) => {
             println!("ownership   {}", client.ownership());
             println!("owned       {}", client.is_owned());

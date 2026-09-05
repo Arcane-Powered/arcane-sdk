@@ -22,7 +22,7 @@ ticket_invalid: The cached ticket was issued for a different title.
 ```
 
 ```rust
-match ArcaneClient::init(GAME_ID) {
+match ArcaneClient::init() {
     Ok(client) => start_game(client),
     Err(err) => {
         eprintln!("{err}");                    // full detail for your logs
@@ -38,7 +38,8 @@ match ArcaneClient::init(GAME_ID) {
 
 | Code | Problem | What to do | Retryable |
 |------|---------|------------|-----------|
-| `invalid_game_id` | Empty, over 256 bytes, or a character outside `A–Z a–z 0–9 _ - .` | Check the value you compiled in — the context names the bad character and its index | no |
+| `missing_game_id` | `ARCANE_GAME_ID` is unset or empty — the game was started outside Arcane Powered | Launch the game from the Arcane desktop app. For [local development](/concepts/local-development), set the variable to your title's game id | no |
+| `invalid_game_id` | The value in `ARCANE_GAME_ID` is over 256 bytes, or has a character outside `A–Z a–z 0–9 _ - .` | Check the value in the environment — the context names the bad character and its index | no |
 | `invalid_argument` | An argument other than the game id is empty, oversized, or has a forbidden character: an [achievement](/concepts/achievements) key over 64 bytes or outside `a–z 0–9 _ - .` (keys are lowercase), a [lobby](/concepts/lobbies) payload over 4096 bytes, a join code that is not six characters of `A–H J–N P–Z 2–9`, or a lobby / user id outside `A–Za–z0–9-` | Check the value. Raised before any network call, or when Arcane rejects it | no |
 | `ticket_missing` | No ticket cached for the signed-in account, or an empty ticket while DRM is on | Open Arcane desktop once while online. `init` normally refreshes this for you | yes |
 | `ticket_expired` | JWT past `exp` (beyond ±5 min skew) | `init` normally refreshes this for you; otherwise reconnect online via Arcane | yes |
@@ -65,13 +66,13 @@ match ArcaneClient::init(GAME_ID) {
 
 Can return any code in the table except `not_initialized`.
 
-If the cached `drm_enabled` flag is `false`, init succeeds with `DrmDisabled` and never reaches the ticket codes. When the offline check returns `ticket_missing` or `ticket_expired`, init contacts Arcane desktop (and may open it), which adds `not_owned`, `network_required`, `not_authenticated` and `arcane_unavailable` to the possible outcomes.
+`missing_game_id` and `invalid_game_id` come first, before any filesystem or network work: init reads the game id from `ARCANE_GAME_ID`, which Arcane Powered sets when it launches your game. If the cached `drm_enabled` flag is `false`, init succeeds with `DrmDisabled` and never reaches the ticket codes. When the offline check returns `ticket_missing` or `ticket_expired`, init contacts Arcane desktop (and may open it), which adds `not_owned`, `network_required`, `not_authenticated` and `arcane_unavailable` to the possible outcomes.
 
 The play session opened by `init` never surfaces an error. When the desktop app is missing, older than the session routes (`feature_unavailable`), or simply unhappy, tracking stays `Pending` and the SDK retries every 60 seconds. Read `client.session().tracking` if you want to know.
 
 ### `ArcaneClient::refresh` / `arcane_sdk_refresh`
 
-Same codes as init, minus `invalid_game_id` (the id was already validated). Always contacts the desktop app, so it never returns a purely offline result. On failure the client keeps its previous state.
+Same codes as init, minus `missing_game_id` and `invalid_game_id` (the id was already read and validated). Always contacts the desktop app, so it never returns a purely offline result. On failure the client keeps its previous state.
 
 Under `ARCANE_OFFLINE_ONLY` it returns `network_required` immediately.
 
@@ -126,7 +127,7 @@ Two conventions, by function kind.
 | `1` | Bad argument (null / non-UTF-8 string, or not initialised) |
 | `2` | `SdkError` — rendered into `err_buf` as `code: message — hint (context…)` |
 
-`arcane_sdk_frame` and `arcane_sdk_shutdown` return nothing and cannot fail.
+`arcane_sdk_init` takes no string argument and is never called before init, so it only ever returns `0` or `2`. `arcane_sdk_frame` and `arcane_sdk_shutdown` return nothing and cannot fail.
 
 ### Getters — `arcane_sdk_user_id`, `arcane_sdk_game_id`, `arcane_sdk_device_hash`, `arcane_sdk_session_json`, `arcane_sdk_achievements_json`, `arcane_sdk_friends_json`, `arcane_sdk_lobby_create`, `arcane_sdk_lobby_join_code`, `arcane_sdk_lobby_join`, `arcane_sdk_launch_join_code`, `arcane_sdk_lobby_events_json`, `arcane_sdk_last_error_json`
 
@@ -156,8 +157,8 @@ if (arcane_sdk_last_error_json(json, sizeof(json)) > 0) {
 
 ```c
 char err[512];
-if (arcane_sdk_init(GAME_ID, err, sizeof(err)) != 0) {
-  /* err starts with the code: "not_owned: …", "network_required: …" */
+if (arcane_sdk_init(err, sizeof(err)) != 0) {
+  /* err starts with the code: "missing_game_id: …", "not_owned: …" */
 }
 ```
 

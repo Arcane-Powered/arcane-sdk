@@ -13,7 +13,7 @@ propriété ; il ouvre désormais aussi une *session de jeu* qui mesure le temps
 les FPS sans autre appel du jeu.
 
 ```rust
-let client = ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
+let client = ArcaneClient::init()?;
 ```
 
 C'est tout pour : propriété, temps de jeu, échantillons FPS de temps en temps (si le
@@ -28,7 +28,7 @@ client.p2p().invite(friend_id, blob)?;            // phase 4
 ```
 
 ```c
-arcane_sdk_init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413", err, sizeof err);
+arcane_sdk_init(err, sizeof err);
 arcane_sdk_frame();
 arcane_sdk_achievement_unlock("first_blood", err, sizeof err);
 arcane_sdk_friends_json(buf, sizeof buf);
@@ -47,6 +47,7 @@ arcane_sdk_friends_json(buf, sizeof buf);
 
 | Décision | Choix |
 |---|---|
+| D'où viennent le game id et le compte ? | **Du launcher, par l'environnement.** Le desktop pose `ARCANE_GAME_ID` et `ARCANE_USER_ID` sur le process du jeu ; `init()` ne prend aucun argument. Absente, `ARCANE_GAME_ID` donne `missing_game_id` ; `ARCANE_USER_ID` choisit le fichier ticket (jamais une preuve) et retombe sur `session.json`. En dev, le développeur pose les deux à la main. |
 | Le tracking est-il bloquant pour `init` ? | **Non.** `init` réussit dès que la propriété est confirmée. Le démarrage de session est tenté en arrière-plan et réessayé à chaque tick. |
 | Horloge du temps de jeu | `Instant` (monotone). Jamais l'horloge murale, donc insensible à `clock_rollback`. |
 | FPS : échantillonnage, pas comptage continu | Le thread de session ouvre une **fenêtre de 30 s toutes les 5 min** (la première 60 s après le start, pour sauter le chargement). Pendant une fenêtre `frame()` incrémente un compteur ; en dehors, c'est un seul `AtomicBool::load`. Chaque fenêtre donne un échantillon `{ fps_avg, window_seconds, frames }` envoyé au heartbeat suivant. Sans appel à `frame()`, aucun échantillon. |

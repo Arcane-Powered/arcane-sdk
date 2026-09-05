@@ -53,7 +53,7 @@ struct OwnershipRefreshOk {
     #[serde(default)]
     user_id: Option<String>,
     /// Echo of the game id in the request path. Read for diagnostics only — the
-    /// SDK already knows the id the game passed to `init`.
+    /// SDK already knows the id it read from `ARCANE_GAME_ID`.
     #[serde(default)]
     #[allow(dead_code)]
     game_id: Option<String>,

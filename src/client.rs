@@ -8,7 +8,7 @@ use crate::device::{device_hash, now_unix};
 use crate::error::{OwnershipStatus, SdkError};
 use crate::friends::Friends;
 use crate::p2p::{P2p, P2pState};
-use crate::paths::{load_cached_drm_flag, load_session, SessionState};
+use crate::paths::{launch_user_id, load_cached_drm_flag, load_session, SessionState};
 use crate::session::{Session, SessionSnapshot, TrackingState};
 use crate::ticket::{check_ownership_offline, OwnershipCheck};
 
@@ -16,19 +16,19 @@ use crate::ticket::{check_ownership_offline, OwnershipCheck};
 pub const MAX_GAME_ID_LEN: usize = 256;
 
 /// Reject a malformed game id before any filesystem or network work happens, so
-/// a typo surfaces as `invalid_game_id` instead of a confusing `ticket_missing`
-/// several layers down.
+/// a typo in the launch environment surfaces as `invalid_game_id` instead of a
+/// confusing `ticket_missing` several layers down.
 ///
 /// The charset is also what makes it safe to interpolate the id straight into
 /// the loopback URL and the `arcane-powered://` deep link.
 pub(crate) fn validate_game_id(game_id: &str) -> Result<(), SdkError> {
     if game_id.is_empty() {
         return Err(SdkError::invalid_game_id("The game id is empty.")
-            .with_hint("Pass the game id shown for this title in the Arcane portal."));
+            .with_hint("Set ARCANE_GAME_ID to the game id shown for this title in the Arcane portal."));
     }
     if game_id.len() > MAX_GAME_ID_LEN {
         return Err(SdkError::invalid_game_id("The game id is too long.")
-            .with_hint("Pass the game id from the Arcane portal, not a file path or a token.")
+            .with_hint("Set ARCANE_GAME_ID to the game id from the Arcane portal, not a file path or a token.")
             .with_context("length", game_id.len())
             .with_context("max_length", MAX_GAME_ID_LEN));
     }
@@ -53,8 +53,8 @@ pub(crate) fn validate_game_id(game_id: &str) -> Result<(), SdkError> {
 ///
 /// Create it once at launch with [`ArcaneClient::init`]. It caches the ownership
 /// result, the signed-in `user_id` and the device fingerprint, alongside the
-/// `game_id` it was built with, so nothing downstream has to pass the id around
-/// again.
+/// `game_id` Arcane Powered launched it with, so nothing downstream has to pass
+/// the id around.
 ///
 /// Ownership is never revalidated on its own: it reflects the state as of the
 /// last [`init`](ArcaneClient::init) or [`refresh`](ArcaneClient::refresh). The
@@ -80,10 +80,13 @@ pub struct ArcaneClient {
 impl ArcaneClient {
     /// Verify ownership and build the client. Call once, at launch.
     ///
-    /// `game_id` is the id of your title in the Arcane portal — the same value
-    /// [`ArcaneClient::game_id`] reports for the rest of the session.
+    /// You pass nothing: Arcane Powered puts the game id of your title in
+    /// `ARCANE_GAME_ID` and the signed-in account in `ARCANE_USER_ID` when it
+    /// launches the game, and the SDK reads both. For local development you set
+    /// them yourself. [`ArcaneClient::game_id`] reports that game id for the
+    /// rest of the session.
     ///
-    /// 1. Validates `game_id`.
+    /// 1. Reads and validates `ARCANE_GAME_ID`.
     /// 2. If the cached `drm_enabled` flag is `false`, returns immediately with
     ///    [`OwnershipStatus::DrmDisabled`] — no ticket required.
     /// 3. Otherwise verifies the cached ownership ticket offline.
@@ -97,12 +100,13 @@ impl ArcaneClient {
     ///
     /// # Errors
     ///
-    /// `invalid_game_id`, `ticket_missing`, `ticket_expired`, `ticket_invalid`,
-    /// `device_mismatch`, `clock_rollback`, `not_owned`, `network_required`,
-    /// `not_authenticated`, `arcane_unavailable`, `ambiguous_session`, `internal`.
-    pub fn init(game_id: &str) -> Result<Self, SdkError> {
-        validate_game_id(game_id)?;
-        let client = Self::resolve_ownership(game_id)?;
+    /// `missing_game_id`, `invalid_game_id`, `ticket_missing`, `ticket_expired`,
+    /// `ticket_invalid`, `device_mismatch`, `clock_rollback`, `not_owned`,
+    /// `network_required`, `not_authenticated`, `arcane_unavailable`,
+    /// `ambiguous_session`, `internal`.
+    pub fn init() -> Result<Self, SdkError> {
+        let game_id = crate::paths::launch_game_id()?;
+        let client = Self::resolve_ownership(&game_id)?;
         client.session.begin(client.tracking_state());
         Ok(client)
     }
@@ -184,7 +188,7 @@ impl ArcaneClient {
         Ok(status)
     }
 
-    /// The game id this client was initialised with.
+    /// The game id Arcane Powered launched this process with.
     pub fn game_id(&self) -> &str {
         &self.game_id
     }
@@ -247,7 +251,7 @@ impl ArcaneClient {
     /// frame. [`Achievements::is_unlocked`] only reads memory.
     ///
     /// ```no_run
-    /// # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
+    /// # let client = arcane_sdk::ArcaneClient::init()?;
     /// client.achievements().unlock("first_blood")?;
     /// # Ok::<(), arcane_sdk::SdkError>(())
     /// ```
@@ -264,7 +268,7 @@ impl ArcaneClient {
     /// answer.
     ///
     /// ```no_run
-    /// # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
+    /// # let client = arcane_sdk::ArcaneClient::init()?;
     /// client.friends().list()?;
     /// # Ok::<(), arcane_sdk::SdkError>(())
     /// ```
@@ -287,7 +291,7 @@ impl ArcaneClient {
     ///
     /// ```no_run
     /// # use arcane_sdk::Visibility;
-    /// # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
+    /// # let client = arcane_sdk::ArcaneClient::init()?;
     /// # let my_endpoint = b"udp://203.0.113.7:7777";
     /// let lobby = client.p2p().create_lobby(4, Visibility::FriendsAndCode, my_endpoint)?;
     /// # Ok::<(), arcane_sdk::SdkError>(())
@@ -332,10 +336,10 @@ impl ArcaneClient {
         let p2p = Arc::new(P2pState::new());
         Ok(Self {
             game_id: game_id.to_string(),
-            user_id: match load_session() {
+            user_id: launch_user_id().or_else(|| match load_session() {
                 SessionState::SignedIn(user_id) => Some(user_id),
                 _ => None,
-            },
+            }),
             device_hash: device_hash()?,
             ownership: OwnershipStatus::DrmDisabled,
             ticket_expires_at: None,

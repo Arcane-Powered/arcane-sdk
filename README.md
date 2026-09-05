@@ -6,11 +6,12 @@ Native SDK for integrating Arcane Powered — ownership, achievements, cloud sav
 use arcane_sdk::ArcaneClient;
 
 // Once, at launch. Building the client is the ownership check, and it opens
-// the play session that measures playtime.
-let client = ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;   // your title's game id
+// the play session that measures playtime. The ids come from the environment
+// Arcane Powered sets on the game process — nothing is passed in.
+let client = ArcaneClient::init()?;
 
 client.user_id();   // signed-in Arcane account
-client.game_id();   // the game id you passed to init
+client.game_id();   // the game id Arcane Powered launched you with
 client.is_owned();  // ownership as of the last check
 
 client.frame();     // once per rendered frame — an atomic load, for FPS sampling
@@ -33,10 +34,12 @@ of 60 while a lobby is open. Ownership itself is never revalidated on its own.
 
 Native engines get the same client as a C ABI singleton — see [`include/arcane_sdk.h`](./include/arcane_sdk.h).
 
-Since 0.9, `init` takes the **game id** of your title (shown in the Arcane portal); the
-argument the SDK used to call a "public key" was always that id, and the platform never
-had a second value. `game_id()` therefore always answers, `public_key()` is gone, and
-the one error code that changed is `invalid_public_key` → `invalid_game_id`.
+Since 0.10, `init` takes **no argument**. Arcane Powered puts the **game id** of the title
+in `ARCANE_GAME_ID` and the signed-in account in `ARCANE_USER_ID` when it launches the
+game; the SDK reads both, `game_id()` answers with the first, and `ARCANE_USER_ID` picks
+which account's ticket is read. A game started without `ARCANE_GAME_ID` fails with the
+new `missing_game_id` code. For local development you set the two variables yourself —
+the portal game id is only needed there.
 
 The desktop-app side of the wire (endpoints, `session.json`, error bodies) is specified in [`DESKTOP_CONTRACT.md`](./DESKTOP_CONTRACT.md).
 

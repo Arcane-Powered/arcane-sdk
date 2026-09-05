@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 
 use arcane_sdk::ffi;
@@ -20,10 +19,9 @@ use arcane_sdk::{ArcaneClient, LobbyEvent, OwnershipStatus, TrackingState, Visib
 use tempfile::TempDir;
 
 const GAME_ID: &str = "7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34";
-const GAME_ID_C: &CStr = c"7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34";
 const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// `ARCANE_SDK_PORT` and `ARCANE_DRM_ROOT` are process-global.
+/// `ARCANE_GAME_ID`, `ARCANE_SDK_PORT` and `ARCANE_DRM_ROOT` are process-global.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy)]
@@ -74,6 +72,8 @@ impl Stub {
 
         std::env::set_var("ARCANE_DRM_ROOT", dir.path());
         std::env::set_var("ARCANE_SDK_PORT", port.to_string());
+        std::env::set_var("ARCANE_GAME_ID", GAME_ID);
+        std::env::remove_var("ARCANE_USER_ID");
         std::env::remove_var("ARCANE_OFFLINE_ONLY");
         std::env::remove_var("ARCANE_SESSION_TICK_MS");
 
@@ -154,6 +154,8 @@ impl Drop for Stub {
         std::env::remove_var("ARCANE_OFFLINE_ONLY");
         std::env::remove_var("ARCANE_DRM_ROOT");
         std::env::remove_var("ARCANE_SDK_PORT");
+        std::env::remove_var("ARCANE_GAME_ID");
+        std::env::remove_var("ARCANE_USER_ID");
         std::env::remove_var("ARCANE_SESSION_TICK_MS");
     }
 }
@@ -245,7 +247,7 @@ fn a_refresh_that_reports_drm_off_succeeds_without_a_ticket() {
         },
     );
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     assert_eq!(client.ownership(), OwnershipStatus::DrmDisabled);
     // user_id comes from /v1/health; game_id is the value init was given, whatever
@@ -267,7 +269,7 @@ fn a_refresh_response_field_wins_over_the_health_field() {
         },
     );
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     assert_eq!(client.user_id(), Some("user-from-refresh"));
 }
@@ -277,7 +279,7 @@ fn the_c_abi_reports_the_game_id_init_was_given_before_any_refresh() {
     let _stub = Stub::start(HEALTHY, DRM_OFF);
 
     assert_eq!(
-        unsafe { ffi::arcane_sdk_init(GAME_ID_C.as_ptr(), std::ptr::null_mut(), 0) },
+        unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) },
         0
     );
 
@@ -307,7 +309,7 @@ fn a_desktop_error_body_maps_to_its_sdk_code() {
         },
     );
 
-    let err = ArcaneClient::init(GAME_ID).expect_err("not owned");
+    let err = ArcaneClient::init().expect_err("not owned");
 
     assert_eq!(err.code(), "not_owned");
     assert!(!err.is_retryable());
@@ -327,7 +329,7 @@ fn a_signed_out_desktop_is_reported_before_the_refresh_call() {
         },
     );
 
-    let err = ArcaneClient::init(GAME_ID).expect_err("signed out");
+    let err = ArcaneClient::init().expect_err("signed out");
 
     assert_eq!(err.code(), "not_authenticated");
     assert!(err.is_retryable());
@@ -346,7 +348,7 @@ fn an_unhealthy_desktop_is_reported_as_unavailable() {
         },
     );
 
-    let err = ArcaneClient::init(GAME_ID).expect_err("unhealthy");
+    let err = ArcaneClient::init().expect_err("unhealthy");
 
     assert_eq!(err.code(), "arcane_unavailable");
 }
@@ -364,7 +366,7 @@ fn an_unknown_desktop_error_code_keeps_the_original_in_context() {
         },
     );
 
-    let err = ArcaneClient::init(GAME_ID).expect_err("region locked");
+    let err = ArcaneClient::init().expect_err("region locked");
 
     assert_eq!(err.code(), "ticket_invalid");
     assert!(err
@@ -387,7 +389,7 @@ fn an_unreadable_error_body_still_names_the_status_and_url() {
         },
     );
 
-    let err = ArcaneClient::init(GAME_ID).expect_err("bad gateway");
+    let err = ArcaneClient::init().expect_err("bad gateway");
 
     let keys: Vec<&str> = err.context().iter().map(|(k, _)| k.as_str()).collect();
     assert!(keys.contains(&"http_status"));
@@ -410,7 +412,7 @@ fn a_session_that_cannot_start_never_fails_init() {
         }
     });
 
-    let client = ArcaneClient::init(GAME_ID).expect("init succeeds on ownership alone");
+    let client = ArcaneClient::init().expect("init succeeds on ownership alone");
     stub.wait_for("/session/start", 1);
 
     let session = client.session();
@@ -435,7 +437,7 @@ fn a_desktop_without_the_session_routes_leaves_init_alone() {
         }
     });
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
     stub.wait_for("/session/start", 1);
 
     assert_eq!(client.session().tracking, TrackingState::Pending);
@@ -456,7 +458,7 @@ fn a_started_session_reports_active_and_the_player_sampling_setting() {
         }
     });
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
     stub.wait_for("/session/start", 1);
     let session = await_active(&client);
 
@@ -489,7 +491,7 @@ fn an_unknown_session_triggers_a_new_start() {
     });
     std::env::set_var("ARCANE_SESSION_TICK_MS", "150");
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
     stub.wait_for("/session/heartbeat", 1);
     let starts = stub.wait_for("/session/start", 2);
 
@@ -523,7 +525,7 @@ fn shutdown_ends_the_session_with_the_cumulative_seconds() {
     });
     std::env::set_var("ARCANE_SESSION_TICK_MS", "150");
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
     stub.wait_for("/session/heartbeat", 1);
 
     let heartbeat = stub.matching("/session/heartbeat")[0].json();
@@ -561,7 +563,7 @@ fn a_cached_ticket_starts_a_session_without_ever_contacting_the_desktop_for_owne
     });
     stub.write_drm_off_ticket("user-a");
 
-    let client = ArcaneClient::init(GAME_ID).expect("a cached ticket is enough");
+    let client = ArcaneClient::init().expect("a cached ticket is enough");
 
     assert_eq!(client.ownership(), OwnershipStatus::DrmDisabled);
     assert_eq!(client.user_id(), Some("user-a"));
@@ -631,7 +633,7 @@ const UNLOCK_OK: Reply = Reply {
 fn listing_achievements_fills_the_cache_that_is_unlocked_reads() {
     let stub = achievement_stub(UNLOCK_OK, ACHIEVEMENTS);
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
     assert_eq!(
         client.achievements().is_unlocked("first_blood"),
         None,
@@ -678,7 +680,7 @@ fn unlocking_reports_an_already_unlocked_achievement_as_a_success() {
         ACHIEVEMENTS,
     );
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
     let unlock = client.achievements().unlock("first_blood").expect("unlock");
 
     assert_eq!(unlock.key, "first_blood");
@@ -704,7 +706,7 @@ fn a_queued_unlock_is_a_success_and_updates_the_cache() {
         ACHIEVEMENTS,
     );
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
     client.achievements().list().expect("list");
     assert_eq!(client.achievements().is_unlocked("boss.01"), Some(false));
 
@@ -729,7 +731,7 @@ fn an_unknown_achievement_is_its_own_error_code() {
         ACHIEVEMENTS,
     );
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
     let err = client
         .achievements()
         .unlock("not_in_the_portal")
@@ -751,7 +753,7 @@ fn a_desktop_without_the_achievement_routes_degrades_to_feature_unavailable() {
     };
     let _stub = achievement_stub(bare_404, bare_404);
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     let listed = client.achievements().list().expect_err("no route");
     assert_eq!(listed.code(), "feature_unavailable");
@@ -769,7 +771,7 @@ fn a_desktop_without_the_achievement_routes_degrades_to_feature_unavailable() {
 fn an_invalid_key_fails_before_any_request_is_sent() {
     let stub = achievement_stub(UNLOCK_OK, ACHIEVEMENTS);
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
     let too_long = "a".repeat(65);
     for key in [
         "",
@@ -799,7 +801,7 @@ fn a_json_404_with_a_code_this_sdk_does_not_know_is_still_feature_unavailable() 
     };
     let _stub = achievement_stub(not_found, not_found);
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     assert_eq!(
         client.achievements().list().expect_err("no route").code(),
@@ -818,7 +820,7 @@ fn a_json_404_with_a_code_this_sdk_does_not_know_is_still_feature_unavailable() 
 #[test]
 fn offline_only_mode_refuses_both_achievement_calls_without_a_request() {
     let stub = achievement_stub(UNLOCK_OK, ACHIEVEMENTS);
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     std::env::set_var("ARCANE_OFFLINE_ONLY", "1");
 
@@ -857,7 +859,7 @@ fn the_c_abi_singleton_sees_the_cache_filled_through_its_clone() {
     );
 
     assert_eq!(
-        unsafe { ffi::arcane_sdk_init(GAME_ID_C.as_ptr(), std::ptr::null_mut(), 0) },
+        unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) },
         0
     );
     assert_eq!(
@@ -900,7 +902,7 @@ fn a_key_the_desktop_rejects_is_reported_as_an_invalid_argument() {
         ACHIEVEMENTS,
     );
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
     let err = client
         .achievements()
         .unlock("first_blood")
@@ -939,7 +941,7 @@ fn friends_stub(friends: Reply) -> Stub {
 fn listing_friends_marks_the_ones_playing_this_title() {
     let stub = friends_stub(FRIENDS);
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
     assert_eq!(client.game_id(), GAME_ID);
 
     let list = client.friends().list().expect("list");
@@ -971,7 +973,7 @@ fn a_stale_friend_list_is_a_success_that_says_so() {
                   "playing_game_id":"7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34"}],"stale":true}"#,
     });
 
-    let list = ArcaneClient::init(GAME_ID)
+    let list = ArcaneClient::init()
         .expect("init")
         .friends()
         .list()
@@ -989,7 +991,7 @@ fn friends_playing_another_title_are_never_in_game() {
                   "playing_game_id":"another-game"}],"stale":false}"#,
     });
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
     assert_eq!(client.game_id(), GAME_ID);
 
     let list = client.friends().list().expect("list");
@@ -1005,7 +1007,7 @@ fn a_signed_out_desktop_fails_the_friend_list_with_not_authenticated() {
         body: r#"{"error":"not_authenticated","message":"nobody is signed in"}"#,
     });
 
-    let err = ArcaneClient::init(GAME_ID)
+    let err = ArcaneClient::init()
         .expect("init")
         .friends()
         .list()
@@ -1022,7 +1024,7 @@ fn a_desktop_without_the_friends_route_degrades_to_feature_unavailable() {
         body: "Not Found",
     });
 
-    let err = ArcaneClient::init(GAME_ID)
+    let err = ArcaneClient::init()
         .expect("init")
         .friends()
         .list()
@@ -1035,7 +1037,7 @@ fn a_desktop_without_the_friends_route_degrades_to_feature_unavailable() {
 #[test]
 fn offline_only_mode_refuses_the_friend_list_without_a_request() {
     let stub = friends_stub(FRIENDS);
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     std::env::set_var("ARCANE_OFFLINE_ONLY", "1");
 
@@ -1061,7 +1063,7 @@ fn the_c_abi_writes_the_friend_list_as_json() {
     let _stub = friends_stub(FRIENDS);
 
     assert_eq!(
-        unsafe { ffi::arcane_sdk_init(GAME_ID_C.as_ptr(), std::ptr::null_mut(), 0) },
+        unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) },
         0
     );
 
@@ -1090,7 +1092,7 @@ fn the_c_abi_writes_the_friend_list_as_json() {
 #[test]
 fn two_list_calls_make_two_requests_because_the_sdk_caches_nothing() {
     let stub = friends_stub(FRIENDS);
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     let first = client.friends().list().expect("first list");
     let second = client.friends().list().expect("second list");
@@ -1120,7 +1122,7 @@ fn the_c_abi_escapes_a_pseudo_that_carries_json_metacharacters() {
     let _stub = friends_stub(AWKWARD_FRIEND);
 
     assert_eq!(
-        unsafe { ffi::arcane_sdk_init(GAME_ID_C.as_ptr(), std::ptr::null_mut(), 0) },
+        unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) },
         0
     );
 
@@ -1203,7 +1205,7 @@ fn lobby_stub(lobby: Reply) -> Stub {
 #[test]
 fn creating_a_lobby_returns_the_object_with_its_join_code() {
     let stub = lobby_stub(LOBBY);
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     let lobby = client
         .p2p()
@@ -1234,7 +1236,7 @@ fn creating_a_lobby_returns_the_object_with_its_join_code() {
 #[test]
 fn joining_by_code_uppercases_it_and_decodes_the_host_payload() {
     let stub = lobby_stub(LOBBY);
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     let lobby = client
         .p2p()
@@ -1257,7 +1259,7 @@ fn joining_by_id_inviting_leaving_and_closing_hit_their_routes() {
         body: r#"{"lobby_id":"lobby-1","join_code":null,"host_user_id":"user-host",
                   "host_payload":"dWRwOi8vMTAuMC4wLjE6Nzc3Nw==","max_players":4,"members":[]}"#,
     });
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     let lobby = client.p2p().join("lobby-1", b"me").expect("join by id");
     assert_eq!(
@@ -1315,7 +1317,7 @@ fn the_lobby_error_codes_map_from_their_desktop_bodies() {
     ] {
         let _stub = lobby_stub(reply);
 
-        let err = ArcaneClient::init(GAME_ID)
+        let err = ArcaneClient::init()
             .expect("init")
             .p2p()
             .join_by_code("K7P3QX", b"me")
@@ -1338,7 +1340,7 @@ fn a_desktop_without_the_lobby_routes_degrades_to_feature_unavailable() {
         body: "Not Found",
     });
 
-    let err = ArcaneClient::init(GAME_ID)
+    let err = ArcaneClient::init()
         .expect("init")
         .p2p()
         .create_lobby(4, Visibility::Code, b"me")
@@ -1351,7 +1353,7 @@ fn a_desktop_without_the_lobby_routes_degrades_to_feature_unavailable() {
 #[test]
 fn a_malformed_join_code_or_an_oversized_payload_fails_before_any_request() {
     let stub = lobby_stub(LOBBY);
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     for code in [
         "",
@@ -1390,7 +1392,7 @@ fn a_malformed_join_code_or_an_oversized_payload_fails_before_any_request() {
 #[test]
 fn offline_only_mode_refuses_the_lobby_calls_without_a_request() {
     let stub = lobby_stub(LOBBY);
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     std::env::set_var("ARCANE_OFFLINE_ONLY", "1");
 
@@ -1440,7 +1442,7 @@ fn the_launch_join_code_is_read_once_and_then_cached() {
             DRM_OFF
         }
     });
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     assert_eq!(
         client.p2p().launch_join_code().as_deref(),
@@ -1468,7 +1470,7 @@ fn the_launch_join_code_is_read_once_and_then_cached() {
 #[test]
 fn no_launch_context_is_not_a_failure() {
     let _stub = lobby_stub(LOBBY);
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     assert_eq!(client.p2p().launch_join_code(), None);
 }
@@ -1507,7 +1509,7 @@ fn lobby_events_are_polled_with_a_cursor_and_delivered_once() {
     });
     std::env::set_var("ARCANE_SESSION_TICK_MS", "150");
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
     assert!(
         client.p2p().poll_events().is_empty(),
         "nothing has been polled yet"
@@ -1591,7 +1593,7 @@ fn a_desktop_without_the_events_route_stops_polling_silently() {
     });
     std::env::set_var("ARCANE_SESSION_TICK_MS", "150");
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
     assert_eq!(
         client.session().lobby_events,
         arcane_sdk::LobbyPollingState::Off
@@ -1631,7 +1633,7 @@ fn a_desktop_without_the_events_route_stops_polling_silently() {
 fn arming_wakes_the_session_thread_rather_than_waiting_out_its_tick() {
     let stub = lobby_stub(LOBBY);
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
     assert!(
         stub.matching("/lobbies/events").is_empty(),
         "a game that never calls p2p() never polls: {:?}",
@@ -1648,7 +1650,7 @@ fn the_c_abi_writes_a_lobby_as_json() {
     let _stub = lobby_stub(LOBBY);
 
     assert_eq!(
-        unsafe { ffi::arcane_sdk_init(GAME_ID_C.as_ptr(), std::ptr::null_mut(), 0) },
+        unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) },
         0
     );
 
@@ -1733,7 +1735,7 @@ fn the_c_abi_keeps_the_events_queued_when_the_buffer_is_too_small() {
     std::env::set_var("ARCANE_SESSION_TICK_MS", "150");
 
     assert_eq!(
-        unsafe { ffi::arcane_sdk_init(GAME_ID_C.as_ptr(), std::ptr::null_mut(), 0) },
+        unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) },
         0
     );
 
@@ -1832,7 +1834,7 @@ fn a_transport_failure_does_not_cache_the_launch_join_code_away() {
             DRM_OFF
         }
     });
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     // Point the SDK at a port nothing listens on, so the read fails outright.
     let live_port = std::env::var("ARCANE_SDK_PORT").expect("port");
@@ -1873,7 +1875,7 @@ fn a_desktop_without_the_launch_context_route_is_asked_once() {
             DRM_OFF
         }
     });
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     assert_eq!(client.p2p().launch_join_code(), None);
     assert_eq!(client.p2p().launch_join_code(), None);
@@ -1888,7 +1890,7 @@ fn a_desktop_without_the_launch_context_route_is_asked_once() {
 #[test]
 fn reading_a_lobby_maps_the_object_without_joining_it() {
     let stub = lobby_stub(LOBBY);
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     let lobby = client.p2p().get_lobby("lobby-1").expect("get");
 
@@ -1915,7 +1917,7 @@ fn reading_a_lobby_maps_the_error_codes_too() {
     ] {
         let _stub = lobby_stub(reply);
 
-        let err = ArcaneClient::init(GAME_ID)
+        let err = ArcaneClient::init()
             .expect("init")
             .p2p()
             .get_lobby("lobby-1")
@@ -1953,7 +1955,7 @@ fn a_dropped_answer_delivers_one_resync_the_game_can_act_on() {
     });
     std::env::set_var("ARCANE_SESSION_TICK_MS", "150");
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
     let collected = drain_events(&client, 2);
 
     assert_eq!(
@@ -1999,7 +2001,7 @@ fn the_c_abi_reads_a_lobby_and_renders_a_resync() {
     std::env::set_var("ARCANE_SESSION_TICK_MS", "150");
 
     assert_eq!(
-        unsafe { ffi::arcane_sdk_init(GAME_ID_C.as_ptr(), std::ptr::null_mut(), 0) },
+        unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) },
         0
     );
 
@@ -2031,4 +2033,75 @@ fn the_c_abi_reads_a_lobby_and_renders_a_resync() {
     );
 
     ffi::arcane_sdk_shutdown();
+}
+
+const BAD_GAME_ID: &str = "game/../../etc/passwd";
+
+fn context_of(err: &arcane_sdk::SdkError, key: &str) -> Option<String> {
+    err.context()
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
+}
+
+#[test]
+fn init_without_the_game_id_env_never_reaches_the_desktop() {
+    let stub = Stub::start(HEALTHY, DRM_OFF);
+    std::env::remove_var("ARCANE_GAME_ID");
+
+    let err = ArcaneClient::init().expect_err("nothing named a title");
+
+    assert_eq!(err.code(), "missing_game_id");
+    assert!(!err.is_retryable());
+    assert_eq!(context_of(&err, "env").as_deref(), Some("ARCANE_GAME_ID"));
+    assert!(err.hint().expect("hint").contains("ARCANE_GAME_ID"));
+    assert!(
+        stub.requests().is_empty(),
+        "nothing should be asked of the desktop: {:?}",
+        stub.requests()
+    );
+}
+
+#[test]
+fn an_invalid_game_id_env_is_reported_as_invalid() {
+    let stub = Stub::start(HEALTHY, DRM_OFF);
+    std::env::set_var("ARCANE_GAME_ID", BAD_GAME_ID);
+
+    let err = ArcaneClient::init().expect_err("the env holds a path");
+
+    assert_eq!(err.code(), "invalid_game_id");
+    assert!(err.hint().is_some());
+    assert!(stub.requests().is_empty());
+}
+
+#[test]
+fn the_c_abi_reports_a_missing_game_id_env() {
+    let _stub = Stub::start(HEALTHY, DRM_OFF);
+    std::env::remove_var("ARCANE_GAME_ID");
+    ffi::arcane_sdk_shutdown();
+
+    let mut err = [0 as c_char; 512];
+    let rc = unsafe { ffi::arcane_sdk_init(err.as_mut_ptr(), err.len()) };
+
+    assert_eq!(rc, 2);
+    assert!(
+        read_c_string(&err).starts_with("missing_game_id:"),
+        "err_buf carries the code first: {}",
+        read_c_string(&err)
+    );
+    assert_eq!(ffi::arcane_sdk_is_initialized(), 0);
+}
+
+#[test]
+fn the_c_abi_reports_an_invalid_game_id_env() {
+    let _stub = Stub::start(HEALTHY, DRM_OFF);
+    std::env::set_var("ARCANE_GAME_ID", BAD_GAME_ID);
+    ffi::arcane_sdk_shutdown();
+
+    let mut err = [0 as c_char; 512];
+    let rc = unsafe { ffi::arcane_sdk_init(err.as_mut_ptr(), err.len()) };
+
+    assert_eq!(rc, 2);
+    assert!(read_c_string(&err).starts_with("invalid_game_id:"));
+    assert_eq!(ffi::arcane_sdk_is_initialized(), 0);
 }

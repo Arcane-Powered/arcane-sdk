@@ -1,0 +1,57 @@
+---
+title: "Local development"
+description: "Run your game outside the Arcane launcher, with the launch ids set by hand."
+keywords: ["local development", "ARCANE_GAME_ID", "ARCANE_USER_ID", "testing", "environment"]
+---
+
+Arcane Powered sets `ARCANE_GAME_ID` and `ARCANE_USER_ID` on your game process when it launches it from the player's library. Running your build from an IDE or a terminal skips the launcher, so nothing sets them and `init` fails with `missing_game_id`. Set them yourself and everything else works the same way.
+
+## What you need
+
+1. The **Arcane desktop app running and signed in**. The SDK talks to it on loopback to mint a ticket, and reads the account it recorded.
+2. An account that **owns the title** — or a title with DRM disabled. The backend only mints an ownership ticket for a game the account owns, so a developer account that has not been granted the title gets `not_owned`, no matter how the variables are set.
+3. The **game id** of your title, from the Arcane portal.
+
+## Set the variables
+
+```bash
+export ARCANE_GAME_ID=9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413
+cargo run
+```
+
+Set the same pair in your IDE's run configuration, or in your engine's launch profile, and your game boots exactly as it does from the library.
+
+| Variable | Who sets it | Effect |
+|----------|-------------|--------|
+| `ARCANE_GAME_ID` | Arcane Powered in production, you locally | The game id `init` checks ownership for, and `game_id()` reports. Required — without it, `init` returns `missing_game_id`. |
+| `ARCANE_USER_ID` | Arcane Powered in production, optionally you locally | Which account's ticket to read: exactly `tickets/{user_id}/{game_id}.ticket`, with no fallback. Optional — leave it out and the SDK uses the account the desktop app recorded in `session.json`. |
+
+Leaving `ARCANE_USER_ID` unset is the simpler local setup: sign in to the desktop app, and the SDK follows whichever account is signed in. Set it when several accounts have tickets on the machine and you want a specific one.
+
+A malformed `ARCANE_USER_ID` — anything outside ASCII letters, digits and `-`, or over 256 bytes — is ignored rather than reported, and the SDK falls back to `session.json`. The variable only picks a file; the ticket in it is verified in full either way, so naming an account proves nothing.
+
+## Errors you are likely to hit
+
+| Code | What it means here |
+|------|--------------------|
+| `missing_game_id` | Nothing set `ARCANE_GAME_ID` — you started the executable directly. Export it, or launch from the desktop app. |
+| `invalid_game_id` | The value in `ARCANE_GAME_ID` has a bad character or is too long. Quotes and trailing whitespace from a shell profile are the usual cause; the context names the offending character and its index. |
+| `not_owned` | The signed-in account does not own this title. Grant it the title in the portal, or disable DRM on the title. |
+| `not_authenticated` | Nobody is signed in to the desktop app, or it recorded a signed-out session. |
+| `arcane_unavailable` | The desktop app is not running and could not be opened. Start it, then retry. |
+| `ticket_missing` | `ARCANE_USER_ID` names an account with no ticket for this title. The SDK never substitutes another account's ticket. |
+
+Full table: [Errors](/concepts/errors).
+
+## Developer and QA overrides
+
+These are separate from the two launch variables: they change where the SDK looks and who it talks to. **Never set them in a shipped game.**
+
+| Variable | Effect |
+|----------|--------|
+| `ARCANE_DRM_ROOT` | Point the SDK at a throwaway DRM directory instead of the OS app-data path. |
+| `ARCANE_SDK_PORT` | Talk to a stub server or a non-default loopback port. |
+| `ARCANE_OFFLINE_ONLY` | `1` or `true`: never contact or launch the Arcane desktop app. A missing or expired ticket surfaces directly instead of triggering a refresh, and the play session is disabled. |
+| `ARCANE_SESSION_TICK_MS` | Shorten the 60-second session heartbeat so a test does not have to wait for it. |
+
+`ARCANE_GAME_ID` and `ARCANE_USER_ID` are the exception to that rule: they **are** set in production, by the desktop app. `ARCANE_OFFLINE_ONLY` is the one to reach for when testing your error handling — it can only make a check fail earlier, never let one pass.

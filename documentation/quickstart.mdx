@@ -1,16 +1,17 @@
 ---
 title: "Quickstart"
 description: "Link the Arcane SDK and build a client at launch."
-keywords: ["install", "quickstart", "ArcaneClient", "init", "game id", "portal"]
+keywords: ["install", "quickstart", "ArcaneClient", "init", "ARCANE_GAME_ID", "launch environment"]
 ---
 
-Link the SDK, build one client at launch with your title's game id, keep it for the session. That is the full default integration.
+Link the SDK, build one client at launch, keep it for the session. That is the full default integration — you pass nothing to `init`, because Arcane Powered gives your process the ids it needs.
 
 ## Prerequisites
 
 - [Rust](https://rustup.rs/) (edition 2021), or a native engine that can load the C ABI
-- The **game id** of your title, shown in the Arcane portal
 - The Arcane desktop app is installed (init opens it when a ticket must be refreshed online)
+
+Arcane Powered sets `ARCANE_GAME_ID` and `ARCANE_USER_ID` on your game process when it launches it, so a shipped game needs nothing else. To run your build outside the launcher, you set those variables yourself — see [Local development](/concepts/local-development).
 
 ## Get started
 
@@ -20,7 +21,7 @@ Link the SDK, build one client at launch with your title's game id, keep it for 
 
     ```toml Cargo.toml
     [dependencies]
-    arcane-sdk = "0.7"
+    arcane-sdk = "0.10"
     ```
 
     Engines (Unity / Unreal / C++): build the shared library, include `include/arcane_sdk.h`, and load the [C ABI](/reference/c-abi).
@@ -30,16 +31,13 @@ Link the SDK, build one client at launch with your title's game id, keep it for 
     ```
   </Step>
   <Step title="Build the client at launch">
-    Pass the game id from the portal. `init` checks ownership as part of building the client — there is no separate ownership call.
+    Call `init` with no arguments. It reads the game id from `ARCANE_GAME_ID` and checks ownership as part of building the client — there is no separate ownership call.
 
     ```rust
     use arcane_sdk::{ArcaneClient, SdkError};
 
-    // The game id of this title in the Arcane portal
-    const GAME_ID: &str = "9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413";
-
     fn boot() -> Result<ArcaneClient, SdkError> {
-        let client = ArcaneClient::init(GAME_ID)?;
+        let client = ArcaneClient::init()?;
         // Owned, or DRM is disabled for this title — either way, launch.
         Ok(client)
     }
@@ -47,7 +45,7 @@ Link the SDK, build one client at launch with your title's game id, keep it for 
 
     ```c
     char err[512];
-    if (arcane_sdk_init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413", err, sizeof(err)) != 0) {
+    if (arcane_sdk_init(err, sizeof(err)) != 0) {
       /* err is "code: message — hint (context…)" — see Errors */
     }
     ```
@@ -57,7 +55,7 @@ Link the SDK, build one client at launch with your title's game id, keep it for 
 
     ```rust
     client.user_id();          // Option<&str> — the signed-in Arcane account
-    client.game_id();          // &str — the game id you passed to init
+    client.game_id();          // &str — what Arcane Powered launched you with
     client.is_owned();         // bool
     client.ownership();        // Owned | DrmDisabled
     client.device_hash();      // this machine's fingerprint
@@ -97,7 +95,7 @@ Link the SDK, build one client at launch with your title's game id, keep it for 
 </Note>
 
 <Note>
-  **Renamed in 0.9.** `init` takes the game id of your title; earlier releases called the same value a "public key". `game_id()` now always answers with it, `public_key()` is gone, and `invalid_public_key` became `invalid_game_id`.
+  **Changed in 0.10.** `init` takes no argument. Arcane Powered passes the game id in `ARCANE_GAME_ID` and the signed-in account in `ARCANE_USER_ID` when it launches your game, and the SDK reads both. A game started without `ARCANE_GAME_ID` fails with the new `missing_game_id` code. `game_id()` still answers with that id. To run your build by hand, set the variables yourself — see [Local development](/concepts/local-development).
 </Note>
 
 ## Handle failures
@@ -105,7 +103,7 @@ Link the SDK, build one client at launch with your title's game id, keep it for 
 Every failure is an `SdkError` with a stable `code`, a player-facing `message`, a developer-facing `hint`, and a `context` naming the values involved.
 
 ```rust
-match ArcaneClient::init(GAME_ID) {
+match ArcaneClient::init() {
     Ok(client) => start_game(client),
     Err(err) => {
         // One log line is enough to debug:
@@ -114,6 +112,7 @@ match ArcaneClient::init(GAME_ID) {
         eprintln!("{err}");
 
         match err.code() {
+            "missing_game_id" => show_launch_from_arcane(err.message()),
             "not_owned" => show_store_prompt(err.message()),
             "network_required" | "not_authenticated" => show_retry(err.message()),
             _ => show_generic_error(err.message()),
@@ -122,11 +121,12 @@ match ArcaneClient::init(GAME_ID) {
 }
 ```
 
-Use `err.is_retryable()` to decide whether a retry button makes sense. The full table is in [Errors](/concepts/errors).
+`missing_game_id` means the player started the executable directly rather than through Arcane Powered — tell them to launch the game from the desktop app. Use `err.is_retryable()` to decide whether a retry button makes sense. The full table is in [Errors](/concepts/errors).
 
 ## Next steps
 
 - [Client](/concepts/client) — lifecycle, what is cached, when to refresh
+- [Local development](/concepts/local-development) — run your build outside the launcher
 - [Session](/concepts/session) — playtime, FPS sampling, `shutdown`
 - [Achievements](/concepts/achievements) — `client.achievements().unlock("first_blood")?`, one line, idempotent
 - [Friends](/concepts/friends) — `client.friends().list()?`, with `online` and `in_game`

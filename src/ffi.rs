@@ -7,9 +7,9 @@
 //!
 //! - **Actions** (`arcane_sdk_init`, `arcane_sdk_refresh`,
 //!   `arcane_sdk_set_graphics`, `arcane_sdk_achievement_unlock`) return `0` on
-//!   success, `1` on a bad argument,
-//!   `2` on an SDK error whose `"code: message"` rendering is written into
-//!   `err_buf`.
+//!   success, `1` on a bad argument (`arcane_sdk_init` takes none, so it never
+//!   does), `2` on an SDK error whose `"code: message"` rendering is written
+//!   into `err_buf`.
 //! - **Getters** return the number of bytes written (excluding the NUL) when they
 //!   succeed, or a negative value: `-1` not initialised, `-2` bad argument,
 //!   `-3` buffer too small, `-4` value not available.
@@ -128,30 +128,20 @@ where
 
 /// Verify ownership and build the process-wide client. Call once at launch.
 ///
-/// `game_id` must be a NUL-terminated UTF-8 string — the id of this title in the
-/// Arcane portal.
+/// You pass no id: Arcane Powered puts the game id of this title in
+/// `ARCANE_GAME_ID` and the signed-in account in `ARCANE_USER_ID` when it
+/// launches the game, and the SDK reads both. For local development you set
+/// them yourself.
 ///
-/// Returns 0 on success, 1 if `game_id` is null or not UTF-8, 2 on an SDK
-/// error written to `err_buf` as `"code: message"`.
+/// Returns 0 on success, 2 on an SDK error written to `err_buf` as
+/// `"code: message"` — `missing_game_id` when `ARCANE_GAME_ID` is not set.
 ///
 /// # Safety
 ///
-/// `game_id` must be a valid NUL-terminated C string. `err_buf` must be null
-/// or point to at least `err_len` writable bytes.
+/// `err_buf` must be null or point to at least `err_len` writable bytes.
 #[no_mangle]
-pub unsafe extern "C" fn arcane_sdk_init(
-    game_id: *const c_char,
-    err_buf: *mut c_char,
-    err_len: usize,
-) -> c_int {
-    if game_id.is_null() {
-        return ARCANE_ERR_ARGUMENT;
-    }
-    let Ok(game_id) = CStr::from_ptr(game_id).to_str() else {
-        return ARCANE_ERR_ARGUMENT;
-    };
-
-    match ArcaneClient::init(game_id) {
+pub unsafe extern "C" fn arcane_sdk_init(err_buf: *mut c_char, err_len: usize) -> c_int {
+    match ArcaneClient::init() {
         Ok(client) => {
             *CLIENT.write().unwrap_or_else(|e| e.into_inner()) = Some(client);
             clear_error();
@@ -1064,12 +1054,5 @@ mod tests {
             unsafe { arcane_sdk_set_graphics(std::ptr::null(), std::ptr::null()) },
             ARCANE_ERR_ARGUMENT
         );
-    }
-
-    #[test]
-    fn init_rejects_a_null_game_id() {
-        let mut err = [0 as c_char; 64];
-        let rc = unsafe { arcane_sdk_init(std::ptr::null(), err.as_mut_ptr(), err.len()) };
-        assert_eq!(rc, ARCANE_ERR_ARGUMENT);
     }
 }

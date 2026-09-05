@@ -12,7 +12,7 @@ The whole public surface is one type you build at launch, plus its errors. Error
 
 ```rust
 impl ArcaneClient {
-    pub fn init(game_id: &str) -> Result<ArcaneClient, SdkError>;
+    pub fn init() -> Result<ArcaneClient, SdkError>;
     pub fn refresh(&mut self) -> Result<OwnershipStatus, SdkError>;
 
     pub fn game_id(&self) -> &str;
@@ -37,29 +37,33 @@ impl ArcaneClient {
 
 ### `init`
 
-Build the client and check ownership. Call once at launch.
+Build the client and check ownership. Call once at launch, with no argument.
 
 ```rust
 use arcane_sdk::ArcaneClient;
 
-const GAME_ID: &str = "9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413"; // the game id from the Arcane portal
-
-let client = ArcaneClient::init(GAME_ID)?;
+let client = ArcaneClient::init()?;
 # Ok::<(), arcane_sdk::SdkError>(())
 ```
 
-Validates the game id, short-circuits to `DrmDisabled` when the cached flag says DRM is off, otherwise verifies the cached ticket. On `ticket_missing` / `ticket_expired` it contacts the Arcane desktop loopback (and may open the app) to refresh, then re-verifies. See [Ownership model](/concepts/ownership).
+The ids come from the launch environment: Arcane Powered sets `ARCANE_GAME_ID` to your title's game id and `ARCANE_USER_ID` to the signed-in account on the game process. To run your build outside the launcher, set them yourself — see [Local development](/concepts/local-development).
+
+```bash
+ARCANE_GAME_ID=9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413 cargo run --example client_init
+```
+
+Reads and validates the game id, short-circuits to `DrmDisabled` when the cached flag says DRM is off, otherwise verifies the cached ticket. On `ticket_missing` / `ticket_expired` it contacts the Arcane desktop loopback (and may open the app) to refresh, then re-verifies. See [Ownership model](/concepts/ownership).
 
 It then opens the play session and starts the `arcane-session` thread. That never blocks init and never fails it: if the desktop app is unreachable, tracking stays `Pending` and retries every 60 seconds, without ever opening the deep link. See [Session](/concepts/session).
 
-**Errors:** `invalid_game_id`, `ticket_missing`, `ticket_expired`, `ticket_invalid`, `device_mismatch`, `clock_rollback`, `not_owned`, `network_required`, `not_authenticated`, `arcane_unavailable`, `ambiguous_session`, `internal`. Full causes and fixes: [Errors](/concepts/errors#error-codes).
+**Errors:** `missing_game_id`, `invalid_game_id`, `ticket_missing`, `ticket_expired`, `ticket_invalid`, `device_mismatch`, `clock_rollback`, `not_owned`, `network_required`, `not_authenticated`, `arcane_unavailable`, `ambiguous_session`, `internal`. Full causes and fixes: [Errors](/concepts/errors#error-codes).
 
 ### `refresh`
 
 Re-run the check against Arcane desktop and update the client in place. Nothing calls this for you — there is no background revalidation.
 
 ```rust
-let mut client = ArcaneClient::init(GAME_ID)?;
+let mut client = ArcaneClient::init()?;
 // … hours later …
 let status = client.refresh()?;
 # Ok::<(), arcane_sdk::SdkError>(())
@@ -67,13 +71,13 @@ let status = client.refresh()?;
 
 On failure the client keeps its previous state.
 
-**Errors:** same as `init` minus `invalid_game_id`.
+**Errors:** same as `init` minus `missing_game_id` and `invalid_game_id`.
 
 ### Accessors
 
 All read cached state — no I/O, no failure.
 
-`game_id()` is the value you passed to `init`, so it always answers. `user_id` is an `Option` because an older Arcane desktop build may not report it, and because a DRM-disabled title may have no ticket file to read it from.
+`game_id()` is the value read from `ARCANE_GAME_ID`, so it always answers. `user_id()` is resolved in order from `ARCANE_USER_ID`, the ticket file, `session.json`, and what the desktop app reports. It is an `Option` because an older Arcane desktop build may not report it, and because a DRM-disabled title launched without `ARCANE_USER_ID` may have no ticket file to read it from.
 
 `user_id` is a **plain copied field**: a clone carries the value held when the clone was made, and `refresh()` updates only the client it is called on. The play session and the achievement cache are shared between clones; `user_id` is not.
 
@@ -198,7 +202,7 @@ for friend in &list.friends {
 # Ok::<(), arcane_sdk::SdkError>(())
 ```
 
-`in_game` is `true` when the friend is playing the same `game_id` as this client — the id passed to `init`; a friend playing anything else is `online` but not `in_game`.
+`in_game` is `true` when the friend is playing the same `game_id` as this client — the id in `ARCANE_GAME_ID`; a friend playing anything else is `online` but not `in_game`.
 
 **Errors:** `not_authenticated`, `network_required` (including under `ARCANE_OFFLINE_ONLY`, raised before any call), `arcane_unavailable`, `feature_unavailable`.
 
@@ -415,7 +419,7 @@ Use `rlib` from Rust games; link `cdylib` / `staticlib` for the [C ABI](/referen
 ## Try it
 
 ```bash
-cargo run --example client_init -- 9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413
+ARCANE_GAME_ID=9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413 cargo run --example client_init
 ```
 
-Prints every client field, renders a fake loop calling `frame()`, prints the session snapshot and ends with `shutdown()` — or the full error breakdown (code, message, hint, context, JSON) on failure.
+Prints every client field, renders a fake loop calling `frame()`, prints the session snapshot and ends with `shutdown()` — or the full error breakdown (code, message, hint, context, JSON) on failure. Run it without the variable and you get `missing_game_id`.

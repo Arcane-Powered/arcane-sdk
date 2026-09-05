@@ -4,7 +4,7 @@ description: "FFI entry points for Unity, Unreal, and other native engines."
 keywords: ["ffi", "c abi", "unity", "unreal", "arcane_sdk_init", "singleton", "header"]
 ---
 
-Minimal C ABI for engines that cannot call Rust directly. Build as `cdylib` or `staticlib`, include [`include/arcane_sdk.h`](https://github.com/Arcane-Powered/arcane-sdk/blob/main/include/arcane_sdk.h), then init at launch with your title's game id.
+Minimal C ABI for engines that cannot call Rust directly. Build as `cdylib` or `staticlib`, include [`include/arcane_sdk.h`](https://github.com/Arcane-Powered/arcane-sdk/blob/main/include/arcane_sdk.h), then init at launch — passing nothing but an error buffer.
 
 The client is a **process-wide singleton** — you init once and read from getters, with no handle to carry through C# or Blueprint.
 
@@ -32,7 +32,7 @@ Two conventions, by function kind. Both are in the header as named constants.
 | Return | Constant | Meaning |
 |--------|----------|---------|
 | `0` | `ARCANE_OK` | Success |
-| `1` | `ARCANE_ERR_ARGUMENT` | Bad argument, or not initialised |
+| `1` | `ARCANE_ERR_ARGUMENT` | Bad argument, or not initialised — `arcane_sdk_init` never returns it |
 | `2` | `ARCANE_ERR_SDK` | `SdkError` written to `err_buf` |
 
 **Getters** — the `char *buf` functions:
@@ -50,12 +50,12 @@ Two conventions, by function kind. Both are in the header as named constants.
 ### `arcane_sdk_init`
 
 ```c
-int arcane_sdk_init(const char *game_id, char *err_buf, size_t err_len);
+int arcane_sdk_init(char *err_buf, size_t err_len);
 ```
 
-Checks ownership and builds the singleton. Call once at launch. `game_id` is the **game id** of your title in the Arcane portal (NUL-terminated UTF-8).
+Checks ownership and builds the singleton. Call once at launch. You pass no id: Arcane Powered sets the **game id** of your title in `ARCANE_GAME_ID` and the signed-in account in `ARCANE_USER_ID` on the game process, and the SDK reads both. Set them yourself to run your build outside the launcher — see [Local development](/concepts/local-development).
 
-On `2`, `err_buf` holds `code: message — hint (context…)`. Parse up to the first `:` for the stable code.
+It takes no string argument, so it never returns `1`: the result is `0` or `2`. On `2`, `err_buf` holds `code: message — hint (context…)`. Parse up to the first `:` for the stable code — `missing_game_id` is what you get when nothing set `ARCANE_GAME_ID`.
 
 **Errors:** every code in the [Errors table](/concepts/errors#error-codes) except `not_initialized`.
 
@@ -187,7 +187,7 @@ if (arcane_sdk_friends_json(json, sizeof(json)) > 0) {
 }
 ```
 
-`in_game` is `true` for a friend playing this title right now — the one whose `game_id` you passed to `arcane_sdk_init`. `stale` is `true` when the desktop app answered from its cache because it is offline; the list is still usable. A `-4` means the call failed — read `arcane_sdk_last_error_json` for the code.
+`in_game` is `true` for a friend playing this title right now — the one named in `ARCANE_GAME_ID`. `stale` is `true` when the desktop app answered from its cache because it is offline; the list is still usable. A `-4` means the call failed — read `arcane_sdk_last_error_json` for the code.
 
 ### Lobbies
 
@@ -233,11 +233,8 @@ Buffer sizing: user ids and device hashes fit comfortably in 64 bytes; allow 256
 
 int boot(void) {
   char err[512];
-  int rc = arcane_sdk_init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413", err, sizeof(err));
+  int rc = arcane_sdk_init(err, sizeof(err));
 
-  if (rc == ARCANE_ERR_ARGUMENT) {
-    return 0;                      /* null or non-UTF-8 key */
-  }
   if (rc == ARCANE_ERR_SDK) {
     fprintf(stderr, "arcane: %s\n", err);   /* "not_owned: … — Buy it on …" */
 

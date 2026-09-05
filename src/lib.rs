@@ -1,15 +1,16 @@
 //! Arcane game SDK core.
 //!
-//! Games build one [`ArcaneClient`] at launch with the game id of their title in
-//! the Arcane portal. The client verifies ownership once and then holds the
-//! result in memory — the signed-in `user_id`, that `game_id`, the ownership
-//! status and the device fingerprint — so nothing downstream needs the id
-//! again.
+//! Games build one [`ArcaneClient`] at launch, and pass it nothing: Arcane
+//! Powered hands the game process the id of the title in `ARCANE_GAME_ID` and
+//! the signed-in account in `ARCANE_USER_ID`. The client verifies ownership
+//! once and then holds the result in memory — that `user_id`, that `game_id`,
+//! the ownership status and the device fingerprint — so nothing downstream
+//! needs the id again.
 //!
 //! ```no_run
 //! use arcane_sdk::ArcaneClient;
 //!
-//! let client = ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
+//! let client = ArcaneClient::init()?;
 //! println!("user={:?} owned={}", client.user_id(), client.is_owned());
 //! # Ok::<(), arcane_sdk::SdkError>(())
 //! ```
@@ -29,7 +30,7 @@
 //! and it is idempotent, so a game can call it every time its condition holds.
 //!
 //! ```no_run
-//! # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
+//! # let client = arcane_sdk::ArcaneClient::init()?;
 //! client.achievements().unlock("first_blood")?;
 //! # Ok::<(), arcane_sdk::SdkError>(())
 //! ```
@@ -38,7 +39,7 @@
 //! `in_game` for this title, read straight from the Arcane desktop app.
 //!
 //! ```no_run
-//! # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
+//! # let client = arcane_sdk::ArcaneClient::init()?;
 //! client.friends().list()?;
 //! # Ok::<(), arcane_sdk::SdkError>(())
 //! ```
@@ -49,7 +50,7 @@
 //!
 //! ```no_run
 //! # use arcane_sdk::Visibility;
-//! # let client = arcane_sdk::ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
+//! # let client = arcane_sdk::ArcaneClient::init()?;
 //! # let my_endpoint = b"udp://203.0.113.7:7777";
 //! let lobby = client.p2p().create_lobby(4, Visibility::FriendsAndCode, my_endpoint)?;
 //! for event in client.p2p().poll_events() { /* … */ }

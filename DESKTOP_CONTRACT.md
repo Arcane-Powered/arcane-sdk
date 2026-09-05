@@ -6,15 +6,56 @@ This is an **internal** contract between the launcher and the SDK. It is
 deliberately not on the Mintlify docs site — games never call these endpoints
 directly, and documenting them as game APIs would invite exactly that.
 
-The SDK is written so it **works with today's desktop build without any change**.
-Everything marked *new* below is additive: absent fields simply leave the
-corresponding client state as `None`.
+The SDK is written so it **works with today's desktop build without any change**,
+with one exception: §0 below, which the desktop must set for a launched game to
+identify itself at all. Everything else marked *new* is additive: absent fields
+simply leave the corresponding client state as `None`.
+
+---
+
+## 0. Launch environment — the ids the game is started with
+
+**Status: new, required.**
+
+The desktop app sets both variables on the game process when it launches a game
+(`launch_owned_game_impl`):
+
+```
+ARCANE_GAME_ID={game_id}
+ARCANE_USER_ID={user_id}
+```
+
+- `{game_id}` is the same value the desktop puts in the `{game_id}` path segment
+  of every route below, and the same one it keys `flags/{game_id}.json` with.
+- `{user_id}` is the cloud account id — the same value that names
+  `tickets/{user_id}/` and that `session.json` records. It is **not** the auth
+  `sub`.
+- Both are set on the "Join" launch path too; nothing else about that path changes.
+
+`ArcaneClient::init` takes no argument: the game passes nothing, and the SDK
+reads these two variables. A developer running a build by hand sets them
+themselves, which is the whole local-development story.
+
+### How the SDK behaves for each state
+
+| State | SDK behaviour |
+|---|---|
+| `ARCANE_GAME_ID` set | That is the title checked, and what `game_id()` reports for the session. |
+| `ARCANE_GAME_ID` unset or empty | `missing_game_id` — a hard failure, raised before any filesystem or network work. |
+| `ARCANE_GAME_ID` malformed | `invalid_game_id`, same charset rule as §4. |
+| `ARCANE_USER_ID` set | Reads exactly `tickets/{user_id}/{game_id}.ticket`, **no fallback**, and populates `user_id()` on the DRM-disabled path. |
+| `ARCANE_USER_ID` unset or malformed | Ignored. The SDK falls back to `session.json`, then to scanning `tickets/*/` (§1). |
+
+`ARCANE_USER_ID` selects a **file**, never a right: the ticket it points at is
+verified in full (signature, `gid`, `dev`), so a forged value grants nothing.
+See §6.
 
 ---
 
 ## 1. `session.json` — required for correct multi-account behaviour
 
-**Status: new. This is the one item the SDK genuinely needs.**
+**Status: new. Required alongside §0: it is what the SDK falls back to offline,
+and when a developer runs a build without `ARCANE_USER_ID`.**
 
 ```
 {app_data}/Arcane Powered/drm/session.json
@@ -42,6 +83,8 @@ which is what the pre-0.4 SDK always did, and it is wrong on a shared machine:
 > correctly signed and correctly bound to the device, so nothing rejects it.
 
 ### How the SDK behaves for each state
+
+Consulted only when `ARCANE_USER_ID` (§0) named no account.
 
 | `session.json` | SDK behaviour |
 |---|---|
@@ -93,7 +136,7 @@ The SDK sends no request body.
 | `ok` | yes | Refresh completed. |
 | `drm_enabled` | yes | Whether this title enforces DRM. |
 | `user_id` | *new*, optional | Signed-in account. Takes precedence over the `/v1/health` value. |
-| `game_id` | optional | Echo of the `{game_id}` path segment. The SDK ignores it: `ArcaneClient::game_id()` is the value the game passed to `init`. |
+| `game_id` | optional | Echo of the `{game_id}` path segment. The SDK ignores it: `ArcaneClient::game_id()` is the value in `ARCANE_GAME_ID`. |
 
 Two behaviours worth knowing:
 
@@ -171,10 +214,10 @@ Ticket file:
 
 The SDK reads `user_id` from this file to populate the client, so it should be
 filled even when `drm_enabled` is `false`. `game_id` stays in the layout for the
-desktop's own use; the SDK does not read it, since the game already told `init`
-which title it is.
+desktop's own use; the SDK does not read it, since `ARCANE_GAME_ID` already says
+which title this is.
 
-JWT claims enforced by the SDK: `gid` must equal the game id passed to `init`,
+JWT claims enforced by the SDK: `gid` must equal the game id in `ARCANE_GAME_ID`,
 `own` must be `true`, `dev` must equal the local device hash, `iss` =
 `arcane-drm`, `aud` = `arcane-game-sdk`, ES256, ±300 s skew on `iat`/`nbf`/`exp`.
 
@@ -184,7 +227,9 @@ JWT claims enforced by the SDK: `gid` must equal the game id passed to `init`,
 
 The game id is **not a secret and is not a credential**. It is a public
 identifier — it names a title, exactly like the `{game_id}` already in every
-route above — and knowing it grants nothing. Ownership is proven by the signed
+route above — and knowing it grants nothing. The same holds for the
+`ARCANE_USER_ID` of §0: it names which cached ticket to open, and the ticket
+itself is what is verified. Ownership is proven by the signed
 ownership ticket alone: an ES256 JWT minted by the backend, bound to an account
 and to a device, which no caller can forge from the id. A desktop build must
 never treat the id in a request as evidence of anything beyond which title is
@@ -204,16 +249,19 @@ before endpoints beyond ownership are added.
 
 ---
 
-## 7. Developer/QA environment overrides
-
-Read by the SDK. Never set by a shipped game.
+## 7. Environment read by the SDK
 
 | Variable | Effect |
 |---|---|
+| `ARCANE_GAME_ID` | The title to check (§0). *Set by the desktop; a developer may set it by hand.* |
+| `ARCANE_USER_ID` | The account whose ticket to read (§0). *Set by the desktop; a developer may set it by hand.* |
 | `ARCANE_DRM_ROOT` | Replaces `{app_data}/Arcane Powered/drm`. |
 | `ARCANE_SDK_PORT` | Replaces the loopback port `39284`. |
 | `ARCANE_OFFLINE_ONLY` | `1`/`true`: never contact or launch the desktop app. Can only make a check fail earlier, never let one pass. Also disables the session thread entirely. |
 | `ARCANE_SESSION_TICK_MS` | Replaces the 60 s session heartbeat period, so a test does not have to wait a minute. Does not change the FPS window schedule. |
+
+The last four are developer/QA overrides and must never be set by a shipped game.
+The first two are the launch environment, and are expected in production.
 
 ---
 
@@ -331,13 +379,13 @@ GET /v1/friends
 
 - The route is **not** scoped to a title: it answers for the signed-in account, and the
   SDK derives `in_game = playing_game_id == game_id()` per friend, where `game_id()` is
-  the id the game passed to `init`.
+  the id in `ARCANE_GAME_ID`.
 - `stale: true` means the desktop app is offline and served its own cache. The SDK
   passes it through as `FriendList::stale`; it is a successful answer, not an error.
 - The desktop app caches the list for 15 seconds. The SDK caches nothing and calls the
   route every time the game asks, so the cache is the desktop's to size.
 - `playing_game_id` is the `game_id` of the title the friend is playing — the same value
-  a game passes to `init` and the SDK puts in the `{game_id}` routes. The desktop sets
+  the desktop puts in `ARCANE_GAME_ID` and the SDK puts in the `{game_id}` routes. The desktop sets
   that presence itself, so nothing here depends on the game.
 - One synchronous round trip on the calling thread. The SDK never polls friends in the
   background and never opens the deep link for them.

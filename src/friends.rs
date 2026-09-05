@@ -29,8 +29,8 @@ pub struct Friend {
     pub pseudo: String,
     /// Whether they are signed in to Arcane right now.
     pub online: bool,
-    /// Whether they are playing **this** title right now — the title whose
-    /// `game_id` was passed to `init`.
+    /// Whether they are playing **this** title right now — the title named by
+    /// `ARCANE_GAME_ID`.
     pub in_game: bool,
 }
 
