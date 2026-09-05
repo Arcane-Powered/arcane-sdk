@@ -38,7 +38,7 @@ for friend in client.friends().list()?.friends {
 
 ## `in_game` is about your title
 
-`in_game` is `true` when the friend is playing the same `game_id` as this client — the id you passed to `init`. A friend playing something else on Arcane is `online`, not `in_game`. That presence is set by the Arcane desktop app when a game opens its [play session](/concepts/session), so it costs your game nothing.
+`in_game` is `true` when the friend is playing the same `game_id` as this client — the id Arcane Powered launched you with. A friend playing something else on Arcane is `online`, not `in_game`. That presence is set by the Arcane desktop app when a game opens its [play session](/concepts/session), so it costs your game nothing.
 
 `false` is never a guess about your own title: the client always knows its `game_id`, so `in_game` is `false` only when the friend is playing something else, or nothing at all.
 

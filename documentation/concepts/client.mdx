@@ -4,7 +4,7 @@ description: "One client built at launch, holding the state your game reads all 
 keywords: ["ArcaneClient", "init", "user_id", "game_id", "refresh", "lifecycle"]
 ---
 
-`ArcaneClient` is the SDK's entry point. You build one at launch with your title's game id, and read from it for the rest of the session.
+`ArcaneClient` is the SDK's entry point. You build one at launch — passing nothing — and read from it for the rest of the session.
 
 ## Why a client
 
@@ -14,8 +14,8 @@ The client does that work **once** and holds the result:
 
 | What | Accessor | Source |
 |------|----------|--------|
-| Game id | `game_id()` | what you passed to `init` |
-| Signed-in account | `user_id()` | the ticket file, `session.json`, or the desktop |
+| Game id | `game_id()` | the id Arcane Powered launched you with (`ARCANE_GAME_ID`) |
+| Signed-in account | `user_id()` | `ARCANE_USER_ID`, then the ticket file, `session.json`, or the desktop |
 | Ownership | `ownership()` / `is_owned()` | the ownership check |
 | Device fingerprint | `device_hash()` | this machine |
 | Ticket expiry | `ticket_expires_at()` | the ticket's `exp` claim |
@@ -32,8 +32,8 @@ More Arcane surfaces will hang off this client as they ship — that is the poin
 ```rust
 use arcane_sdk::ArcaneClient;
 
-// Once, at launch.
-let mut client = ArcaneClient::init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413")?;
+// Once, at launch. The game id comes from ARCANE_GAME_ID.
+let mut client = ArcaneClient::init()?;
 
 // For the rest of the session — free, reads memory.
 if client.is_owned() {
@@ -81,9 +81,12 @@ Cloning the client **shares** that session — it ends when the last clone is dr
 
 Several Arcane accounts can have tickets cached on one machine. The client resolves **the signed-in one**, in this order:
 
-1. `session.json` names a user → read exactly that account's ticket. If it is not there, the result is `ticket_missing` — another account's ticket is never substituted.
-2. `session.json` records a signed-out state → `not_authenticated`.
-3. No `session.json` (an Arcane desktop build that predates it) → scan the ticket directories. Exactly one match is used; several matches give [`ambiguous_session`](/concepts/errors) rather than a guess.
+1. `ARCANE_USER_ID` names the account Arcane Powered launched the game for → read exactly that account's ticket, with no fallback.
+2. `session.json` names a user → the same lookup for that account. If the ticket is not there, the result is `ticket_missing` — another account's ticket is never substituted.
+3. `session.json` records a signed-out state → `not_authenticated`.
+4. No `session.json` (an Arcane desktop build that predates it) → scan the ticket directories. Exactly one match is used; several matches give [`ambiguous_session`](/concepts/errors) rather than a guess.
+
+The variable only picks the file. The ticket inside is verified in full — signature, title, device — so naming an account is a hint, never proof.
 
 This is why `user_id` matters beyond being nice to display. Picking the wrong account's ticket is not a cosmetic bug: it lets one player run on another's entitlement on a shared machine.
 
@@ -93,7 +96,7 @@ Native engines get the same client as a singleton, so nothing has to carry a han
 
 ```c
 char err[512];
-if (arcane_sdk_init("9a1f8c3e-4b27-4d1a-9f6e-2c8b5d70a413", err, sizeof(err)) != 0) { /* handle */ }
+if (arcane_sdk_init(err, sizeof(err)) != 0) { /* handle */ }
 
 char user_id[64];
 int written = arcane_sdk_user_id(user_id, sizeof(user_id));
@@ -114,21 +117,14 @@ Calling a getter before `arcane_sdk_init` returns `not_initialized` rather than 
 
 ## Game id validation
 
-`init` validates the game id **before any filesystem or network work**. Empty, longer than 256 bytes, or containing anything outside ASCII letters, digits, `_`, `-` and `.` gives `invalid_game_id` immediately, naming the offending character and its index.
+`init` reads `ARCANE_GAME_ID` and validates it **before any filesystem or network work**. An unset or empty variable gives `missing_game_id` — the game was not started by Arcane Powered. A value longer than 256 bytes, or containing anything outside ASCII letters, digits, `_`, `-` and `.`, gives `invalid_game_id` immediately, naming the offending character and its index.
 
-That turns a whole class of confusing downstream failures — a stray quote, trailing whitespace from a config file, a path pasted instead of an id — into one obvious error at the call site.
+That turns a whole class of confusing downstream failures — a stray quote, trailing whitespace from a shell profile, a path pasted instead of an id — into one obvious error at startup.
 
 The game id is a public identifier, not a credential: it says which title you are, and nothing more. Ownership is proven by the signed ticket `init` verifies, so a game id in a log or a crash dump gives an attacker nothing.
 
 ## Developer overrides
 
-Environment variables the SDK reads. **Never set these in a shipped game**; they exist for local testing and QA.
+`ARCANE_GAME_ID` and `ARCANE_USER_ID` are set by the Arcane desktop app in production, and by you when you run your build by hand. Every other variable the SDK reads — `ARCANE_DRM_ROOT`, `ARCANE_SDK_PORT`, `ARCANE_OFFLINE_ONLY`, `ARCANE_SESSION_TICK_MS` — is local testing and QA tooling, and must **never** be set in a shipped game.
 
-| Variable | Effect |
-|----------|--------|
-| `ARCANE_DRM_ROOT` | Point the SDK at a throwaway DRM directory instead of the OS app-data path. |
-| `ARCANE_SDK_PORT` | Talk to a stub server or a non-default loopback port. |
-| `ARCANE_OFFLINE_ONLY` | `1` or `true`: never contact or launch the Arcane desktop app. A missing or expired ticket surfaces directly instead of triggering a refresh, and the play session is disabled. |
-| `ARCANE_SESSION_TICK_MS` | Shorten the 60-second session heartbeat so a test does not have to wait for it. |
-
-`ARCANE_OFFLINE_ONLY` is the one to reach for when testing your error handling — it can only make a check fail earlier, never let one pass.
+Both sets are documented in [Local development](/concepts/local-development), along with the workflow for starting your game outside the launcher.
