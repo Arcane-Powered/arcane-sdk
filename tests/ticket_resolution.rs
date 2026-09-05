@@ -14,7 +14,8 @@ use tempfile::TempDir;
 const GAME_ID: &str = "7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34";
 const MACHINE_ID: &str = "8f14e45f-ea8f-4b4a-9c0a-1d2e3f4a5b6c";
 
-/// `ARCANE_DRM_ROOT` is process-global, so fixtures must not overlap.
+/// `ARCANE_DRM_ROOT` and the launch ids are process-global, so fixtures must
+/// not overlap.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 struct Fixture {
@@ -31,6 +32,8 @@ impl Fixture {
 
         std::env::set_var("ARCANE_DRM_ROOT", &root);
         std::env::set_var("ARCANE_OFFLINE_ONLY", "1");
+        std::env::set_var("ARCANE_GAME_ID", GAME_ID);
+        std::env::remove_var("ARCANE_USER_ID");
 
         // Pin the machine id so ticket device hashes are predictable.
         fs::write(root.join("machine_id"), MACHINE_ID).expect("write machine_id");
@@ -45,6 +48,10 @@ impl Fixture {
     fn device_hash(&self) -> String {
         let digest = Sha256::digest(MACHINE_ID.as_bytes());
         hex::encode(&digest[..16])
+    }
+
+    fn launch_as(&self, user_id: &str) {
+        std::env::set_var("ARCANE_USER_ID", user_id);
     }
 
     fn write_session(&self, user_id: Option<&str>) {
@@ -96,6 +103,8 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         std::env::remove_var("ARCANE_DRM_ROOT");
         std::env::remove_var("ARCANE_OFFLINE_ONLY");
+        std::env::remove_var("ARCANE_GAME_ID");
+        std::env::remove_var("ARCANE_USER_ID");
     }
 }
 
@@ -136,7 +145,7 @@ fn uses_the_ticket_of_the_signed_in_account() {
     fixture.write_session(Some("user-a"));
     fixture.write_ticket("user-a", &Ticket::default());
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     assert_eq!(client.ownership(), OwnershipStatus::DrmDisabled);
     assert_eq!(client.user_id(), Some("user-a"));
@@ -157,7 +166,7 @@ fn another_accounts_ticket_never_satisfies_the_signed_in_account() {
     fixture.write_session(Some("user-b"));
     fixture.write_ticket("user-a", &Ticket::default());
 
-    let err = ArcaneClient::init(GAME_ID).expect_err("must not accept user-a's ticket");
+    let err = ArcaneClient::init().expect_err("must not accept user-a's ticket");
 
     assert_eq!(err.code(), "ticket_missing");
     assert_eq!(context_of(&err, "user_id").as_deref(), Some("user-b"));
@@ -172,7 +181,7 @@ fn a_signed_out_session_is_reported_as_not_authenticated() {
     fixture.write_session(None);
     fixture.write_ticket("user-a", &Ticket::default());
 
-    let err = ArcaneClient::init(GAME_ID).expect_err("nobody is signed in");
+    let err = ArcaneClient::init().expect_err("nobody is signed in");
 
     assert_eq!(err.code(), "not_authenticated");
     assert!(err.is_retryable());
@@ -184,7 +193,7 @@ fn a_single_ticket_is_used_when_no_session_is_recorded() {
     let fixture = Fixture::new();
     fixture.write_ticket("user-a", &Ticket::default());
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     assert_eq!(client.ownership(), OwnershipStatus::DrmDisabled);
     assert_eq!(client.user_id(), Some("user-a"));
@@ -196,7 +205,7 @@ fn several_tickets_without_a_session_are_ambiguous_rather_than_guessed() {
     fixture.write_ticket("user-a", &Ticket::default());
     fixture.write_ticket("user-b", &Ticket::default());
 
-    let err = ArcaneClient::init(GAME_ID).expect_err("must refuse to guess");
+    let err = ArcaneClient::init().expect_err("must refuse to guess");
 
     assert_eq!(err.code(), "ambiguous_session");
     assert_eq!(context_of(&err, "candidates").as_deref(), Some("2"));
@@ -217,7 +226,7 @@ fn a_ticket_bound_to_another_machine_is_a_device_mismatch() {
         },
     );
 
-    let err = ArcaneClient::init(GAME_ID).expect_err("device mismatch");
+    let err = ArcaneClient::init().expect_err("device mismatch");
 
     assert_eq!(err.code(), "device_mismatch");
     assert!(!err.is_retryable());
@@ -242,7 +251,7 @@ fn an_empty_ticket_with_drm_on_is_reported_as_missing() {
         },
     );
 
-    let err = ArcaneClient::init(GAME_ID).expect_err("empty ticket");
+    let err = ArcaneClient::init().expect_err("empty ticket");
 
     assert_eq!(err.code(), "ticket_missing");
     assert!(context_of(&err, "path").is_some());
@@ -255,7 +264,7 @@ fn the_drm_flag_short_circuits_before_any_ticket_lookup() {
     fixture.write_session(Some("user-a"));
     // No tickets on disk at all.
 
-    let client = ArcaneClient::init(GAME_ID).expect("init");
+    let client = ArcaneClient::init().expect("init");
 
     assert_eq!(client.ownership(), OwnershipStatus::DrmDisabled);
     assert!(!client.is_owned());
@@ -269,7 +278,7 @@ fn a_missing_tickets_directory_names_the_path_it_looked_at() {
     let fixture = Fixture::new();
     let _ = &fixture;
 
-    let err = ArcaneClient::init(GAME_ID).expect_err("no tickets");
+    let err = ArcaneClient::init().expect_err("no tickets");
 
     assert_eq!(err.code(), "ticket_missing");
     assert!(context_of(&err, "tickets_root").is_some());
@@ -288,7 +297,7 @@ fn a_corrupt_ticket_file_is_invalid_not_missing() {
         "{ this is not json",
     );
 
-    let err = ArcaneClient::init(GAME_ID).expect_err("corrupt ticket");
+    let err = ArcaneClient::init().expect_err("corrupt ticket");
 
     assert_eq!(err.code(), "ticket_invalid");
     assert!(context_of(&err, "path").is_some());
@@ -296,11 +305,92 @@ fn a_corrupt_ticket_file_is_invalid_not_missing() {
 
 #[test]
 fn an_invalid_game_id_fails_before_touching_the_filesystem() {
-    // No fixture: nothing should be read, so no DRM root is needed.
-    let err = ArcaneClient::init("game/../../etc/passwd").expect_err("invalid game id");
+    let fixture = Fixture::new();
+    let _ = &fixture;
+    std::env::set_var("ARCANE_GAME_ID", "game/../../etc/passwd");
+
+    let err = ArcaneClient::init().expect_err("invalid game id");
 
     assert_eq!(err.code(), "invalid_game_id");
     assert!(err.hint().is_some());
+}
+
+#[test]
+fn a_missing_game_id_env_is_reported_before_any_lookup() {
+    let fixture = Fixture::new();
+    fixture.write_session(Some("user-a"));
+    fixture.write_ticket("user-a", &Ticket::default());
+    std::env::remove_var("ARCANE_GAME_ID");
+
+    let err = ArcaneClient::init().expect_err("nothing named a title");
+
+    assert_eq!(err.code(), "missing_game_id");
+    assert!(!err.is_retryable());
+    assert_eq!(context_of(&err, "env").as_deref(), Some("ARCANE_GAME_ID"));
+}
+
+/// The launcher knows which account it started the game for, so its answer wins
+/// over whatever `session.json` last recorded.
+#[test]
+fn the_launch_user_id_picks_that_accounts_ticket_over_the_session_file() {
+    let fixture = Fixture::new();
+    fixture.write_session(Some("user-a"));
+    fixture.write_ticket("user-a", &Ticket::default());
+    fixture.write_ticket("user-b", &Ticket::default());
+    fixture.launch_as("user-b");
+
+    let client = ArcaneClient::init().expect("init");
+
+    assert_eq!(client.ownership(), OwnershipStatus::DrmDisabled);
+    assert_eq!(client.user_id(), Some("user-b"));
+}
+
+#[test]
+fn the_launch_user_id_never_falls_back_to_another_accounts_ticket() {
+    let fixture = Fixture::new();
+    fixture.write_session(Some("user-a"));
+    fixture.write_ticket("user-a", &Ticket::default());
+    fixture.launch_as("user-b");
+
+    let err = ArcaneClient::init().expect_err("must not accept user-a's ticket");
+
+    assert_eq!(err.code(), "ticket_missing");
+    assert_eq!(context_of(&err, "user_id").as_deref(), Some("user-b"));
+    assert_eq!(context_of(&err, "source").as_deref(), Some("ARCANE_USER_ID"));
+    assert!(context_of(&err, "expected_path")
+        .expect("expected_path in context")
+        .contains("user-b"));
+}
+
+#[test]
+fn the_launch_user_id_names_the_account_when_drm_is_disabled() {
+    let fixture = Fixture::new();
+    fixture.write_flag(false);
+    fixture.write_session(Some("user-a"));
+    fixture.launch_as("user-b");
+
+    let client = ArcaneClient::init().expect("init");
+
+    assert_eq!(client.ownership(), OwnershipStatus::DrmDisabled);
+    assert_eq!(client.user_id(), Some("user-b"));
+}
+
+#[test]
+fn a_malformed_launch_user_id_is_ignored_rather_than_reported() {
+    for bad in ["../user-b", "user b", "", &"b".repeat(257)] {
+        let fixture = Fixture::new();
+        fixture.write_session(Some("user-a"));
+        fixture.write_ticket("user-a", &Ticket::default());
+        fixture.launch_as(bad);
+
+        let client = ArcaneClient::init().expect("init falls back to session.json");
+
+        assert_eq!(
+            client.user_id(),
+            Some("user-a"),
+            "a hint the SDK cannot use is ignored, not an error: {bad:?}"
+        );
+    }
 }
 
 #[test]
@@ -309,7 +399,7 @@ fn refresh_is_refused_in_offline_only_mode() {
     fixture.write_session(Some("user-a"));
     fixture.write_ticket("user-a", &Ticket::default());
 
-    let mut client = ArcaneClient::init(GAME_ID).expect("init");
+    let mut client = ArcaneClient::init().expect("init");
     let err = client.refresh().expect_err("offline-only blocks refresh");
 
     assert_eq!(err.code(), "network_required");
