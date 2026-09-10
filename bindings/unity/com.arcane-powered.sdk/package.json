@@ -1,6 +1,6 @@
 {
   "name": "com.arcane-powered.sdk",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "displayName": "Arcane Powered SDK",
   "description": "Ownership, playtime, achievements, friends and lobbies from Arcane Powered, as a static C# API over the native SDK.",
   "unity": "2021.3",
