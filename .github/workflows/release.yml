@@ -61,25 +61,25 @@ jobs:
             exit 0
           fi
 
-          # Prefer previous tag as base; fall back to pre-merge Cargo.toml.
-          if PREV_TAG="$(git describe --tags --abbrev=0 2>/dev/null)"; then
-            BASE_VERSION="${PREV_TAG#v}"
-          else
-            BEFORE="${{ github.event.before }}"
-            if [[ -n "$BEFORE" && "$BEFORE" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "${BEFORE}:Cargo.toml" 2>/dev/null; then
-              tmp="$(mktemp)"
-              git show "${BEFORE}:Cargo.toml" >"$tmp"
-              BASE_VERSION="$(semver_read_cargo_version "$tmp")"
-              rm -f "$tmp"
-            else
-              echo "::error::No previous tag and cannot read base Cargo.toml; refusing to publish."
-              exit 1
-            fi
+          # The base is the Cargo.toml this merge replaced — the exact same one
+          # the PR gate compared against, so a PR that passed cannot fail here.
+          #
+          # It used to be the previous git tag. That reads an *output* of this
+          # job as its own input: the first merge that failed for any reason
+          # created no tag, so every later merge measured from a base further
+          # and further behind, and none of them could ever pass again. Tags are
+          # written by this job and never read by it.
+          BEFORE="${{ github.event.before }}"
+          if [[ -z "$BEFORE" || ! "$BEFORE" =~ ^[0-9a-f]{40}$ ]] \
+            || ! git cat-file -e "${BEFORE}:Cargo.toml" 2>/dev/null; then
+            echo "::error::Cannot read the pre-merge Cargo.toml (before=${BEFORE:-unset}); refusing to publish."
+            exit 1
           fi
 
-          EXPECTED="$(semver_bump_version "$BASE_VERSION" "$BUMP")"
-          if [[ "$VERSION" != "$EXPECTED" ]]; then
-            echo "::error::Cargo.toml is ${VERSION}, expected ${EXPECTED} from base ${BASE_VERSION} (${BUMP})."
+          # One implementation of the rule, shared with the PR gate, so the two
+          # can never drift apart again.
+          if ! .github/scripts/check-version-bump.sh "$TITLE" "$BEFORE"; then
+            echo "::error::Version bump check failed against the pre-merge tree."
             exit 1
           fi
 
