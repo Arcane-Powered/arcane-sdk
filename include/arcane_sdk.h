@@ -94,7 +94,11 @@ int arcane_sdk_achievements_json(char *buf, size_t len);
 // Unix timestamp of the last successful check, or -1 when not initialised.
 long long arcane_sdk_checked_at(void);
 
-// Write this machine's device fingerprint into `buf`.
+// Write the device fingerprint into `buf` — this machine *and* this account.
+//
+// Derived from the account key, not the hardware: the same machine reports a
+// different value for a different signed-in account. Empty when DRM is off for
+// the title and no fingerprint is cached yet.
 //
 // # Safety
 //

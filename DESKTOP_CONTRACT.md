@@ -7,9 +7,10 @@ deliberately not on the Mintlify docs site — games never call these endpoints
 directly, and documenting them as game APIs would invite exactly that.
 
 The SDK is written so it **works with today's desktop build without any change**,
-with one exception: §0 below, which the desktop must set for a launched game to
-identify itself at all. Everything else marked *new* is additive: absent fields
-simply leave the corresponding client state as `None`.
+with two exceptions, both of which the desktop must provide or no DRM-enabled
+game can start: §0, the ids a launched game identifies itself with, and §12, the
+device fingerprints it verifies its ticket against. Everything else marked *new*
+is additive: absent fields simply leave the corresponding client state as `None`.
 
 ---
 
@@ -190,12 +191,16 @@ separator, a path traversal, or whitespace.
 
 ```
 {app_data}/Arcane Powered/drm/
-├── machine_id                              written by the SDK (mode 0600)
 ├── jwks.json                               written by the desktop
 ├── session.json                            written by the desktop  ← new
+├── device/{user_id}.json                   written by the desktop  ← new, see §12
 ├── flags/{game_id}.json                    { "drm_enabled": bool }
 └── tickets/{user_id}/{game_id}.ticket
 ```
+
+The SDK writes nothing under this root. It used to keep a `machine_id` file here
+and hash it into a device fingerprint; that file is now unused and can be
+deleted. §12 says what replaced it and why.
 
 Ticket file:
 
@@ -217,9 +222,22 @@ filled even when `drm_enabled` is `false`. `game_id` stays in the layout for the
 desktop's own use; the SDK does not read it, since `ARCANE_GAME_ID` already says
 which title this is.
 
+`device_hash` is **not enforced**. It is unsigned, so it proves nothing the `dev`
+claim does not, and it may legitimately hold a fingerprint the account is not
+presenting right now. Keep writing it — it is useful in a bug report — but the
+signed claim is what decides.
+
 JWT claims enforced by the SDK: `gid` must equal the game id in `ARCANE_GAME_ID`,
-`own` must be `true`, `dev` must equal the local device hash, `iss` =
+`own` must be `true`, `dev` must name one of the fingerprints of §12, `iss` =
 `arcane-drm`, `aud` = `arcane-game-sdk`, ES256, ±300 s skew on `iat`/`nbf`/`exp`.
+
+`dev` is accepted as **either a string or an array of strings**. The backend
+mints an array — every fingerprint the account could present when the ticket was
+issued, so a later key rotation does not invalidate a ticket already on a
+player's disk — and older backends minted a bare string. The check passes when
+any claimed fingerprint matches any of §12's, compared case-insensitively; an
+empty array matches nothing. `device_hash()` then reports the fingerprint that
+actually matched, not the first one either side listed.
 
 ---
 
@@ -482,3 +500,83 @@ GET  /v1/games/{game_id}/launch-context   → 200 { "join_code": "K7P3QX" | null
 | `404 lobby_not_found` · `409 lobby_full` · `410 lobby_closed` · `403 not_friends` | The matching SDK code, with `lobby_id` or `join_code` in the error context |
 | `ARCANE_OFFLINE_ONLY` set | `network_required` on every lobby call, raised before any request; `launch_join_code()` answers `None` |
 | Events never polled by the game | The queue keeps the 256 most recent events and drops the oldest |
+
+
+---
+
+## 12. `device/{user_id}.json` — the fingerprints the ticket is checked against
+
+**Status: new, required. Without it every DRM-enabled `init` fails with
+`device_mismatch`.**
+
+```
+{app_data}/Arcane Powered/drm/device/{user_id}.json
+```
+
+```json
+{
+  "user_id": "3f2a…",
+  "updated_at": 1786480000,
+  "fingerprints": [
+    { "kind": "account_key_fpr", "value": "<64 hex chars>" },
+    { "kind": "device_id",       "value": "0x…" }
+  ]
+}
+```
+
+Written **on sign-in** and on **every ticket write**, mode 0600. Not removed on
+sign-out: the values are public, and `session.json` is what gates which ticket a
+game may read.
+
+### Why
+
+The desktop mints a ticket whose `dev` claim is
+`sha256(account_key.public_key_fpr)[..16]`. The SDK has to arrive at that same
+value locally, and it cannot compute it: the account key is sealed in the OS
+keyring, which a game process has no business opening.
+
+So the desktop publishes the **pre-images** — public key fingerprints, no secret
+— and the SDK hashes them itself. It never trusts a hash handed to it in a file:
+a value it did not derive would make the whole device binding a formality.
+
+> This is the bug the file exists to fix. Before it, the SDK derived its
+> fingerprint from a random UUID it generated in `machine_id`, and the desktop
+> derived its from the account key. The two could never agree, so `dev` matched
+> nothing and **every** DRM-enabled title failed to start, on every machine.
+
+### `kind`, and how each one is hashed
+
+| `kind` | `value` | SDK derivation |
+|---|---|---|
+| `account_key_fpr` | the 32-byte SPKI fingerprint, hex | `sha256(hex_decode(value))[..16]` |
+| `device_id` | the keyring device id, as written | `sha256(value.as_bytes())[..16]` |
+| anything else | — | skipped |
+
+A new `kind` is therefore safe to introduce: an older SDK ignores what it cannot
+rehash. It is only safe as an **addition** — a build that publishes nothing but
+kinds the SDK does not know fails as if the file were missing.
+
+### What goes in the list
+
+Every fingerprint this machine can **durably** present for the account, most
+current first. More than one is normal and is what makes key rotation additive:
+a ticket minted before a rotation names the old fingerprint, and stays verifiable
+offline until it expires.
+
+The live **ephemeral** session key is deliberately excluded. It exists only in
+the desktop process's memory and expires with its TTL; on disk it would let a
+ticket bound to it keep passing long after the key was gone.
+
+### How the SDK behaves for each state
+
+| `device/{user_id}.json` | SDK behaviour |
+|---|---|
+| Lists a fingerprint matching the ticket's `dev` | The check passes. `device_hash()` reports the matching value — the one the ticket was minted for. |
+| Lists fingerprints, none matching `dev` | `device_mismatch`, with both sides in the error context. |
+| Absent | `device_mismatch`, naming the account and the path it looked at. |
+| Present but no `kind` this SDK can rehash | `device_mismatch` — never an empty candidate set treated as a match. |
+| Absent, and `drm_enabled` is `false` | Not an error. `device_hash()` is empty and nothing depends on it. |
+
+`{user_id}` names a file, so the SDK validates it as `[A-Za-z0-9-]{1,256}`
+before building the path — a ticket file naming a traversal sequence cannot
+reach outside the DRM root.

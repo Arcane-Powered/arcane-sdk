@@ -17,7 +17,7 @@ The client does that work **once** and holds the result:
 | Game id | `game_id()` | the id Arcane Powered launched you with (`ARCANE_GAME_ID`) |
 | Signed-in account | `user_id()` | `ARCANE_USER_ID`, then the ticket file, `session.json`, or the desktop |
 | Ownership | `ownership()` / `is_owned()` | the ownership check |
-| Device fingerprint | `device_hash()` | this machine |
+| Device fingerprint | `device_hash()` | this machine, for this account |
 | Ticket expiry | `ticket_expires_at()` | the ticket's `exp` claim |
 | Last check | `checked_at()` | when `init` or `refresh` last succeeded |
 | Play session | `session()` | the [session](/concepts/session) opened by `init` |

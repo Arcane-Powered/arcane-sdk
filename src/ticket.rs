@@ -6,13 +6,36 @@ use jsonwebtoken::jwk::Jwk;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 
-use crate::device::{device_hash, now_unix, short_hash, CachedTicketFile};
+use crate::device::{device_hashes, now_unix, short_hashes, CachedTicketFile};
 use crate::error::{OwnershipStatus, SdkError};
 use crate::paths::{jwks_path, resolve_ticket};
 
 const ISS: &str = "arcane-drm";
 const AUD: &str = "arcane-game-sdk";
 const CLOCK_SKEW_SECS: i64 = 300;
+
+/// The `dev` claim: one fingerprint, or every fingerprint the account could
+/// present when the ticket was minted.
+///
+/// The backend emits a list so a key rotation does not invalidate tickets that
+/// are already cached; older backends emitted a bare string. Both shapes are
+/// accepted, and a build that only understood the string would reject every
+/// ticket the current backend mints.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum DevClaim {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl DevClaim {
+    fn hashes(&self) -> &[String] {
+        match self {
+            Self::One(hash) => std::slice::from_ref(hash),
+            Self::Many(hashes) => hashes,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)] // full JWT claim set; only a subset is enforced today
@@ -24,12 +47,21 @@ pub(crate) struct OwnershipTicketClaims {
     pub nbf: i64,
     pub exp: i64,
     pub jti: String,
-    pub dev: String,
+    pub dev: DevClaim,
     pub ver: i64,
     #[serde(default)]
     pub iss: Option<String>,
     #[serde(default)]
     pub aud: Option<serde_json::Value>,
+}
+
+/// A ticket that passed every check, and the fingerprint it turned out to be
+/// bound to — which of this machine's fingerprints matched, not whichever one
+/// happens to be listed first.
+#[derive(Debug, Clone)]
+pub(crate) struct VerifiedTicket {
+    pub claims: OwnershipTicketClaims,
+    pub device_hash: String,
 }
 
 /// Everything a successful offline check learned — the client keeps this in memory
@@ -95,11 +127,18 @@ fn load_decoding_key(kid: Option<&str>) -> Result<DecodingKey, SdkError> {
     })
 }
 
+/// Verify `jwt` against the fingerprints this machine can present.
+///
+/// `local_devices` is a set, not a single value: an account that rotated its key
+/// can present the old fingerprint and the new one, and a ticket minted before
+/// the rotation names the old one. Widening the local set proves nothing on its
+/// own — `dev` is signed by the backend, so only a hash it actually minted can
+/// match.
 pub(crate) fn verify_ticket(
     jwt: &str,
     game_id: &str,
-    expected_device_hash: &str,
-) -> Result<OwnershipTicketClaims, SdkError> {
+    local_devices: &[String],
+) -> Result<VerifiedTicket, SdkError> {
     let header = decode_header(jwt).map_err(|e| {
         SdkError::ticket_invalid(format!("The ticket is not a readable JWT: {e}"))
             .with_hint("Delete the cached ticket and refresh via Arcane desktop.")
@@ -155,15 +194,28 @@ pub(crate) fn verify_ticket(
                 .with_context("game_id", game_id),
         );
     }
-    if claims.dev != expected_device_hash {
+    let ticket_devices = claims.dev.hashes();
+    let Some(device_hash) = local_devices
+        .iter()
+        .find(|local| {
+            ticket_devices
+                .iter()
+                .any(|claimed| claimed.eq_ignore_ascii_case(local))
+        })
+        .cloned()
+    else {
         return Err(SdkError::device_mismatch(
             "This ownership ticket was issued for a different machine.",
         )
         .with_hint("Refresh ownership on this machine via Arcane desktop while online.")
-        .with_context("this_device", short_hash(expected_device_hash))
-        .with_context("ticket_device", short_hash(&claims.dev)));
-    }
-    Ok(claims)
+        .with_context("this_device", short_hashes(local_devices))
+        .with_context("ticket_device", short_hashes(ticket_devices)));
+    };
+
+    Ok(VerifiedTicket {
+        device_hash,
+        claims,
+    })
 }
 
 fn check_clock_rollback(file: &CachedTicketFile) -> Result<(), SdkError> {
@@ -192,15 +244,16 @@ pub(crate) fn check_ownership_offline(game_id: &str) -> Result<OwnershipCheck, S
     let file = &resolved.file;
     check_clock_rollback(file)?;
 
-    let local_device = device_hash()?;
-    let user_id = non_empty(&file.user_id);
+    let user_id = non_empty(&file.user_id).unwrap_or_else(|| resolved.account.clone());
 
     if !file.drm_enabled {
+        // Best-effort: a title that does not enforce DRM must not fail to start
+        // because this machine has no fingerprint file yet.
         return Ok(OwnershipCheck {
+            device_hash: crate::device::primary_device_hash(&resolved.account).unwrap_or_default(),
             status: OwnershipStatus::DrmDisabled,
-            user_id,
+            user_id: Some(user_id),
             ticket_expires_at: None,
-            device_hash: local_device,
         });
     }
 
@@ -213,22 +266,20 @@ pub(crate) fn check_ownership_offline(game_id: &str) -> Result<OwnershipCheck, S
         .with_context("path", resolved.path.display()));
     }
 
-    if file.device_hash != local_device {
-        return Err(SdkError::device_mismatch(
-            "The cached ticket was stored for a different machine.",
-        )
-        .with_hint("Refresh ownership on this machine via Arcane desktop while online.")
-        .with_context("this_device", short_hash(&local_device))
-        .with_context("cached_device", short_hash(&file.device_hash))
-        .with_context("path", resolved.path.display()));
-    }
+    let local_devices = device_hashes(&resolved.account)?;
 
-    let claims = verify_ticket(&file.ticket, game_id, &local_device)?;
+    // The `device_hash` field of the ticket file is deliberately *not* enforced.
+    // It is unsigned, so it proves nothing the `dev` claim does not, and it can
+    // legitimately disagree: the desktop stores whichever fingerprint it holds
+    // first, which may be a session key, while the signed claim covers every
+    // fingerprint the account can present. Failing on it rejects valid tickets.
+    let verified = verify_ticket(&file.ticket, game_id, &local_devices)
+        .map_err(|e| e.with_context("path", resolved.path.display()))?;
 
     Ok(OwnershipCheck {
         status: OwnershipStatus::Owned,
-        user_id: user_id.or_else(|| non_empty(&claims.sub)),
-        ticket_expires_at: Some(claims.exp),
-        device_hash: local_device,
+        user_id: Some(user_id),
+        device_hash: verified.device_hash,
+        ticket_expires_at: Some(verified.claims.exp),
     })
 }

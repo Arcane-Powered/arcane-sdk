@@ -2,9 +2,9 @@
 //!
 //! ```text
 //! {app_data}/Arcane Powered/drm/
-//! ├── machine_id
 //! ├── jwks.json
 //! ├── session.json                     written by Arcane desktop on sign-in/out
+//! ├── device/{user_id}.json            written by Arcane desktop on sign-in/refresh
 //! ├── flags/{game_id}.json
 //! └── tickets/{user_id}/{game_id}.ticket
 //! ```
@@ -33,8 +33,18 @@ pub(crate) const GAME_ID_ENV: &str = "ARCANE_GAME_ID";
 /// The signed-in account Arcane Powered puts on the game process at launch.
 pub(crate) const USER_ID_ENV: &str = "ARCANE_USER_ID";
 
-/// Longest account hint the SDK will read out of [`USER_ID_ENV`].
-const MAX_LAUNCH_USER_ID_LEN: usize = 256;
+/// Longest account id the SDK will accept from anywhere.
+const MAX_USER_ID_LEN: usize = 256;
+
+/// Account ids name directories, so anything outside this charset is refused
+/// before it can reach a path. The rule matches the cloud's own id shape.
+fn account_id_ok(user_id: &str) -> bool {
+    !user_id.is_empty()
+        && user_id.len() <= MAX_USER_ID_LEN
+        && user_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
 
 /// The game id of the title this process was launched for.
 ///
@@ -64,16 +74,7 @@ pub(crate) fn launch_game_id() -> Result<String, SdkError> {
 pub(crate) fn launch_user_id() -> Option<String> {
     let raw = env::var(USER_ID_ENV).ok()?;
     let user_id = raw.trim();
-    if user_id.is_empty() || user_id.len() > MAX_LAUNCH_USER_ID_LEN {
-        return None;
-    }
-    if !user_id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-')
-    {
-        return None;
-    }
-    Some(user_id.to_string())
+    account_id_ok(user_id).then(|| user_id.to_string())
 }
 
 pub(crate) fn drm_data_root() -> Result<PathBuf, SdkError> {
@@ -91,8 +92,22 @@ pub(crate) fn drm_data_root() -> Result<PathBuf, SdkError> {
     Ok(base.join("Arcane Powered").join("drm"))
 }
 
-pub(crate) fn machine_id_path() -> Result<PathBuf, SdkError> {
-    Ok(drm_data_root()?.join("machine_id"))
+/// Where the desktop publishes the fingerprint pre-images for one account.
+///
+/// `user_id` reaches this from a ticket file, which is *content* — validate it
+/// here rather than trusting it, so a crafted file cannot walk out of the DRM
+/// root.
+pub(crate) fn device_file_path(user_id: &str) -> Result<PathBuf, SdkError> {
+    if !account_id_ok(user_id) {
+        return Err(SdkError::device_mismatch(
+            "The cached ticket names an account id that cannot be a directory name.",
+        )
+        .with_hint("Delete the ticket and let Arcane desktop mint a fresh one.")
+        .with_context("user_id", user_id));
+    }
+    Ok(drm_data_root()?
+        .join("device")
+        .join(format!("{user_id}.json")))
 }
 
 pub(crate) fn jwks_path() -> Result<PathBuf, SdkError> {
@@ -157,14 +172,19 @@ pub(crate) fn load_cached_drm_flag(game_id: &str) -> Option<bool> {
     value.get("drm_enabled")?.as_bool()
 }
 
-/// A ticket file plus where it came from — the path feeds error context.
+/// A ticket file, where it came from, and whose it is.
+///
+/// `account` is the account the *lookup* settled on — the env hint, the session
+/// file, or the directory the scan found it in. It is deliberately not the
+/// `user_id` inside the file, which is content and could say anything.
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedTicket {
     pub file: CachedTicketFile,
     pub path: PathBuf,
+    pub account: String,
 }
 
-fn read_ticket_at(path: &Path) -> Result<ResolvedTicket, SdkError> {
+fn read_ticket_at(path: &Path, account: &str) -> Result<ResolvedTicket, SdkError> {
     let raw = fs::read_to_string(path).map_err(|e| {
         SdkError::internal(format!("Could not read the cached ownership ticket: {e}"))
             .with_hint("Check read permissions on the Arcane DRM directory.")
@@ -178,6 +198,7 @@ fn read_ticket_at(path: &Path) -> Result<ResolvedTicket, SdkError> {
     Ok(ResolvedTicket {
         file,
         path: path.to_path_buf(),
+        account: account.to_string(),
     })
 }
 
@@ -237,7 +258,7 @@ fn ticket_of_account(
         }
         return Err(err);
     }
-    read_ticket_at(&path)
+    read_ticket_at(&path, user_id)
 }
 
 /// Compatibility path for Arcane desktop builds that do not write `session.json`.
@@ -258,11 +279,14 @@ fn resolve_ticket_by_scan(game_id: &str) -> Result<ResolvedTicket, SdkError> {
             .with_context("tickets_root", root.display())
     })?;
 
-    let mut matches: Vec<PathBuf> = Vec::new();
+    // The directory name *is* the account id — that is what the scan learns, and
+    // what the fingerprint lookup needs.
+    let mut matches: Vec<(PathBuf, String)> = Vec::new();
     for entry in entries.flatten() {
         let candidate = entry.path().join(format!("{game_id}.ticket"));
         if candidate.exists() {
-            matches.push(candidate);
+            let account = entry.file_name().to_string_lossy().into_owned();
+            matches.push((candidate, account));
         }
     }
 
@@ -273,7 +297,7 @@ fn resolve_ticket_by_scan(game_id: &str) -> Result<ResolvedTicket, SdkError> {
         .with_hint("Open the Arcane desktop app once while online, then retry.")
         .with_context("game_id", game_id)
         .with_context("tickets_root", root.display())),
-        1 => read_ticket_at(&matches[0]),
+        1 => read_ticket_at(&matches[0].0, &matches[0].1),
         n => Err(SdkError::ambiguous_session(format!(
             "{n} accounts hold a ticket for this title on this machine, and Arcane has not \
              recorded which one is signed in."
