@@ -306,7 +306,7 @@ namespace ArcanePowered
             get { return ArcaneCall.ReadValue(ArcaneNative.arcane_sdk_game_id, ArcaneBuffer.IdBufferSize); }
         }
 
-        /// <summary>This machine's device fingerprint, or <see langword="null"/> before init.</summary>
+        /// <summary>The device fingerprint for this machine and the signed-in account, or <see langword="null"/> before init.</summary>
         public static string DeviceHash
         {
             get { return ArcaneCall.ReadValue(ArcaneNative.arcane_sdk_device_hash, ArcaneBuffer.IdBufferSize); }

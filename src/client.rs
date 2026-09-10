@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::achievements::{AchievementCache, Achievements};
 use crate::desktop::{offline_only, refresh_ownership_via_desktop, OFFLINE_ONLY_ENV};
-use crate::device::{device_hash, now_unix};
+use crate::device::{now_unix, primary_device_hash};
 use crate::error::{OwnershipStatus, SdkError};
 use crate::friends::Friends;
 use crate::p2p::{P2p, P2pState};
@@ -198,7 +198,11 @@ impl ArcaneClient {
         self.user_id.as_deref()
     }
 
-    /// This machine's fingerprint — the value tickets are bound to.
+    /// The fingerprint this ticket is bound to: this machine *and* this account.
+    ///
+    /// It is derived from the account key, not from the hardware, so the same
+    /// machine reports a different value for a different signed-in account.
+    /// Empty when DRM is off for the title and no fingerprint is on disk yet.
     pub fn device_hash(&self) -> &str {
         &self.device_hash
     }
@@ -334,13 +338,20 @@ impl ArcaneClient {
 
     fn drm_disabled(game_id: &str) -> Result<Self, SdkError> {
         let p2p = Arc::new(P2pState::new());
+        let user_id = launch_user_id().or_else(|| match load_session() {
+            SessionState::SignedIn(user_id) => Some(user_id),
+            _ => None,
+        });
+        // No ticket was verified here, so the fingerprint is informational and
+        // best-effort: DRM is off, nothing depends on it.
+        let device_hash = user_id
+            .as_deref()
+            .and_then(primary_device_hash)
+            .unwrap_or_default();
         Ok(Self {
             game_id: game_id.to_string(),
-            user_id: launch_user_id().or_else(|| match load_session() {
-                SessionState::SignedIn(user_id) => Some(user_id),
-                _ => None,
-            }),
-            device_hash: device_hash()?,
+            user_id,
+            device_hash,
             ownership: OwnershipStatus::DrmDisabled,
             ticket_expires_at: None,
             checked_at: now_unix(),
