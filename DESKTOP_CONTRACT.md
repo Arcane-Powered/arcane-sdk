@@ -117,9 +117,39 @@ Existing fields are unchanged and still required:
 
 ## 3. `POST /v1/games/{game_id}/ownership/refresh` — add `user_id`
 
-**Status: new field, additive.**
+**Status: new field, additive. The route itself is now on the critical path of
+every launch, not just of a launch with a cold cache.**
 
 The SDK sends no request body.
+
+### When the SDK calls it
+
+`init` calls this **first**, before it looks at any cached ticket. A game is
+started by the desktop app, and minting a fresh ticket is what that launch is
+for — so the desktop is a precondition here, not a fallback.
+
+The cached ticket answers exactly one case: this route returns `offline` (or the
+cloud is unreachable), meaning the desktop app is running but cannot reach the
+cloud. Then `init` verifies the ticket the last launch left on disk, in full.
+Every other failure stops the launch — `not_owned` and `not_authenticated` are
+answers rather than gaps, and `arcane_unavailable` means the desktop never spoke.
+
+Two things follow for the desktop app:
+
+- **Mint on launch, not in the background.** A ticket should reach
+  `tickets/{user_id}/{game_id}.ticket` as part of starting a game, and not
+  otherwise. Sweeping the cache to keep it warm when connectivity returns is no
+  longer wanted: it writes tickets for titles nobody is playing, which is the
+  opposite of "the cache is the offline fallback for a launch that happened".
+- **An offline launch must still start the game.** Failing the launch because
+  the cloud is unreachable defeats the fallback: the desktop cannot mint, so it
+  should start the game anyway and let the SDK verify the cached ticket. Only a
+  real refusal — `not_owned`, `not_authenticated` — should stop a launch.
+
+  When it starts a game without a fresh answer, `ARCANE_USER_ID` (§0) has no
+  refresh response to come from; the signed-in session id is the right fallback,
+  and omitting the variable is better than guessing, since the SDK then resolves
+  the account from `session.json` itself.
 
 ### Success (2xx)
 

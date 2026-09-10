@@ -216,6 +216,16 @@ impl SdkError {
         )
     }
 
+    /// Whether this is the desktop app telling us *it* could not reach the
+    /// cloud — the one refresh failure the cached ticket is allowed to answer.
+    ///
+    /// Every other failure is a verdict, not a gap: `not_owned` and
+    /// `not_authenticated` are answers, and `arcane_unavailable` means the
+    /// desktop never spoke at all, which is not a state a game may start in.
+    pub(crate) fn is_cloud_unreachable(&self) -> bool {
+        matches!(self.code, ErrorCode::NetworkRequired)
+    }
+
     pub(crate) fn ticket_missing(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::TicketMissing, message)
     }
