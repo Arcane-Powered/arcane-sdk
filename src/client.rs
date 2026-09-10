@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::achievements::{AchievementCache, Achievements};
-use crate::desktop::{offline_only, refresh_ownership_via_desktop, OFFLINE_ONLY_ENV};
+use crate::desktop::{offline_only, refresh_ownership_via_desktop, RefreshOutcome, OFFLINE_ONLY_ENV};
 use crate::device::{now_unix, primary_device_hash};
 use crate::error::{OwnershipStatus, SdkError};
 use crate::friends::Friends;
@@ -111,35 +111,64 @@ impl ArcaneClient {
         Ok(client)
     }
 
+    /// Ownership at launch: ask the desktop app first, fall back to the cached
+    /// ticket only when *it* says the cloud is out of reach.
+    ///
+    /// A game is started by the Arcane desktop app, and minting a fresh ticket
+    /// is what that launch is for — so the desktop is a precondition here, not a
+    /// fallback. Only once it has answered does the online/offline fork matter.
+    ///
+    /// This is deliberately not cache-first. A cached ticket that still parses
+    /// would otherwise outlive the thing it attests: an account key rotated
+    /// since it was minted leaves it bound to a fingerprint the machine can no
+    /// longer present, and `device_mismatch` does not ask for a refresh — the
+    /// player would be locked out of a title they own with no way back.
     fn resolve_ownership(game_id: &str) -> Result<Self, SdkError> {
-        if let Some(false) = load_cached_drm_flag(game_id) {
-            return Self::drm_disabled(game_id);
+        // The developer/QA escape hatch, and the only path that never speaks to
+        // the desktop app.
+        if offline_only() {
+            return Self::from_cached_ticket(game_id);
         }
 
+        match refresh_ownership_via_desktop(game_id) {
+            Ok(outcome) => Self::after_refresh(game_id, outcome),
+            // The desktop is running and answered; it simply could not reach the
+            // cloud. This is the case the cache exists for.
+            Err(err) if err.is_cloud_unreachable() => Self::from_cached_ticket(game_id)
+                .map_err(|cache_err| cache_err.with_context("desktop_refresh", err.message())),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Read what the desktop just wrote.
+    fn after_refresh(game_id: &str, outcome: RefreshOutcome) -> Result<Self, SdkError> {
         match check_ownership_offline(game_id) {
-            Ok(check) => Ok(Self::from_check(game_id, check)),
-            Err(err) if err.should_refresh_via_desktop() && !offline_only() => {
-                let outcome = refresh_ownership_via_desktop(game_id)?;
-                match check_ownership_offline(game_id) {
-                    Ok(check) => {
-                        let mut client = Self::from_check(game_id, check);
-                        client.user_id = client.user_id.or(outcome.user_id);
-                        Ok(client)
-                    }
-                    // The desktop confirmed DRM is off for this title, so there is
-                    // no ticket to find and the missing file is not a failure.
-                    Err(retry_err)
-                        if !outcome.drm_enabled && retry_err.should_refresh_via_desktop() =>
-                    {
-                        let mut client = Self::drm_disabled(game_id)?;
-                        client.user_id = client.user_id.or(outcome.user_id);
-                        Ok(client)
-                    }
-                    Err(retry_err) => Err(retry_err),
-                }
+            Ok(check) => {
+                let mut client = Self::from_check(game_id, check);
+                client.user_id = client.user_id.or(outcome.user_id);
+                Ok(client)
+            }
+            // The desktop confirmed DRM is off for this title, so there is no
+            // ticket to find and the missing file is not a failure.
+            Err(err) if !outcome.drm_enabled && err.should_refresh_via_desktop() => {
+                let mut client = Self::drm_disabled(game_id)?;
+                client.user_id = client.user_id.or(outcome.user_id);
+                Ok(client)
             }
             Err(err) => Err(err),
         }
+    }
+
+    /// The offline path: whatever the last launch left on disk.
+    ///
+    /// The cached DRM-off marker is honoured only here. Online, the desktop's
+    /// answer is what decides, so a title that has since had DRM switched on
+    /// cannot keep starting on a stale flag.
+    fn from_cached_ticket(game_id: &str) -> Result<Self, SdkError> {
+        if let Some(false) = load_cached_drm_flag(game_id) {
+            return Self::drm_disabled(game_id);
+        }
+        check_ownership_offline(game_id).map(|check| Self::from_check(game_id, check))
     }
 
     fn tracking_state(&self) -> TrackingState {

@@ -546,24 +546,28 @@ fn shutdown_ends_the_session_with_the_cumulative_seconds() {
     );
 }
 
+/// A launch always re-mints. The cached ticket is not a shortcut past the
+/// desktop app — it is the offline fallback, and the desktop is reachable here.
 #[test]
-fn a_cached_ticket_starts_a_session_without_ever_contacting_the_desktop_for_ownership() {
+fn a_cached_ticket_does_not_spare_the_desktop_a_refresh_at_launch() {
     let stub = Stub::start_with(|request| {
         if request.line.contains("/session/start") {
             Reply {
                 status: "200 OK",
                 body: r#"{"session_id":"session-1","fps_sampling":false}"#,
             }
-        } else {
+        } else if request.line.contains("ownership/refresh") {
             Reply {
-                status: "500 Internal Server Error",
-                body: r#"{"error":"internal","message":"init must not call this"}"#,
+                status: "200 OK",
+                body: r#"{"ok":true,"drm_enabled":false,"user_id":"user-a"}"#,
             }
+        } else {
+            HEALTHY
         }
     });
     stub.write_drm_off_ticket("user-a");
 
-    let client = ArcaneClient::init().expect("a cached ticket is enough");
+    let client = ArcaneClient::init().expect("the desktop confirmed DRM is off");
 
     assert_eq!(client.ownership(), OwnershipStatus::DrmDisabled);
     assert_eq!(client.user_id(), Some("user-a"));
@@ -573,13 +577,59 @@ fn a_cached_ticket_starts_a_session_without_ever_contacting_the_desktop_for_owne
         "game_id is the init value, not the one cached in the ticket file"
     );
 
-    stub.wait_for("/session/start", 1);
     assert!(
-        stub.matching("/v1/health").is_empty(),
-        "init probed the desktop, so it could have opened the deep link"
+        !stub.matching("ownership/refresh").is_empty(),
+        "a launch asks the desktop even when a usable ticket is already cached"
     );
-    assert!(stub.matching("ownership/refresh").is_empty());
+    stub.wait_for("/session/start", 1);
     await_active(&client);
+}
+
+/// The offline case, and the only one the cache answers: the desktop is up and
+/// says it cannot reach the cloud.
+#[test]
+fn an_offline_desktop_falls_back_to_the_cached_ticket() {
+    let stub = Stub::start_with(|request| {
+        if request.line.contains("/session/start") {
+            Reply {
+                status: "200 OK",
+                body: r#"{"session_id":"session-1","fps_sampling":false}"#,
+            }
+        } else if request.line.contains("ownership/refresh") {
+            Reply {
+                status: "503 Service Unavailable",
+                body: r#"{"error":"offline","message":"the cloud is unreachable"}"#,
+            }
+        } else {
+            HEALTHY
+        }
+    });
+    stub.write_drm_off_ticket("user-a");
+
+    let client = ArcaneClient::init().expect("the cached ticket answers for an offline desktop");
+
+    assert_eq!(client.ownership(), OwnershipStatus::DrmDisabled);
+    assert_eq!(client.user_id(), Some("user-a"));
+}
+
+/// `not_owned` is an answer, not a gap. A cached ticket must not paper over it.
+#[test]
+fn a_refused_refresh_is_not_rescued_by_the_cache() {
+    let stub = Stub::start_with(|request| {
+        if request.line.contains("ownership/refresh") {
+            Reply {
+                status: "403 Forbidden",
+                body: r#"{"error":"not_owned","message":"this account does not own the title"}"#,
+            }
+        } else {
+            HEALTHY
+        }
+    });
+    stub.write_drm_off_ticket("user-a");
+
+    let err = ArcaneClient::init().expect_err("the cloud said no");
+
+    assert_eq!(err.code(), "not_owned");
 }
 
 fn await_active(client: &ArcaneClient) -> arcane_sdk::SessionSnapshot {

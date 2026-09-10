@@ -6,7 +6,7 @@ keywords: ["ownership", "ArcaneClient", "drm", "game id", "portal", "session"]
 
 **Building the client is the ownership check.** `ArcaneClient::init` runs it once at launch, for the title named in `ARCANE_GAME_ID`; you do not add a second ownership step, and you pass nothing.
 
-Init prefers a local ticket cache. When the ticket is missing or expired, it contacts the Arcane desktop app on loopback (`127.0.0.1:39284`) to refresh online — and may open Arcane via the `arcane-powered://` deep link if the app is not running.
+Init asks the Arcane desktop app first, on loopback (`127.0.0.1:39284`), and opens Arcane via the `arcane-powered://` deep link if the app is not running. A launch mints a fresh ticket — that is what the launch is for. The local cache answers exactly one case: the desktop app is running and tells the SDK it cannot reach the cloud.
 
 ## Game id
 
@@ -21,15 +21,18 @@ It is **not a secret**. The id identifies a title; it proves nothing on its own.
 `ArcaneClient::init()`:
 
 1. Reads the game id from `ARCANE_GAME_ID` and validates it
-2. Reads `flags/{game_id}.json` for `drm_enabled`
-3. If `drm_enabled` is `false` → `OwnershipStatus::DrmDisabled` (no ticket required)
-4. Otherwise (flag `true` or missing) → runs the offline ownership check
-5. If the offline check fails with `ticket_missing` or `ticket_expired`:
-   - Probes the desktop health endpoint
-   - Opens `arcane-powered://sdk/ownership?game_id=…` when Arcane is not running
-   - Calls the desktop's ownership refresh
-   - Re-runs the offline check against the refreshed cache
-   - If the desktop reported DRM is off for this title and no ticket appeared, resolves to `DrmDisabled` rather than failing
+2. Probes the desktop health endpoint, opening `arcane-powered://sdk/ownership?game_id=…` when Arcane is not running
+3. Calls the desktop's ownership refresh, which mints a ticket for this account and this device
+4. Runs the offline check against what the desktop just wrote
+5. If the desktop reported DRM is off for this title and no ticket appeared, resolves to `DrmDisabled` rather than failing
+
+The **only** step that falls back to the cache is 3, and only when the desktop answers `offline` — it is running, it simply cannot reach the cloud. Then the flow becomes: read `flags/{game_id}.json`, and if DRM is on, run the offline check against the ticket the last launch left on disk. It is verified in full, exactly as a fresh one would be.
+
+Anything else the desktop says stops the launch. `not_owned` and `not_authenticated` are answers, not gaps, and a cached ticket must not paper over them; `arcane_unavailable` means the desktop app never spoke at all, which is not a state a game may start in.
+
+<Note>
+This is deliberately not cache-first. A cached ticket that still parses would otherwise outlive what it attests: an account key rotated since it was minted leaves the ticket bound to a fingerprint the machine can no longer present, and `device_mismatch` does not ask for a refresh. The player would be locked out of a title they own, with no way back that does not involve deleting a file by hand.
+</Note>
 
 Everything learned along the way — `user_id`, ticket expiry — is kept on the client, alongside the `game_id` init read from the environment. See [Client](/concepts/client).
 
@@ -39,8 +42,10 @@ Everything learned along the way — `user_id`, ticket expiry — is kept on the
 2. Rejects clock rollback vs `last_seen_wall_time`
 3. If `drm_enabled` on the ticket file is false → `DrmDisabled`
 4. Ensures the ticket string is non-empty
-5. Compares the cached `device_hash` to the local fingerprint
-6. Verifies the JWT (ES256, issuer `arcane-drm`, audience `arcane-game-sdk`)
+5. Verifies the JWT (ES256, issuer `arcane-drm`, audience `arcane-game-sdk`)
+6. Requires the `dev` claim to name a fingerprint this machine can present
+
+The ticket file's own `device_hash` field is not checked. It is unsigned, so it proves nothing the `dev` claim does not.
 
 ## Which account's ticket
 
