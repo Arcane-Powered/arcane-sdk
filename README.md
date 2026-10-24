@@ -2,6 +2,8 @@
 
 Native SDK for integrating Arcane Powered — ownership, achievements, cloud saves, friends. Rust core, multi-engine bindings.
 
+More info here: https://www.arcane-powered.com
+
 ```rust
 use arcane_sdk::ArcaneClient;
 
