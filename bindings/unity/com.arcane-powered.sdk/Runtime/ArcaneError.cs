@@ -102,6 +102,12 @@ namespace ArcanePowered
 
         /// <summary>Too many calls in a short time. Wait, then try again.</summary>
         RateLimited,
+
+        /// <summary>This player is not a member of that lobby.</summary>
+        NotInLobby,
+
+        /// <summary>The Arcane desktop app has no play session open for this game.</summary>
+        NoOpenSession,
     }
 
     /// <summary>
@@ -357,6 +363,8 @@ namespace ArcanePowered
                 case "invalid_response": return ArcaneErrorCode.InvalidResponse;
                 case "not_host": return ArcaneErrorCode.NotHost;
                 case "rate_limited": return ArcaneErrorCode.RateLimited;
+                case "not_in_lobby": return ArcaneErrorCode.NotInLobby;
+                case "no_open_session": return ArcaneErrorCode.NoOpenSession;
                 default: return ArcaneErrorCode.Unknown;
             }
         }

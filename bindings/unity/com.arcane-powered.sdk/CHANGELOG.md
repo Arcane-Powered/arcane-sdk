@@ -2,6 +2,25 @@
 
 This package tracks the version of the native SDK it wraps.
 
+## 0.13.0
+
+### Added
+
+- **Coop network.** `Arcane.Net` carries reliable and unreliable messages
+  between the members of a lobby with no port to open: the Arcane desktop app
+  connects the players directly, or through Arcane's relay when it has to.
+  `Open`, `Send`, `Receive` (allocation-free into your own buffer),
+  `TryReceive`, `Close`, and the `PeerConnected`, `QualityChanged`,
+  `PeerDisconnected`, `RelayRefused` and `Closed` events, raised every frame by
+  the runtime once the network is open. `Open(lobbyId, allowRelay: false)`
+  keeps every link direct.
+- `ArcaneErrorCode.NotInLobby` and `ArcaneErrorCode.NoOpenSession`.
+
+### Changed
+
+- Needs an Arcane desktop build with the coop network routes for `Arcane.Net`;
+  an older one answers `feature_unavailable`.
+
 ## 0.12.0
 
 ### Added

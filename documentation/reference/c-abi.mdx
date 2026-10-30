@@ -121,6 +121,18 @@ Invite one friend to a [lobby](/concepts/lobbies), leave one, or close one you h
 
 `close` ends the lobby for everyone; its members get a `lobby_closed` event. There is no host migration.
 
+### `arcane_sdk_net_open`, `arcane_sdk_net_send`, `arcane_sdk_net_close`
+
+```c
+int  arcane_sdk_net_open(const char *lobby_id, int allow_relay, char *err_buf, size_t err_len);
+int  arcane_sdk_net_send(uint16_t peer, int channel, const uint8_t *data, size_t data_len,
+                         char *err_buf, size_t err_len);
+void arcane_sdk_net_close(void);
+int  arcane_sdk_net_is_open(void);
+```
+
+The [coop network](/concepts/coop-network). `arcane_sdk_net_open` makes one loopback call; `allow_relay` is `1` or `0`. `arcane_sdk_net_send` writes to a local socket and returns: `peer` is a number from a `peer_connected` event, `ARCANE_NET_PEER_HOST` or `ARCANE_NET_PEER_ALL`; `channel` is `ARCANE_NET_RELIABLE` (at most 65535 bytes) or `ARCANE_NET_UNRELIABLE` (at most 1200). Both return `1` on a bad argument or before init, `2` on an SDK error written to `err_buf`.
+
 ## Getters
 
 ```c
@@ -230,6 +242,28 @@ if (arcane_sdk_lobby_events_json(json, sizeof(json)) > 0) {
 ```
 
 `arcane_sdk_lobby_events_json` reads memory only — the `arcane-session` thread does the polling, armed by the first lobby call — and **drains the queue only once the JSON is safely in your buffer**. A `-3` leaves every event queued, so retry with a bigger buffer and lose nothing. Event objects carry `type` first, then `lobby_id`, then the fields of that type: `invite` has `join_code`, `from_user_id`, `pseudo`; `member_joined` has `user_id`, `pseudo`, `payload`; `member_left` has `user_id`; `lobby_closed` has nothing more; `lobby_updated` has `metadata`, the whole new set. A `{"type":"resync"}` event has no `lobby_id` at all: Arcane dropped events before this client fetched them, so re-read the lobbies you are in with `arcane_sdk_lobby_get`.
+
+### Coop network
+
+```c
+uint8_t buf[65535];
+uint16_t peer;
+int channel, n;
+while ((n = arcane_sdk_net_receive(&peer, &channel, buf, sizeof(buf))) >= 0) {
+  /* n bytes from peer; n can be 0 */
+}
+```
+
+`arcane_sdk_net_receive` reads memory only: call it in a loop every frame until it answers `-4`. A `-3` keeps the message; 65535 bytes always fit.
+
+```c
+char json[8192];
+if (arcane_sdk_net_events_json(json, sizeof(json)) > 0) {
+  /* {"events":[{"type":"peer_connected","peer":3,"user_id":"…","route":"direct","is_host":false}]} */
+}
+```
+
+Types: `peer_connected` (`peer`, `user_id`, `route`, `is_host`), `quality` (`peer`, `user_id`, `route`, `rtt_ms`, `loss_pct`, `jitter_ms`, the two times `null` until measured), `peer_disconnected` (`peer`, `user_id`, `reason`), `relay_refused` (`peer`, `user_id`) and `closed` (`reason`). Drained only once the JSON is in your buffer, like the lobby events.
 
 Buffer sizing: user ids and device hashes fit comfortably in 64 bytes; allow 256 for the session JSON, 512 for `err_buf`, 1024 for the error JSON, 8 for a join code, and size the achievement, friends and lobby JSON to your title (a few hundred bytes per entry, plus your payloads at 4/3 their raw size once base64-encoded). A short buffer is never a silent truncation — you get `-3` and an empty string.
 

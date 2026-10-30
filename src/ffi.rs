@@ -31,6 +31,7 @@ use crate::achievements;
 use crate::client::ArcaneClient;
 use crate::error::{OwnershipStatus, SdkError};
 use crate::friends;
+use crate::net::{Channel, NetOptions, Peer, ReceiveInto};
 use crate::p2p::{self, LobbyOptions, LobbyQuery, Visibility};
 
 /// Action return codes.
@@ -53,6 +54,14 @@ pub const ARCANE_LOBBY_FRIENDS: c_int = 0;
 pub const ARCANE_LOBBY_CODE: c_int = 1;
 pub const ARCANE_LOBBY_FRIENDS_AND_CODE: c_int = 2;
 pub const ARCANE_LOBBY_PUBLIC: c_int = 3;
+
+/// `arcane_sdk_net_send` and `arcane_sdk_net_receive` channels.
+pub const ARCANE_NET_RELIABLE: c_int = 0;
+pub const ARCANE_NET_UNRELIABLE: c_int = 1;
+
+/// `arcane_sdk_net_send` peers besides a peer number.
+pub const ARCANE_NET_PEER_HOST: u16 = 0xFFFE;
+pub const ARCANE_NET_PEER_ALL: u16 = 0xFFFF;
 
 static CLIENT: RwLock<Option<ArcaneClient>> = RwLock::new(None);
 static LAST_ERROR: RwLock<Option<SdkError>> = RwLock::new(None);
@@ -1087,6 +1096,207 @@ pub unsafe extern "C" fn arcane_sdk_lobby_events_json(buf: *mut c_char, len: usi
             client.p2p().discard(through);
         }
         written
+    })
+}
+
+/// Open the coop network on a lobby this player already created or joined.
+///
+/// `lobby_id` is NUL-terminated UTF-8. `allow_relay` is 1 to let a link fall
+/// back to Arcane's relay when no direct path exists, 0 to keep every link
+/// direct. One synchronous loopback call, then two local connections; links to
+/// the other members come up afterwards, as `peer_connected` events. Opening
+/// again replaces the previous network.
+///
+/// Returns 0 on success, 1 on a null / non-UTF-8 argument or before init, 2 on
+/// an SDK error written to `err_buf` as `"code: message"` — `not_in_lobby`,
+/// `no_open_session`, `network_required`, `feature_unavailable`.
+///
+/// # Safety
+///
+/// `lobby_id` must be a valid NUL-terminated C string. `err_buf` must be null
+/// or point to at least `err_len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_net_open(
+    lobby_id: *const c_char,
+    allow_relay: c_int,
+    err_buf: *mut c_char,
+    err_len: usize,
+) -> c_int {
+    guard_action(err_buf, err_len, || {
+        let options = NetOptions {
+            allow_relay: allow_relay != 0,
+        };
+        lobby_action(
+            lobby_id,
+            err_buf,
+            err_len,
+            "arcane_sdk_net_open",
+            |client, id| client.net().open(id, options),
+        )
+    })
+}
+
+/// Send one message on the coop network.
+///
+/// `peer` is a peer number from a `peer_connected` event,
+/// `ARCANE_NET_PEER_HOST` or `ARCANE_NET_PEER_ALL` (the host only). `channel`
+/// is `ARCANE_NET_RELIABLE` (at most 65535 bytes) or `ARCANE_NET_UNRELIABLE`
+/// (at most 1200 bytes). Writes to a local socket and returns; it never waits
+/// on the other player.
+///
+/// Returns 0 on success, 1 on a bad argument or before init, 2 on an SDK error
+/// written to `err_buf` — `lobby_closed` when the network is not open.
+///
+/// # Safety
+///
+/// `data` must be null with `data_len` 0, or point to `data_len` readable
+/// bytes. `err_buf` must be null or point to at least `err_len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_net_send(
+    peer: u16,
+    channel: c_int,
+    data: *const u8,
+    data_len: usize,
+    err_buf: *mut c_char,
+    err_len: usize,
+) -> c_int {
+    guard_action(err_buf, err_len, || {
+        let channel = match channel {
+            ARCANE_NET_RELIABLE => Channel::Reliable,
+            ARCANE_NET_UNRELIABLE => Channel::Unreliable,
+            _ => return ARCANE_ERR_ARGUMENT,
+        };
+        let bytes: &[u8] = match (data.is_null(), data_len) {
+            (_, 0) => &[],
+            (true, _) => return ARCANE_ERR_ARGUMENT,
+            (false, len) => std::slice::from_raw_parts(data, len),
+        };
+        let peer = match peer {
+            ARCANE_NET_PEER_HOST => Peer::Host,
+            ARCANE_NET_PEER_ALL => Peer::All,
+            index => Peer::Index(index),
+        };
+        let client = match lobby_client("arcane_sdk_net_send") {
+            Ok(client) => client,
+            Err(err) => {
+                write_err(&err, err_buf, err_len);
+                return ARCANE_ERR_ARGUMENT;
+            }
+        };
+        match client.net().send(peer, channel, bytes) {
+            Ok(()) => ARCANE_OK,
+            Err(err) => {
+                write_err(&err, err_buf, err_len);
+                ARCANE_ERR_SDK
+            }
+        }
+    })
+}
+
+/// Take the next received message into `buf`.
+///
+/// Reads memory only — call it in a loop every frame until it answers `-4`.
+/// Writes the sender's peer number into `peer_out` and its channel into
+/// `channel_out` (either may be null), and returns the message length, which
+/// can be 0. Returns `-1` before init, `-2` on a null `buf` with a non-zero
+/// `len`, `-3` when the next message is longer than `len` (it is kept; 65535
+/// bytes always fit), `-4` when nothing is waiting.
+///
+/// # Safety
+///
+/// `buf` must point to at least `len` writable bytes (or be null with `len`
+/// 0). `peer_out` and `channel_out` must be null or valid for one write.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_net_receive(
+    peer_out: *mut u16,
+    channel_out: *mut c_int,
+    buf: *mut u8,
+    len: usize,
+) -> c_int {
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        if buf.is_null() && len != 0 {
+            return ARCANE_ERR_BAD_BUFFER;
+        }
+        let client = match lobby_client("arcane_sdk_net_receive") {
+            Ok(client) => client,
+            Err(err) => {
+                store_error(&err);
+                return ARCANE_ERR_NOT_INITIALIZED;
+            }
+        };
+        let target: &mut [u8] = if len == 0 {
+            &mut []
+        } else {
+            std::slice::from_raw_parts_mut(buf, len)
+        };
+        match client.net().receive_into(target) {
+            ReceiveInto::Empty => ARCANE_ERR_UNAVAILABLE,
+            ReceiveInto::TooSmall => ARCANE_ERR_BUFFER_TOO_SMALL,
+            ReceiveInto::Received { peer, channel, len } => {
+                if !peer_out.is_null() {
+                    *peer_out = peer;
+                }
+                if !channel_out.is_null() {
+                    *channel_out = match channel {
+                        Channel::Reliable => ARCANE_NET_RELIABLE,
+                        Channel::Unreliable => ARCANE_NET_UNRELIABLE,
+                    };
+                }
+                len as c_int
+            }
+        }
+    })
+}
+
+/// Write the coop network events collected since the last call as JSON into
+/// `buf`, and drop them: `{"events":[{"type":"peer_connected|quality|
+/// peer_disconnected|relay_refused|closed",…}]}`.
+///
+/// `peer_connected` carries `peer`, `user_id`, `route` (`direct` | `relayed`)
+/// and `is_host`; `quality` carries `peer`, `user_id`, `route`, `rtt_ms`,
+/// `loss_pct` and `jitter_ms` (`null` until measured); `peer_disconnected`
+/// carries `peer`, `user_id` and `reason`; `relay_refused` carries `peer` and
+/// `user_id`; `closed` carries `reason`. Reads memory only. On `-3` every event
+/// is kept so you can retry with a larger buffer.
+///
+/// # Safety
+///
+/// `buf` must be null or point to at least `len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_net_events_json(buf: *mut c_char, len: usize) -> c_int {
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        let client = match lobby_client("arcane_sdk_net_events_json") {
+            Ok(client) => client,
+            Err(err) => {
+                store_error(&err);
+                return ARCANE_ERR_NOT_INITIALIZED;
+            }
+        };
+        let (rendered, count) = client.net().events_json();
+        let written = write_str(&rendered, buf, len);
+        if written >= 0 {
+            client.net().discard_events(count);
+        }
+        written
+    })
+}
+
+/// Close the coop network for this player. Messages not yet received are
+/// discarded. Best effort, one loopback call; does nothing before init.
+#[no_mangle]
+pub extern "C" fn arcane_sdk_net_close() {
+    guard((), || {
+        if let Some(client) = client_snapshot() {
+            client.net().close();
+        }
+    })
+}
+
+/// Whether the coop network is open and attached. Returns 1 or 0.
+#[no_mangle]
+pub extern "C" fn arcane_sdk_net_is_open() -> c_int {
+    guard(0, || {
+        client_snapshot().map_or(0, |client| c_int::from(client.net().is_open()))
     })
 }
 

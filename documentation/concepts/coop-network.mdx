@@ -1,0 +1,123 @@
+---
+title: "Coop network"
+description: "Send reliable and unreliable messages between the players of a lobby, with no port to open."
+keywords: ["network", "coop", "multiplayer", "webrtc", "relay", "turn", "nat", "reliable", "unreliable", "latency"]
+---
+
+The coop network carries your game's own messages between the members of a [lobby](/concepts/lobbies). Nobody opens a port. The Arcane desktop app connects the players directly when it can, and through Arcane's relay when a direct path does not exist. Your game reads and writes local sockets and never sees an address.
+
+```rust
+use arcane_sdk::{Channel, NetEvent, NetOptions, Peer};
+
+let lobby = client.p2p().create_lobby(4, arcane_sdk::Visibility::FriendsAndCode, b"")?;
+client.net().open(&lobby.lobby_id, NetOptions::default())?;
+
+client.net().send(Peer::All, Channel::Reliable, b"round 1")?;
+
+while let Some(message) = client.net().receive() {
+    handle(message.peer, &message.data);
+}
+for event in client.net().poll_events() {
+    if let NetEvent::PeerConnected { peer, user_id, .. } = event {
+        greet(peer, &user_id);
+    }
+}
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+## Host and members
+
+The network is a star around the lobby host. The host's game reaches every member; a member's game reaches the host only.
+
+| From | To | `Peer` |
+|------|----|--------|
+| Member | The host | `Peer::Host` |
+| Host | One member | `Peer::Index(n)`, the number from `PeerConnected` |
+| Host | Every member | `Peer::All` |
+
+A member's `Peer::All` reaches the host alone. To relay a member's message to the others, have the host send it on. There is no host migration: when the host leaves, the lobby and the network close.
+
+## Two channels
+
+| Channel | Delivery | Largest message | Use it for |
+|---------|----------|-----------------|------------|
+| `Reliable` | Ordered, retransmitted until it arrives | 65,535 bytes | Chat, inventory, match results |
+| `Unreliable` | Unordered, a lost message stays lost | 1,200 bytes | Positions, inputs, anything the next message replaces |
+
+A larger message is refused with `invalid_argument` before it leaves your game.
+
+## Events
+
+`poll_events()` reads memory only. Call it every frame.
+
+| Event | When |
+|-------|------|
+| `PeerConnected { peer, user_id, route, is_host }` | A link is up. Keep `peer`: it is the number to send to |
+| `Quality { peer, route, rtt_ms, loss_pct, jitter_ms, .. }` | The route changed, the round trip moved by more than 20 %, or loss crossed 2 % or 10 % |
+| `PeerDisconnected { peer, user_id, reason }` | The player left, the lobby closed, or every attempt to connect failed |
+| `RelayRefused { peer, user_id }` | No direct path, and the relay is refused on one side |
+| `Closed { reason }` | The network ended. Open it again to reconnect |
+
+`route` is `Direct` or `Relayed`. A relayed link adds the relay's round trip, so show it to the player when latency matters.
+
+## Refusing the relay
+
+Some players do not want their traffic to go through a relay. Open with `allow_relay: false`:
+
+```rust
+client.net().open(&lobby_id, NetOptions { allow_relay: false })?;
+# let lobby_id = String::new();
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+A pair of players that cannot connect directly then gets `RelayRefused` instead of a link. Either side refusing is enough.
+
+## Receiving
+
+`receive()` reads memory only. Drain it every frame. Past 64 MiB waiting, new unreliable messages are dropped, and a reliable one closes the network with the reason `receive_overflow`.
+
+<Warning>
+  `open()` and `close()` make one loopback round trip to the Arcane desktop app. Call them when a match starts and ends, never per frame. `send()`, `receive()` and `poll_events()` never wait on the network.
+</Warning>
+
+## Errors
+
+| Code | When |
+|------|------|
+| `invalid_argument` | A malformed lobby id, or a message too large for its channel |
+| `not_in_lobby` | This player has not created or joined that lobby |
+| `no_open_session` | The desktop app has no play session for your game. Let `init` finish first |
+| `lobby_not_found`, `lobby_closed` | The lobby ended. `send()` also answers `lobby_closed` when the network is not open |
+| `network_required` | The desktop app is offline, or `ARCANE_OFFLINE_ONLY` is set |
+| `feature_unavailable` | The Arcane desktop app predates the coop network. Update it |
+| `arcane_unavailable` | The desktop app is not running, or a local socket failed |
+
+Full table and what to do about each: [Errors](/concepts/errors).
+
+## In C
+
+```c
+char err[512];
+if (arcane_sdk_net_open(lobby_id, 1, err, sizeof(err)) != ARCANE_OK) { /* err */ }
+
+arcane_sdk_net_send(ARCANE_NET_PEER_HOST, ARCANE_NET_UNRELIABLE, data, len, err, sizeof(err));
+
+uint8_t buf[65535];
+uint16_t peer;
+int channel;
+int n;
+while ((n = arcane_sdk_net_receive(&peer, &channel, buf, sizeof(buf))) >= 0) {
+  /* n bytes from peer, on channel */
+}
+
+char events[8192];
+arcane_sdk_net_events_json(events, sizeof(events));
+```
+
+Details: [C ABI](/reference/c-abi).
+
+## Next steps
+
+- [Lobbies](/concepts/lobbies) — create, join and invite before you open the network
+- [Errors](/concepts/errors) — every code, and its fix
+- [Rust API](/reference/rust-api) · [C ABI](/reference/c-abi)

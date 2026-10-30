@@ -2341,3 +2341,270 @@ fn a_refused_launch_token_reads_as_arcane_unavailable() {
     let err = client.p2p().get_lobby("lobby-1").expect_err("refused");
     assert_eq!(err.code(), "arcane_unavailable");
 }
+
+const NET_KEY_HEX: &str = "00112233445566778899aabbccddeeff";
+
+fn net_frame(kind: u8, peer: u16, data: &[u8]) -> Vec<u8> {
+    let mut out = vec![1, kind];
+    out.extend_from_slice(&peer.to_be_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    out.extend_from_slice(data);
+    out
+}
+
+fn read_net_frame(stream: &mut TcpStream) -> (u8, u16, Vec<u8>) {
+    let mut header = [0u8; 8];
+    stream.read_exact(&mut header).expect("frame header");
+    assert_eq!(header[0], 1, "frame version");
+    let len = u32::from_be_bytes([header[4], header[5], header[6], header[7]]) as usize;
+    let mut data = vec![0u8; len];
+    stream.read_exact(&mut data).expect("frame body");
+    (header[1], u16::from_be_bytes([header[2], header[3]]), data)
+}
+
+struct FakeNet {
+    tcp: TcpListener,
+    udp: std::net::UdpSocket,
+}
+
+impl FakeNet {
+    fn bind() -> Self {
+        let udp = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind udp");
+        udp.set_read_timeout(Some(WAIT_TIMEOUT)).expect("udp timeout");
+        Self {
+            tcp: TcpListener::bind("127.0.0.1:0").expect("bind tcp"),
+            udp,
+        }
+    }
+
+    fn opened(&self) -> Reply {
+        let body = format!(
+            r#"{{"udp_port":{},"tcp_port":{},"session_key":"{NET_KEY_HEX}"}}"#,
+            self.udp.local_addr().expect("udp addr").port(),
+            self.tcp.local_addr().expect("tcp addr").port(),
+        );
+        Reply {
+            status: "200 OK",
+            body: Box::leak(body.into_boxed_str()),
+        }
+    }
+}
+
+fn net_stub(open: Reply) -> Stub {
+    Stub::start_with(move |request| {
+        if request.line.contains("/v1/health") {
+            HEALTHY
+        } else if request.line.contains("/net/open") {
+            open
+        } else if request.line.contains("/net/close") {
+            Reply {
+                status: "200 OK",
+                body: r#"{"ok":true}"#,
+            }
+        } else {
+            DRM_OFF
+        }
+    })
+}
+
+fn wait_for_message(client: &ArcaneClient) -> arcane_sdk::NetMessage {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        if let Some(message) = client.net().receive() {
+            return message;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for a message");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn wait_for_net_event(client: &ArcaneClient) -> arcane_sdk::NetEvent {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        if let Some(event) = client.net().poll_events().into_iter().next() {
+            return event;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for a net event");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn the_coop_network_attaches_and_carries_both_channels() {
+    use arcane_sdk::{Channel, NetEvent, NetOptions, Peer, Route};
+
+    let fake = FakeNet::bind();
+    let stub = net_stub(fake.opened());
+    let client = ArcaneClient::init().expect("init");
+
+    client
+        .net()
+        .open("lobby-1", NetOptions { allow_relay: false })
+        .expect("open");
+    assert!(client.net().is_open());
+
+    let opened = stub.matching("/net/open");
+    assert_eq!(opened.len(), 1);
+    assert!(opened[0]
+        .line
+        .starts_with("POST /v1/games/7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34/net/open "));
+    assert_eq!(opened[0].json()["lobby_id"], "lobby-1");
+    assert_eq!(opened[0].json()["allow_relay"], false);
+
+    let (mut tcp, _) = fake.tcp.accept().expect("accept");
+    let (kind, _, key) = read_net_frame(&mut tcp);
+    assert_eq!(kind, 1);
+    assert_eq!(hex_of(&key), NET_KEY_HEX);
+
+    let mut datagram = [0u8; 2048];
+    let (len, game_udp) = fake.udp.recv_from(&mut datagram).expect("udp hello");
+    assert_eq!(&datagram[..len], &net_frame(1, 0, &key)[..]);
+
+    tcp.write_all(&net_frame(
+        17,
+        3,
+        br#"{"user_id":"user-b","route":"relayed","is_host":true}"#,
+    ))
+    .expect("peer connected");
+    tcp.write_all(&net_frame(16, 3, b"hello reliable"))
+        .expect("reliable message");
+    fake.udp
+        .send_to(&net_frame(16, 3, b"pos 1 2"), game_udp)
+        .expect("unreliable message");
+
+    assert_eq!(
+        wait_for_net_event(&client),
+        NetEvent::PeerConnected {
+            peer: 3,
+            user_id: "user-b".into(),
+            route: Route::Relayed,
+            is_host: true,
+        }
+    );
+    let mut received = [wait_for_message(&client), wait_for_message(&client)];
+    received.sort_by_key(|message| message.channel == Channel::Unreliable);
+    assert_eq!(received[0].peer, 3);
+    assert_eq!(received[0].channel, Channel::Reliable);
+    assert_eq!(received[0].data, b"hello reliable");
+    assert_eq!(received[1].channel, Channel::Unreliable);
+    assert_eq!(received[1].data, b"pos 1 2");
+
+    client
+        .net()
+        .send(Peer::Host, Channel::Reliable, b"ready")
+        .expect("send reliable");
+    let (kind, peer, data) = read_net_frame(&mut tcp);
+    assert_eq!((kind, peer, data.as_slice()), (2, 0xFFFE, &b"ready"[..]));
+
+    client
+        .net()
+        .send(Peer::Index(3), Channel::Unreliable, b"input")
+        .expect("send unreliable");
+    loop {
+        let (len, _) = fake.udp.recv_from(&mut datagram).expect("udp send");
+        if datagram[1] == 2 {
+            assert_eq!(&datagram[..len], &net_frame(2, 3, b"input")[..]);
+            break;
+        }
+    }
+
+    drop(tcp);
+    assert_eq!(
+        wait_for_net_event(&client),
+        NetEvent::Closed {
+            reason: "desktop_closed".into()
+        }
+    );
+    assert!(!client.net().is_open());
+    let err = client
+        .net()
+        .send(Peer::Host, Channel::Reliable, b"late")
+        .expect_err("closed");
+    assert_eq!(err.code(), "lobby_closed");
+}
+
+fn hex_of(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[test]
+fn an_oversized_message_is_refused_before_it_leaves_the_game() {
+    use arcane_sdk::{Channel, Peer, MAX_UNRELIABLE_MESSAGE};
+
+    let _stub = net_stub(DRM_OFF);
+    let client = ArcaneClient::init().expect("init");
+
+    let err = client
+        .net()
+        .send(Peer::Host, Channel::Unreliable, &vec![0u8; MAX_UNRELIABLE_MESSAGE + 1])
+        .expect_err("too large");
+    assert_eq!(err.code(), "invalid_argument");
+    assert!(client.net().receive().is_none());
+    assert!(client.net().poll_events().is_empty());
+}
+
+#[test]
+fn the_net_error_codes_map_from_their_desktop_bodies() {
+    use arcane_sdk::NetOptions;
+
+    for (status, body, code) in [
+        ("403 Forbidden", r#"{"error":"not_in_lobby","message":"no"}"#, "not_in_lobby"),
+        ("409 Conflict", r#"{"error":"no_open_session","message":"no"}"#, "no_open_session"),
+        ("502 Bad Gateway", r#"{"error":"offline","message":"no"}"#, "network_required"),
+        ("401 Unauthorized", r#"{"error":"sdk_token_required","message":"no"}"#, "arcane_unavailable"),
+    ] {
+        let _stub = net_stub(Reply { status, body });
+        let client = ArcaneClient::init().expect("init");
+        let err = client
+            .net()
+            .open("lobby-1", NetOptions::default())
+            .expect_err("refused");
+        assert_eq!(err.code(), code, "{body}");
+    }
+}
+
+#[test]
+fn closing_a_network_that_was_never_opened_makes_no_request() {
+    let stub = net_stub(DRM_OFF);
+    let client = ArcaneClient::init().expect("init");
+
+    client.net().close();
+
+    assert!(stub.matching("/net/").is_empty());
+}
+
+#[test]
+fn the_c_abi_reports_an_empty_receive_queue_and_no_events() {
+    let _stub = net_stub(DRM_OFF);
+    let mut err = [0 as c_char; 512];
+    let rc = unsafe { ffi::arcane_sdk_init(err.as_mut_ptr(), err.len()) };
+    assert_eq!(rc, ffi::ARCANE_OK, "{}", read_c_string(&err));
+
+    let mut peer = 0u16;
+    let mut channel: c_int = -1;
+    let mut buf = [0u8; 16];
+    let rc = unsafe {
+        ffi::arcane_sdk_net_receive(&mut peer, &mut channel, buf.as_mut_ptr(), buf.len())
+    };
+    assert_eq!(rc, ffi::ARCANE_ERR_UNAVAILABLE);
+    assert_eq!(ffi::arcane_sdk_net_is_open(), 0);
+
+    let mut json = [0 as c_char; 64];
+    let written = unsafe { ffi::arcane_sdk_net_events_json(json.as_mut_ptr(), json.len()) };
+    assert!(written > 0);
+    assert_eq!(read_c_string(&json), r#"{"events":[]}"#);
+
+    let rc = unsafe {
+        ffi::arcane_sdk_net_send(
+            ffi::ARCANE_NET_PEER_HOST,
+            7,
+            std::ptr::null(),
+            0,
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    assert_eq!(rc, ffi::ARCANE_ERR_ARGUMENT);
+
+    ffi::arcane_sdk_shutdown();
+}

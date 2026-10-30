@@ -45,6 +45,11 @@ pub enum ErrorCode {
     NotFriends,
     /// Only the lobby's host may do this — change its metadata or close it.
     NotHost,
+    /// The coop network was asked for a lobby this player is not a member of.
+    NotInLobby,
+    /// The Arcane desktop app has no play session open for this game, so it
+    /// will not open the coop network.
+    NoOpenSession,
     /// Arcane refused the call because this player made too many of them;
     /// wait and try again.
     RateLimited,
@@ -85,6 +90,8 @@ impl ErrorCode {
             Self::LobbyClosed => "lobby_closed",
             Self::NotFriends => "not_friends",
             Self::NotHost => "not_host",
+            Self::NotInLobby => "not_in_lobby",
+            Self::NoOpenSession => "no_open_session",
             Self::RateLimited => "rate_limited",
             Self::MissingGameId => "missing_game_id",
             Self::InvalidGameId => "invalid_game_id",
@@ -196,6 +203,7 @@ impl SdkError {
                 | ErrorCode::NotAuthenticated
                 | ErrorCode::ArcaneUnavailable
                 | ErrorCode::RateLimited
+                | ErrorCode::NoOpenSession
         )
     }
 
@@ -296,6 +304,14 @@ impl SdkError {
 
     pub(crate) fn not_host(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::NotHost, message)
+    }
+
+    pub(crate) fn not_in_lobby(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::NotInLobby, message)
+    }
+
+    pub(crate) fn no_open_session(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::NoOpenSession, message)
     }
 
     pub(crate) fn rate_limited(message: impl Into<String>) -> Self {

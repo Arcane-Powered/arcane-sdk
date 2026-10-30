@@ -58,6 +58,16 @@
 
 #define ARCANE_LOBBY_PUBLIC 3
 
+// `arcane_sdk_net_send` and `arcane_sdk_net_receive` channels.
+#define ARCANE_NET_RELIABLE 0
+
+#define ARCANE_NET_UNRELIABLE 1
+
+// `arcane_sdk_net_send` peers besides a peer number.
+#define ARCANE_NET_PEER_HOST 65534
+
+#define ARCANE_NET_PEER_ALL 65535
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -356,6 +366,85 @@ int arcane_sdk_lobby_set_metadata(const char *lobby_id,
                                   const char *metadata_json,
                                   char *buf,
                                   size_t len);
+
+// Close the coop network for this player. Messages not yet received are
+// discarded. Best effort, one loopback call; does nothing before init.
+void arcane_sdk_net_close(void);
+
+// Write the coop network events collected since the last call as JSON into
+// `buf`, and drop them: `{"events":[{"type":"peer_connected|quality|
+// peer_disconnected|relay_refused|closed",…}]}`.
+//
+// `peer_connected` carries `peer`, `user_id`, `route` (`direct` | `relayed`)
+// and `is_host`; `quality` carries `peer`, `user_id`, `route`, `rtt_ms`,
+// `loss_pct` and `jitter_ms` (`null` until measured); `peer_disconnected`
+// carries `peer`, `user_id` and `reason`; `relay_refused` carries `peer` and
+// `user_id`; `closed` carries `reason`. Reads memory only. On `-3` every event
+// is kept so you can retry with a larger buffer.
+//
+// # Safety
+//
+// `buf` must be null or point to at least `len` writable bytes.
+int arcane_sdk_net_events_json(char *buf, size_t len);
+
+// Whether the coop network is open and attached. Returns 1 or 0.
+int arcane_sdk_net_is_open(void);
+
+// Open the coop network on a lobby this player already created or joined.
+//
+// `lobby_id` is NUL-terminated UTF-8. `allow_relay` is 1 to let a link fall
+// back to Arcane's relay when no direct path exists, 0 to keep every link
+// direct. One synchronous loopback call, then two local connections; links to
+// the other members come up afterwards, as `peer_connected` events. Opening
+// again replaces the previous network.
+//
+// Returns 0 on success, 1 on a null / non-UTF-8 argument or before init, 2 on
+// an SDK error written to `err_buf` as `"code: message"` — `not_in_lobby`,
+// `no_open_session`, `network_required`, `feature_unavailable`.
+//
+// # Safety
+//
+// `lobby_id` must be a valid NUL-terminated C string. `err_buf` must be null
+// or point to at least `err_len` writable bytes.
+int arcane_sdk_net_open(const char *lobby_id, int allow_relay, char *err_buf, size_t err_len);
+
+// Take the next received message into `buf`.
+//
+// Reads memory only — call it in a loop every frame until it answers `-4`.
+// Writes the sender's peer number into `peer_out` and its channel into
+// `channel_out` (either may be null), and returns the message length, which
+// can be 0. Returns `-1` before init, `-2` on a null `buf` with a non-zero
+// `len`, `-3` when the next message is longer than `len` (it is kept; 65535
+// bytes always fit), `-4` when nothing is waiting.
+//
+// # Safety
+//
+// `buf` must point to at least `len` writable bytes (or be null with `len`
+// 0). `peer_out` and `channel_out` must be null or valid for one write.
+int arcane_sdk_net_receive(uint16_t *peer_out, int *channel_out, uint8_t *buf, size_t len);
+
+// Send one message on the coop network.
+//
+// `peer` is a peer number from a `peer_connected` event,
+// `ARCANE_NET_PEER_HOST` or `ARCANE_NET_PEER_ALL` (the host only). `channel`
+// is `ARCANE_NET_RELIABLE` (at most 65535 bytes) or `ARCANE_NET_UNRELIABLE`
+// (at most 1200 bytes). Writes to a local socket and returns; it never waits
+// on the other player.
+//
+// Returns 0 on success, 1 on a bad argument or before init, 2 on an SDK error
+// written to `err_buf` — `lobby_closed` when the network is not open.
+//
+// # Safety
+//
+// `data` must be null with `data_len` 0, or point to `data_len` readable
+// bytes. `err_buf` must be null or point to at least `err_len` writable bytes.
+
+int arcane_sdk_net_send(uint16_t peer,
+                        int channel,
+                        const uint8_t *data,
+                        size_t data_len,
+                        char *err_buf,
+                        size_t err_len);
 
 // Ownership as of the last check.
 //

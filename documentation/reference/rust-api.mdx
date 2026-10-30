@@ -136,6 +136,15 @@ let lobby = client.p2p().create_lobby(4, Visibility::FriendsAndCode, my_endpoint
 
 Borrows a `P2p<'_>` accessor. **This is the one accessor with a side effect:** the first call arms lobby event polling on the `arcane-session` thread. A game that never calls `p2p()` never polls. See [Lobbies](/concepts/lobbies).
 
+### `net`
+
+```rust
+client.net().open(&lobby_id, NetOptions::default())?;
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+Borrows a `Net<'_>` accessor for the [coop network](/concepts/coop-network). Nothing runs until `open`.
+
 ## `Achievements`
 
 ```rust
@@ -226,7 +235,7 @@ impl P2p<'_> {
 }
 ```
 
-Arcane hosts the lobby, the join code and the invitations, and carries one opaque `payload` per member. There is **no transport**: your game connects with its own netcode. See [Lobbies](/concepts/lobbies).
+Arcane hosts the lobby, the join code and the invitations, and carries one opaque `payload` per member. Your game connects with its own netcode, or with [`net()`](#net). See [Lobbies](/concepts/lobbies).
 
 Every call but `poll_events` and a cached `launch_join_code` is **synchronous** — one loopback round trip on the calling thread. Never per frame.
 
@@ -297,6 +306,41 @@ for event in client.p2p().poll_events() {
 ```
 
 `client.session().lobby_events` says whether the polling behind it is `Off`, `Active`, or `Unavailable` because the desktop app predates the routes.
+
+## `Net`
+
+The coop network between the members of a lobby. The desktop app runs the links; your game reads and writes local sockets. See [Coop network](/concepts/coop-network).
+
+### `open`
+
+```rust
+client.net().open(&lobby.lobby_id, NetOptions { allow_relay: true })?;
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+One loopback round trip, then two local connections. Returns once your game is attached; each link is announced later by `NetEvent::PeerConnected`. Opening again replaces the previous network. `allow_relay: false` keeps every link direct.
+
+### `send`
+
+```rust
+client.net().send(Peer::Host, Channel::Unreliable, &position)?;
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+Writes to a local socket and returns. `Peer::Host`, `Peer::All` (host only) or `Peer::Index(n)`. `Channel::Reliable` takes up to `MAX_RELIABLE_MESSAGE` (65,535) bytes, `Channel::Unreliable` up to `MAX_UNRELIABLE_MESSAGE` (1,200).
+
+### `receive`, `poll_events`
+
+```rust
+while let Some(NetMessage { peer, channel, data }) = client.net().receive() { /* … */ }
+for event in client.net().poll_events() { /* NetEvent */ }
+```
+
+Memory only. Call both every frame.
+
+### `is_open`, `close`
+
+`is_open()` reads memory. `close()` drops every link for this player: one loopback round trip of at most 2 seconds, and nothing when the network was never opened. `shutdown` closes it too.
 
 ## `SdkError`
 

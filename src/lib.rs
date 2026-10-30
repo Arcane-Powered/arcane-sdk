@@ -44,9 +44,9 @@
 //! # Ok::<(), arcane_sdk::SdkError>(())
 //! ```
 //!
-//! P2P lobbies are the last opt-in surface: Arcane hosts the lobby, the join
+//! P2P lobbies are another opt-in surface: Arcane hosts the lobby, the join
 //! code and the invitations, and carries each member's opaque connection blob.
-//! The game keeps its own netcode — there is no relay and no transport here.
+//! The game keeps its own netcode, or uses the coop network below.
 //!
 //! ```no_run
 //! # use arcane_sdk::Visibility;
@@ -54,6 +54,19 @@
 //! # let my_endpoint = b"udp://203.0.113.7:7777";
 //! let lobby = client.p2p().create_lobby(4, Visibility::FriendsAndCode, my_endpoint)?;
 //! for event in client.p2p().poll_events() { /* … */ }
+//! # Ok::<(), arcane_sdk::SdkError>(())
+//! ```
+//!
+//! The coop network carries the game's own messages between the members of a
+//! lobby, with no port to open: the Arcane desktop app connects the players
+//! directly, or through Arcane's relay when it has to.
+//!
+//! ```no_run
+//! # use arcane_sdk::{Channel, NetOptions, Peer};
+//! # let client = arcane_sdk::ArcaneClient::init()?;
+//! # let lobby_id = "3f2b9c1e-0d4a-4e7b-9a61-5c8e2f7d1b40";
+//! client.net().open(lobby_id, NetOptions::default())?;
+//! client.net().send(Peer::Host, Channel::Reliable, b"ready")?;
 //! # Ok::<(), arcane_sdk::SdkError>(())
 //! ```
 //!
@@ -67,6 +80,7 @@ mod desktop;
 mod device;
 mod error;
 mod friends;
+mod net;
 mod p2p;
 mod paths;
 mod session;
@@ -76,6 +90,9 @@ pub use achievements::{Achievement, Achievements, Unlock, MAX_ACHIEVEMENT_KEY_LE
 pub use client::{ArcaneClient, MAX_GAME_ID_LEN};
 pub use error::{ErrorCode, OwnershipStatus, SdkError};
 pub use friends::{Friend, FriendList, Friends};
+pub use net::{
+    Channel, Net, NetEvent, NetMessage, NetOptions, Peer, Route, MAX_RELIABLE_MESSAGE, MAX_UNRELIABLE_MESSAGE,
+};
 pub use p2p::{
     Lobby, LobbyEvent, LobbyMember, LobbyOptions, LobbyPollingState, LobbyQuery, LobbySummary, P2p,
     Visibility, JOIN_CODE_LEN, MAX_LOBBY_METADATA_BYTES, MAX_LOBBY_METADATA_KEY_LEN, MAX_LOBBY_METADATA_PAIRS,

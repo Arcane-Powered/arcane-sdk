@@ -126,6 +126,7 @@ namespace ArcanePowered
             }
 
             Arcane.DrainMainThreadWork();
+            Arcane.Net.PumpEvents();
 
             _sinceLastPoll += Time.unscaledDeltaTime;
             if (_sinceLastPoll < settings.LobbyPollInterval)

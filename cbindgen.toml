@@ -26,6 +26,10 @@ include = [
   "ARCANE_LOBBY_FRIENDS",
   "ARCANE_LOBBY_CODE",
   "ARCANE_LOBBY_FRIENDS_AND_CODE",
+  "ARCANE_NET_RELIABLE",
+  "ARCANE_NET_UNRELIABLE",
+  "ARCANE_NET_PEER_HOST",
+  "ARCANE_NET_PEER_ALL",
   "arcane_sdk_init",
   "arcane_sdk_refresh",
   "arcane_sdk_shutdown",
@@ -45,6 +49,12 @@ include = [
   "arcane_sdk_lobby_close",
   "arcane_sdk_launch_join_code",
   "arcane_sdk_lobby_events_json",
+  "arcane_sdk_net_open",
+  "arcane_sdk_net_send",
+  "arcane_sdk_net_receive",
+  "arcane_sdk_net_events_json",
+  "arcane_sdk_net_close",
+  "arcane_sdk_net_is_open",
   "arcane_sdk_is_initialized",
   "arcane_sdk_ownership",
   "arcane_sdk_ticket_expires_at",
@@ -61,6 +71,8 @@ exclude = [
   "MAX_ACHIEVEMENT_KEY_LEN",
   "MAX_LOBBY_PAYLOAD_LEN",
   "JOIN_CODE_LEN",
+  "MAX_RELIABLE_MESSAGE",
+  "MAX_UNRELIABLE_MESSAGE",
 ]
 
 [fn]
