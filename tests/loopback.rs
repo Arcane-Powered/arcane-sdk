@@ -2302,8 +2302,8 @@ fn every_call_carries_the_launch_token_and_bodyless_posts_are_json() {
     client.p2p().get_lobby("lobby-1").expect("get");
     client.p2p().leave("lobby-1").expect("leave");
 
-    let requests = stub.requests();
-    assert!(!requests.is_empty());
+    let requests = stub.matching("/lobbies/lobby-1");
+    assert_eq!(requests.len(), 2);
     for request in &requests {
         assert!(
             request
