@@ -806,7 +806,7 @@ namespace ArcanePowered
             lobby = null;
 
             ArcaneJson root;
-            if (!ArcaneCall.ReadJson(getter, ArcaneBuffer.ListBufferSize, out root, out error))
+            if (!ArcaneCall.ReadJson(getter, ArcaneBuffer.LobbyBufferSize, out root, out error))
             {
                 return false;
             }
@@ -844,7 +844,7 @@ namespace ArcanePowered
 
             foreach (var pair in metadata)
             {
-                if (!IsMetadataKey(pair.Key) || pair.Value == null || pair.Value.Length > 128)
+                if (!IsMetadataKey(pair.Key) || pair.Value == null || CodePoints(pair.Value) > 128)
                 {
                     error = ArcaneError.Argument(
                         "The lobby metadata pair \"" + pair.Key + "\" is malformed.",
@@ -854,6 +854,20 @@ namespace ArcanePowered
             }
 
             return true;
+        }
+
+        private static int CodePoints(string value)
+        {
+            int count = 0;
+            for (int i = 0; i < value.Length; i++)
+            {
+                if (!char.IsLowSurrogate(value[i]))
+                {
+                    count++;
+                }
+            }
+
+            return count;
         }
 
         private static bool IsMetadataKey(string key)

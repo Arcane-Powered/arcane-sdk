@@ -169,7 +169,7 @@ jobs:
             folder: macOS
             targets: aarch64-apple-darwin x86_64-apple-darwin
             artifact: libarcane_sdk.dylib
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             folder: Linux/x86_64
             targets: x86_64-unknown-linux-gnu
             artifact: libarcane_sdk.so
@@ -226,4 +226,4 @@ jobs:
         run: |
           set -euo pipefail
           (cd out && zip -r ../arcane-sdk-unity-plugins.zip Assets)
-          gh release upload "$TAG" arcane-sdk-unity-plugins.zip --repo "${{ github.repository }}"
+          gh release upload "$TAG" arcane-sdk-unity-plugins.zip --clobber --repo "${{ github.repository }}"
