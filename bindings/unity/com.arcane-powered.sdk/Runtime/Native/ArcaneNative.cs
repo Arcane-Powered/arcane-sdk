@@ -114,6 +114,9 @@ namespace ArcanePowered.Native
         [DllImport(Lib, CallingConvention = Cdecl)]
         internal static extern int arcane_sdk_friends_json(byte[] buf, UIntPtr len);
 
+        [DllImport(Lib, CallingConvention = Cdecl)]
+        internal static extern int arcane_sdk_friend_request(byte[] user_id, byte[] err_buf, UIntPtr err_len);
+
         // --- Lobbies -------------------------------------------------------
 
         [DllImport(Lib, CallingConvention = Cdecl)]

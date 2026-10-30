@@ -135,6 +135,7 @@ int  arcane_sdk_device_hash(char *buf, size_t len);
 int  arcane_sdk_session_json(char *buf, size_t len);
 int  arcane_sdk_achievements_json(char *buf, size_t len);
 int  arcane_sdk_friends_json(char *buf, size_t len);
+int  arcane_sdk_friend_request(const char *user_id, char *err_buf, size_t err_len);
 int  arcane_sdk_last_error_json(char *buf, size_t len);
 
 int  arcane_sdk_lobby_create(uint8_t max_players, int visibility,
@@ -190,12 +191,15 @@ if (arcane_sdk_achievements_json(json, sizeof(json)) > 0) {
 ```c
 char json[8192];
 if (arcane_sdk_friends_json(json, sizeof(json)) > 0) {
-  /* {"friends":[{"user_id":"…","pseudo":"…","online":true,"in_game":false}],
+  /* {"friends":[{"user_id":"…","pseudo":"…","online":true,"in_game":false,
+                   "joinable":false,"lobby_id":null}],
       "stale":false} */
 }
 ```
 
 `in_game` is `true` for a friend playing this title right now — the one named in `ARCANE_GAME_ID`. `stale` is `true` when the desktop app answered from its cache because it is offline; the list is still usable. A `-4` means the call failed — read `arcane_sdk_last_error_json` for the code.
+
+`joinable` is `true` for a friend in a lobby of this title open to friends with a free slot, and `lobby_id` (else `null`) is what `arcane_sdk_lobby_join` takes. `arcane_sdk_friend_request` sends a friend request to another account, typically a lobby member: `0` on success, `1` on a null / non-UTF-8 id or before init, `2` on an SDK error written to `err_buf` — `user_not_found`, `already_friends`, or `invalid_argument` for a malformed id or your own.
 
 ### Lobbies
 

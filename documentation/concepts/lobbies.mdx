@@ -123,6 +123,16 @@ Anything that is not six of those characters is `invalid_argument`, raised **bef
 
 `join_code` is `None` on a friends-only lobby, and for a member who is not the host.
 
+### Invite links
+
+To share a lobby outside Arcane — a Discord message, a chat — build a link to the Arcane Powered site with your game id and the code:
+
+```
+https://www.arcane-powered.com/join?game=<game_id>&code=<join_code>
+```
+
+The page opens Arcane Powered on `arcane-powered://v1/games/<game_id>/launch?join=<join_code>`, which asks the player to confirm, then starts your game with the code in [`launch_join_code`](#launching-from-join). A player without the app gets the download instead. The French page is `/fr/rejoindre` with the same query. A link with a malformed id or code shows an invalid-link message and opens nothing.
+
 ## Payloads
 
 `payload` is your connection blob: up to `MAX_LOBBY_PAYLOAD_LEN` (4096) raw bytes, base64 on the wire, never interpreted by Arcane. Over that limit is `invalid_argument` before any call.

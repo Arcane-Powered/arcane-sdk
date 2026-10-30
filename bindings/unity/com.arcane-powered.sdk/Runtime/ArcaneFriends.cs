@@ -26,6 +26,15 @@ namespace ArcanePowered
         /// <summary>Whether they are playing <em>this</em> title right now.</summary>
         public bool InGame { get; private set; }
 
+        /// <summary>
+        /// Whether they are in a lobby of this title with a free slot, other than a code lobby —
+        /// pass <see cref="LobbyId"/> to <see cref="ArcaneLobbies.Join"/>.
+        /// </summary>
+        public bool Joinable { get; private set; }
+
+        /// <summary>The lobby of this title they are in, or <see langword="null"/>.</summary>
+        public string LobbyId { get; private set; }
+
         internal static ArcaneFriend FromJson(ArcaneJson node)
         {
             return new ArcaneFriend
@@ -34,6 +43,8 @@ namespace ArcanePowered
                 Pseudo = node["pseudo"].AsString(string.Empty),
                 Online = node["online"].AsBool(),
                 InGame = node["in_game"].AsBool(),
+                Joinable = node["joinable"].AsBool(),
+                LobbyId = node["lobby_id"].AsString(null),
             };
         }
     }
@@ -113,6 +124,39 @@ namespace ArcanePowered
             }
 
             return friends;
+        }
+
+        /// <summary>
+        /// Send a friend request, answering <see langword="false"/> instead of throwing.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="userId"/> is typically an <see cref="ArcaneLobbyMember.UserId"/>.
+        /// The request shows up in their launcher, where they accept it.
+        /// </remarks>
+        public bool TrySendRequest(string userId, out ArcaneError error)
+        {
+            if (string.IsNullOrEmpty(userId))
+            {
+                error = ArcaneError.Argument(
+                    "The player's user id is required.",
+                    "User ids come from a lobby's members.");
+                return false;
+            }
+
+            byte[] target = ArcaneBuffer.ToUtf8(userId);
+            return ArcaneCall.Run(
+                (buffer, length) => ArcaneNative.arcane_sdk_friend_request(target, buffer, length),
+                out error);
+        }
+
+        /// <summary>Send a friend request, throwing on failure.</summary>
+        public void SendRequest(string userId)
+        {
+            ArcaneError error;
+            if (!TrySendRequest(userId, out error))
+            {
+                throw new ArcaneException(error);
+            }
         }
 
         /// <summary>The friends list, fetched on a background thread.</summary>

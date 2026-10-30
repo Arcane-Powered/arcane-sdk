@@ -124,10 +124,25 @@ int arcane_sdk_device_hash(char *buf, size_t len);
 // relaxed increment. Does nothing before `arcane_sdk_init` succeeds.
 void arcane_sdk_frame(void);
 
-// Write this player's friends as JSON into `buf`:
-// `{"friends":[{"user_id","pseudo","online","in_game"}],"stale":bool}`.
+// Send a friend request to another Arcane account, typically a lobby member.
 //
-// `in_game` is `true` for a friend playing this title right now. `stale` is
+// `user_id` is NUL-terminated UTF-8. One synchronous loopback call. Returns 0
+// on success, 1 on a null / non-UTF-8 argument or before init, 2 on an SDK
+// error written to `err_buf` as `"code: message"` — `user_not_found`, or
+// `already_friends` when you are friends or a request is already pending.
+//
+// # Safety
+//
+// `user_id` must be a valid NUL-terminated C string.
+// `err_buf` must be null or point to at least `err_len` writable bytes.
+int arcane_sdk_friend_request(const char *user_id, char *err_buf, size_t err_len);
+
+// Write this player's friends as JSON into `buf`:
+// `{"friends":[{"user_id","pseudo","online","in_game","joinable","lobby_id"}],"stale":bool}`.
+//
+// `in_game` is `true` for a friend playing this title right now. `joinable` is
+// `true` when they are in a lobby of this title open to friends with a free slot, and
+// `lobby_id` (else `null`) is what `arcane_sdk_lobby_join` takes. `stale` is
 // `true` when the Arcane desktop app answered from its cache because it is
 // offline. This makes one synchronous loopback call — call it when a menu
 // opens or on a timer of your own, never from the render loop.
