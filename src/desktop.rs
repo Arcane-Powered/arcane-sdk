@@ -253,6 +253,16 @@ pub(crate) fn delete_json<T: DeserializeOwned>(
     call_json(request, None, url)
 }
 
+pub(crate) fn patch_json<T: DeserializeOwned>(
+    path: &str,
+    body: Option<Value>,
+    read_timeout: Duration,
+) -> Result<T, DesktopCall> {
+    let url = format!("{}{path}", base_url());
+    let request = http_agent(read_timeout).request("PATCH", &url);
+    call_json(request, body, url)
+}
+
 pub(crate) fn post_json<T: DeserializeOwned>(
     path: &str,
     body: Option<Value>,
@@ -397,6 +407,20 @@ fn map_known_desktop_error(body: &SdkErrorBody) -> Option<SdkError> {
         )
         .with_hint("Ask the host for a join code, or become friends on Arcane first.")
         .with_context("detail", detail),
+        "not_host" => SdkError::not_host("Only the host of this lobby can do that.")
+            .with_hint("Check Lobby::host_user_id against ArcaneClient::user_id before the call.")
+            .with_context("detail", detail),
+        "invalid_payload" | "invalid_metadata" => {
+            SdkError::invalid_argument("Arcane rejected the lobby payload or metadata.")
+                .with_hint(
+                    "A payload is at most 4096 bytes; metadata is at most 16 pairs, keys of \
+                     1-32 characters a-z, 0-9 or _, values of at most 128 characters.",
+                )
+                .with_context("detail", detail)
+        }
+        "rate_limited" => SdkError::rate_limited("Arcane is receiving too many of these calls.")
+            .with_hint("Search for lobbies when a menu opens or on a timer of a few seconds, not every frame.")
+            .with_context("detail", detail),
         "game_not_found" => SdkError::ticket_invalid("Arcane does not know this title.")
             .with_hint(
                 "Confirm the game id compiled into your build matches the one in the \

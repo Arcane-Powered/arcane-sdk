@@ -175,5 +175,48 @@ namespace ArcanePowered.Tests
             Assert.AreEqual("Could not reach Arcane", error.Message);
             Assert.AreEqual("Start the desktop app (port=39284)", error.Hint);
         }
+
+        [Test]
+        public void ReadsALobbysMetadata()
+        {
+            ArcaneLobby lobby = ArcaneLobby.FromJson(ArcaneJson.Parse(
+                "{\"lobby_id\":\"lobby-1\",\"join_code\":null,\"host_user_id\":\"u\",\"host_payload\":\"\"," +
+                "\"members\":[],\"max_players\":4,\"metadata\":{\"mode\":\"coop\",\"map\":\"harbor\"}}"));
+
+            Assert.AreEqual("coop", lobby.Metadata["mode"]);
+            Assert.AreEqual(2, lobby.Metadata.Count);
+        }
+
+        [Test]
+        public void ReadsASearchResult()
+        {
+            ArcaneLobbySummary summary = ArcaneLobbySummary.FromJson(ArcaneJson.Parse(
+                "{\"lobby_id\":\"lobby-2\",\"host_user_id\":\"u2\",\"host_pseudo\":\"Cy\",\"members\":1," +
+                "\"max_players\":4,\"metadata\":{\"mode\":\"coop\"},\"host_is_friend\":true}"));
+
+            Assert.AreEqual("lobby-2", summary.LobbyId);
+            Assert.AreEqual("Cy", summary.HostPseudo);
+            Assert.AreEqual(1, summary.Members);
+            Assert.AreEqual(4, summary.MaxPlayers);
+            Assert.IsTrue(summary.HostIsFriend);
+            Assert.AreEqual("coop", summary.Metadata["mode"]);
+        }
+
+        [Test]
+        public void ReadsALobbyUpdatedEvent()
+        {
+            ArcaneLobbyEvent updated = ArcaneLobbyEvent.FromJson(ArcaneJson.Parse(
+                "{\"type\":\"lobby_updated\",\"lobby_id\":\"lobby-1\",\"metadata\":{\"map\":\"docks\"}}"));
+
+            Assert.AreEqual(ArcaneLobbyEventType.LobbyUpdated, updated.Type);
+            Assert.AreEqual("docks", updated.Metadata["map"]);
+        }
+
+        [Test]
+        public void MapsTheNewLobbyErrorCodes()
+        {
+            Assert.AreEqual(ArcaneErrorCode.NotHost, ArcaneError.ParseCode("not_host"));
+            Assert.AreEqual(ArcaneErrorCode.RateLimited, ArcaneError.ParseCode("rate_limited"));
+        }
     }
 }

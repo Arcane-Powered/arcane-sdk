@@ -15,6 +15,9 @@ jobs:
   release:
     name: Tag + crates.io + GitHub Release
     runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.plan.outputs.skip }}
+      tag: ${{ steps.plan.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -150,3 +153,77 @@ jobs:
           C/C++ header: \`include/arcane_sdk.h\` (attached to this release).
           EOF
           )"
+
+  unity-natives:
+    name: Unity native plugin (${{ matrix.folder }})
+    needs: release
+    if: needs.release.outputs.skip != 'true'
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            folder: Windows/x86_64
+            targets: x86_64-pc-windows-msvc
+            artifact: arcane_sdk.dll
+          - os: macos-latest
+            folder: macOS
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+            artifact: libarcane_sdk.dylib
+          - os: ubuntu-latest
+            folder: Linux/x86_64
+            targets: x86_64-unknown-linux-gnu
+            artifact: libarcane_sdk.so
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          slices=()
+          for target in ${{ matrix.targets }}; do
+            rustup target add "$target"
+            cargo build --release --locked --target "$target"
+            slices+=("target/$target/release/${{ matrix.artifact }}")
+          done
+          mkdir -p "out/Assets/Plugins/Arcane/${{ matrix.folder }}"
+          if [[ ${#slices[@]} -gt 1 ]]; then
+            lipo -create "${slices[@]}" -output "out/Assets/Plugins/Arcane/${{ matrix.folder }}/${{ matrix.artifact }}"
+          else
+            cp "${slices[0]}" "out/Assets/Plugins/Arcane/${{ matrix.folder }}/"
+          fi
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-${{ matrix.os }}
+          path: out
+
+  unity-plugins:
+    name: Attach Unity plugins to the release
+    needs: [release, unity-natives]
+    if: needs.release.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download
+        uses: actions/download-artifact@v4
+        with:
+          pattern: unity-*
+          path: out
+          merge-multiple: true
+
+      - name: Zip and attach
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          (cd out && zip -r ../arcane-sdk-unity-plugins.zip Assets)
+          gh release upload "$TAG" arcane-sdk-unity-plugins.zip --repo "${{ github.repository }}"

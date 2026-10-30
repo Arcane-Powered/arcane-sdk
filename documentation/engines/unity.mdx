@@ -44,8 +44,12 @@ public sealed class Boot : MonoBehaviour
 
     Or copy `com.arcane-powered.sdk/` into your project's `Packages/` folder if you want to edit it.
   </Step>
-  <Step title="Build the native plugin">
-    The package is C# only — it needs the native library beside it.
+  <Step title="Install the native plugin">
+    The package is C# only — it needs the native library beside it. **Tools ▸ Arcane Powered ▸ Install native plugins** downloads the Windows, macOS and Linux libraries built for this package version from its GitHub release into `Assets/Plugins/Arcane/`. No Rust toolchain needed. The same button is in **Project Settings ▸ Arcane Powered** while the plugin is missing.
+
+    A native library is loaded once per Editor session, so **restart the Editor** after the first install.
+
+    To build it yourself instead — a fork, or a commit with no release yet:
 
     ```bash
     git clone https://github.com/Arcane-Powered/arcane-sdk
@@ -54,8 +58,6 @@ public sealed class Boot : MonoBehaviour
     ```
 
     That writes `Assets/Plugins/Arcane/<platform>/`, and the package's importer points each binary at the platform it was built for. Build the platform you work on first — that is the one the Editor loads — and add the others with `--target` before you ship.
-
-    A native library is loaded once per Editor session, so **restart the Editor** after the first import.
   </Step>
   <Step title="Set the game id for the Editor">
     Arcane Powered sets `ARCANE_GAME_ID` and `ARCANE_USER_ID` on the game process when a player launches from their library. Nothing launches the Editor that way, so fill in your title's game id under **Project Settings ▸ Arcane Powered**. The package puts it in the process environment before it initialises, where the SDK reads it.
@@ -143,7 +145,33 @@ Arcane.Lobbies.ResyncRequested += e => Refresh();            // ask, don't repla
 
 Those events are raised on the main thread by the runtime's pump. If you turn the pump off, call `Arcane.Lobbies.PollEvents()` yourself instead — it drains the same queue, so use one or the other.
 
+A public lobby is listed to every player who owns the game, with metadata they filter on:
+
+```csharp
+ArcaneLobby hosted = Arcane.Lobbies.Create(new ArcaneLobbyOptions
+{
+    MaxPlayers = 4,
+    Visibility = ArcaneLobbyVisibility.Public,
+    Payload = MyEndpoint(),
+    Metadata = { ["mode"] = "coop", ["map"] = "harbor" },
+});
+
+ArcaneLobbySummary[] found = Arcane.Lobbies.Search(new ArcaneLobbyQuery
+{
+    Filters = { ["mode"] = "coop" },
+});                                                    // friends' lobbies first
+
+Arcane.Lobbies.SetMetadata(hosted.LobbyId, new Dictionary<string, string> { ["map"] = "docks" });
+Arcane.Lobbies.LobbyUpdated += e => ShowSettings(e.Metadata);
+```
+
+`Search` and `SetMetadata` are blocking like the rest: use `SearchAsync` from a lobby browser.
+
 `Arcane.Lobbies.LaunchJoinCode` is set when the player started the game from a friend's **Join** in the launcher. Check it once at boot, before you show a menu.
+
+## Outside Arcane
+
+Started without the launcher — no `ARCANE_GAME_ID` and no Editor game id — the SDK stays inert: `ArcaneRuntime.InitializationError` reads `missing_game_id`, every call answers `not_initialized` or an empty value, and nothing throws or blocks. Whether the game then quits, shows a message or runs on is your decision. A failure inside the native library is caught at the C boundary and comes back as an `internal` error; it never takes the engine down.
 
 ## Samples and tests
 

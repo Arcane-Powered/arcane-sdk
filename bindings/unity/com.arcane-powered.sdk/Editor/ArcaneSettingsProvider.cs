@@ -81,10 +81,16 @@ namespace ArcanePowered.Editor
             if (!Arcane.IsPluginAvailable)
             {
                 EditorGUILayout.HelpBox(
-                    "The native plugin is not loaded. Build it with bindings/unity/build-plugins.sh and let " +
-                    "Unity import the result, then restart the Editor — a native library is only loaded once " +
-                    "per session.",
+                    "The native plugin is not loaded. Install the prebuilt libraries for this package version, " +
+                    "or build them with bindings/unity/build-plugins.sh, then restart the Editor — a native " +
+                    "library is only loaded once per session.",
                     MessageType.Warning);
+
+                if (GUILayout.Button("Install native plugins"))
+                {
+                    ArcanePluginInstaller.Install();
+                }
+
                 return;
             }
 

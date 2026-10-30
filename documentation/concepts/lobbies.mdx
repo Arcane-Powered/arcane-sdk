@@ -1,7 +1,7 @@
 ---
 title: "Lobbies"
-description: "Create a lobby, share a join code, invite friends, and exchange connection blobs — your netcode does the rest."
-keywords: ["p2p", "lobby", "join code", "invite", "multiplayer", "matchmaking", "launch"]
+description: "Create a lobby, share a join code, invite friends, list public lobbies, and exchange connection blobs — your netcode does the rest."
+keywords: ["p2p", "lobby", "join code", "invite", "multiplayer", "matchmaking", "search", "metadata", "launch"]
 ---
 
 Arcane gives you the **meeting point**. Your game keeps its netcode.
@@ -11,7 +11,7 @@ Steam, Epic Online Services and Discord all start from the same idea: the platfo
 Arcane ships that first half only.
 
 <Note>
-  **No transport, no NAT traversal, no relay, no host migration, no public matchmaking.** Arcane carries an opaque `payload` for each member — an address, a ticket from your own netcode, whatever you want, up to 4 KiB — and never reads it. Connecting is yours.
+  **No transport, no NAT traversal, no relay, no host migration, no skill-based matchmaking.** Arcane carries an opaque `payload` for each member — an address, a ticket from your own netcode, whatever you want, up to 4 KiB — and never reads it. Connecting is yours.
 </Note>
 
 ## The scenario
@@ -34,6 +34,7 @@ for event in client.p2p().poll_events() {
         LobbyEvent::MemberLeft { user_id, .. } => drop_peer(&user_id),
         LobbyEvent::LobbyClosed { .. } => back_to_menu(),
         LobbyEvent::Invite { lobby_id, .. } => offer_to_join(&lobby_id),
+        LobbyEvent::LobbyUpdated { metadata, .. } => show_settings(&metadata),
         LobbyEvent::Resync => resync_from_arcane(),   // see below
     }
 }
@@ -60,6 +61,7 @@ pub struct Lobby {
     pub host_payload: Vec<u8>,
     pub members: Vec<LobbyMember>,   // user_id, pseudo, payload
     pub max_players: u8,
+    pub metadata: BTreeMap<String, String>,   // the host's searchable pairs
 }
 ```
 
@@ -70,8 +72,43 @@ pub struct Lobby {
 | `Visibility::Friends` | The host's friends, from the launcher. No code is issued |
 | `Visibility::Code` | Whoever has the six-character code |
 | `Visibility::FriendsAndCode` | Both |
+| `Visibility::Public` | Anyone who owns the game, through `search`; friends see it in the launcher too |
 
-Arcane never lists lobbies publicly — there is no browser of open games.
+Only a `Public` lobby is ever listed. The others are reachable through the host's friends, their code, or both.
+
+## Public lobbies and metadata
+
+A public lobby carries up to 16 metadata pairs — a mode, a map, a region — that players filter on. Keys are 1–32 characters of `a–z`, `0–9` and `_`; values are at most 128 characters.
+
+```rust
+use arcane_sdk::{LobbyOptions, LobbyQuery, Visibility};
+
+// Host
+let lobby = client.p2p().create(LobbyOptions {
+    max_players: 4,
+    visibility: Visibility::Public,
+    payload: my_endpoint(),
+    metadata: &[("mode", "coop"), ("map", "harbor")],
+})?;
+
+// Later, the host changes the map. The whole set is replaced; members get LobbyUpdated.
+client.p2p().set_metadata(&lobby.lobby_id, &[("mode", "coop"), ("map", "docks")])?;
+
+// Another player
+let found = client.p2p().search(&LobbyQuery {
+    filters: vec![("mode".into(), "coop".into())],
+    ..LobbyQuery::default()                 // free slots only, 20 results
+})?;
+if let Some(first) = found.first() {
+    let lobby = client.p2p().join(&first.lobby_id, my_endpoint())?;
+    connect_to(&lobby.host_payload);
+}
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+`search` answers `LobbySummary` values: `lobby_id`, `host_user_id`, `host_pseudo`, `members`, `max_players`, `metadata` and `host_is_friend`. Lobbies hosted by a friend come first, then the newest. Every filter pair must match exactly, only lobbies of the game you are running are listed, and only to an account that owns it. The join code is never in a search result: a public lobby is joined by id.
+
+Search is rate limited per account; past the limit it answers `rate_limited`. A lobby browser that refreshes every few seconds stays well under it, and the Arcane desktop app also caches each identical search for 5 seconds.
 
 ## Join codes
 
@@ -108,6 +145,7 @@ Put a *reference* in it — an address, a session ticket your own netcode unders
 | `MemberJoined` | `lobby_id`, `user_id`, `pseudo`, `payload` |
 | `MemberLeft` | `lobby_id`, `user_id` |
 | `LobbyClosed` | `lobby_id` |
+| `LobbyUpdated` | `lobby_id`, `metadata` — the host changed it |
 | `Resync` | nothing — see below |
 
 `Resync` means Arcane dropped events before this client fetched them, so the queue has a hole in it. When you get one, stop trusting what the earlier events built up and **ask** instead — `get_lobby` returns the same object as `create_lobby` and `join`, without joining or leaving anything:
@@ -172,6 +210,9 @@ A lobby also ends when the host's play session expires. **There is no host migra
 | `lobby_full` | The lobby already holds `max_players` |
 | `lobby_closed` | The host closed it, or their session expired |
 | `not_friends` | The lobby is friends-only and this account is not one |
+| `not_host` | `set_metadata` from a member who is not the host |
+| `rate_limited` | Too many searches in a short time — wait and retry |
+| `not_owned` | `search` from an account that does not own the game |
 | `not_authenticated` | Nobody is signed in to the Arcane desktop app |
 | `feature_unavailable` | The Arcane desktop app predates the lobby routes — update it |
 | `arcane_unavailable` (on a lobby object) | Arcane sent something the SDK will not carry: a payload over 4096 bytes, or a lobby with no id |
@@ -187,7 +228,7 @@ char json[8192], err[512];
 
 int n = arcane_sdk_lobby_create(4, ARCANE_LOBBY_FRIENDS_AND_CODE, "dWRwOi8v...", json, sizeof(json));
 /* {"lobby_id":"…","join_code":"K7P3QX","host_user_id":"…","host_payload":"…",
-    "members":[{"user_id":"…","pseudo":"…","payload":"…"}],"max_players":4} */
+    "members":[{"user_id":"…","pseudo":"…","payload":"…"}],"max_players":4,"metadata":{}} */
 
 arcane_sdk_lobby_invite("lobby-1", "user-b", err, sizeof(err));
 
@@ -200,6 +241,18 @@ char code[8];
 if (arcane_sdk_launch_join_code(code, sizeof(code)) > 0) {
   arcane_sdk_lobby_join_code(code, "dWRwOi8v...", json, sizeof(json));
 }
+```
+
+Public lobbies and metadata go through three JSON-in, JSON-out calls:
+
+```c
+arcane_sdk_lobby_create_json(
+  "{\"max_players\":4,\"visibility\":\"public\",\"metadata\":{\"mode\":\"coop\"}}",
+  json, sizeof(json));
+arcane_sdk_lobby_set_metadata("lobby-1", "{\"metadata\":{\"mode\":\"versus\"}}", json, sizeof(json));
+arcane_sdk_lobby_search("{\"filters\":{\"mode\":\"coop\"},\"limit\":20}", json, sizeof(json));
+/* {"lobbies":[{"lobby_id":"…","host_user_id":"…","host_pseudo":"…","members":1,
+    "max_players":4,"metadata":{"mode":"coop"},"host_is_friend":false}]} */
 ```
 
 Payloads are base64 in **both** directions in C: you pass one in, you get them back in the JSON. `arcane_sdk_lobby_events_json` drains the queue only once the JSON is safely in your buffer — a `-3` leaves every event where it was, so you can retry with a bigger buffer. Details: [C ABI](/reference/c-abi).

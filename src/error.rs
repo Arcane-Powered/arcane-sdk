@@ -43,6 +43,11 @@ pub enum ErrorCode {
     /// The lobby is visible to the host's friends only, and this player is not
     /// one of them.
     NotFriends,
+    /// Only the lobby's host may do this — change its metadata or close it.
+    NotHost,
+    /// Arcane refused the call because this player made too many of them;
+    /// wait and try again.
+    RateLimited,
     /// `ARCANE_GAME_ID` is unset or empty — the game was not started by Arcane
     /// Powered, and no developer override is in place.
     MissingGameId,
@@ -79,6 +84,8 @@ impl ErrorCode {
             Self::LobbyFull => "lobby_full",
             Self::LobbyClosed => "lobby_closed",
             Self::NotFriends => "not_friends",
+            Self::NotHost => "not_host",
+            Self::RateLimited => "rate_limited",
             Self::MissingGameId => "missing_game_id",
             Self::InvalidGameId => "invalid_game_id",
             Self::InvalidArgument => "invalid_argument",
@@ -188,6 +195,7 @@ impl SdkError {
                 | ErrorCode::NetworkRequired
                 | ErrorCode::NotAuthenticated
                 | ErrorCode::ArcaneUnavailable
+                | ErrorCode::RateLimited
         )
     }
 
@@ -284,6 +292,14 @@ impl SdkError {
 
     pub(crate) fn not_friends(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::NotFriends, message)
+    }
+
+    pub(crate) fn not_host(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::NotHost, message)
+    }
+
+    pub(crate) fn rate_limited(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::RateLimited, message)
     }
 
     pub(crate) fn missing_game_id(message: impl Into<String>) -> Self {
