@@ -7,6 +7,7 @@ GDExtension glue or `FPlatformProcess::GetDllExport` by hand.
 | Engine | Status | Where |
 |--------|--------|-------|
 | Unity  | Available | [`unity/`](./unity) — UPM package `com.arcane-powered.sdk` |
+| Web (HTML5) | Available | [`js/`](./js) — npm package `@arcane/sdk-web` |
 | Godot  | Planned   | — |
 | Unreal | Planned   | — |
 
@@ -33,3 +34,10 @@ Adding a binding for another engine means wrapping the same twenty-odd C
 functions. Start from [`unity/`](./unity): the layering there — raw P/Invoke, a
 buffer/marshalling layer, a JSON reader, typed models, a static façade, an
 engine-lifecycle component — is the same layering the others want.
+
+The web binding is the one exception to that layering: a browser game cannot load the
+native library, so [`js/`](./js) speaks `postMessage` to the desktop's play window
+instead of the C ABI, keeping the same names. It also departs from the shape above:
+`Arcane.init()` resolves to an instance the game keeps rather than a singleton, every call
+is asynchronous, a refused call rejects its promise with an `ArcaneError`, and the codes are
+the desktop app's (`offline` where the native SDK says `network_required`).

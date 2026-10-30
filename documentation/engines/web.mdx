@@ -1,0 +1,87 @@
+---
+title: "Web (HTML5)"
+description: "Unlock achievements, read friends, host lobbies and keep cloud-synced saves from a browser game played in the Arcane desktop app."
+keywords: ["html5", "web", "webgl", "javascript", "typescript", "postMessage", "browser game", "sdk-web"]
+---
+
+A browser game published on Arcane runs in the desktop app, inside a sandboxed iframe of its own play window. It cannot load the native SDK and has no loopback port, so `@arcane/sdk-web` talks to the play window with `postMessage` instead. The desktop checks every call and answers with the same data the native SDK gets, under the names of the Rust API.
+
+```ts
+import { Arcane } from "@arcane/sdk-web";
+
+const arcane = await Arcane.init();
+
+if (arcane.available) {
+  arcane.on("pause", () => game.pause());
+  arcane.on("resume", () => game.resume());
+  await arcane.achievements.unlock("first-blood");   // idempotent
+}
+```
+
+## Get started
+
+<Steps>
+  <Step title="Add the package">
+    ```bash
+    bun add @arcane/sdk-web
+    ```
+
+    <Note>
+      The package is not on npm yet. Until it is, build it from `bindings/js` in the SDK repository (`bun install && bun run build`) and import `dist/index.js` from your game.
+    </Note>
+
+    It has no dependency and works with any bundler or engine export (Godot, Unity WebGL, Construct, Phaser, plain JS) that lets you run a script.
+  </Step>
+  <Step title="Declare the bridge">
+    When you publish the build from the publisher portal, tick **The game uses the Arcane web SDK**. A build that does not declare it never gets an answer: `init()` resolves with `available: false`.
+  </Step>
+  <Step title="Initialise once">
+    Call `Arcane.init()` at start-up and keep the result. It waits at most one second for the desktop, then sends every call to the origin of the play window that answered and ignores messages from any other. Pass `hostOrigin` to pin that origin from the first message.
+  </Step>
+</Steps>
+
+## Outside the app
+
+The same build runs anywhere. In your own browser, on an itch page, or when the bridge is not declared, `init()` resolves with `available: false` and every call resolves to an empty value (`[]`, `null`, `false`) instead of failing. Branch on `arcane.available` when the game should show something different.
+
+## What the bridge covers
+
+| Area | Calls |
+|---|---|
+| Achievements | `achievements.list()`, `achievements.unlock(key)`, `achievements.isUnlocked(key)` |
+| Friends | `friends.list()`, `friends.sendRequest(userId)`, `friends.pollEvents()` |
+| Lobbies | `p2p.create({ maxPlayers, visibility, payload, metadata })`, `p2p.createLobby(maxPlayers, visibility, payload)`, `p2p.joinByCode(code, payload)`, `p2p.join(lobbyId, payload)`, `p2p.getLobby(id)`, `p2p.setMetadata(id, metadata)`, `p2p.search({ filters, hasFreeSlot, limit })`, `p2p.invite(id, userId)`, `p2p.leave(id)`, `p2p.close(id)`, `p2p.launchJoinCode()`, `p2p.pollEvents()` |
+| Saves | `saves.list()`, `saves.read(slot)`, `saves.readText(slot)`, `saves.write(slot, data)`, `saves.delete(slot)` |
+| Focus | `on("pause", fn)`, `on("resume", fn)` |
+
+Playtime, the play session and the first launch are recorded by the desktop on its own, with or without the package. The [coop network](/concepts/coop-network) is not available to a browser game: lobbies hand out the payloads, and the connection between players is the game's own (WebRTC in the page, for instance), limited to the origins the build declared.
+
+Lobby payloads take a `Uint8Array` or a string and come back as `Uint8Array`. A lobby event list that starts with `{ type: "resync" }` means events were dropped while the game was not polling: read the lobby again with `getLobby`.
+
+## Saves
+
+A slot is a kebab-case name (`slot-1`, `autosave`, 64 characters at most) holding up to 8 MB; a game keeps 32 slots at most. The files live on the player's machine and are backed up to their Arcane cloud saves like any other Arcane game, so they follow the player to another computer. Keep using `localStorage` or IndexedDB for anything that does not need to travel: they stay in the game's own origin and survive updates.
+
+```ts
+await arcane.saves.write("autosave", JSON.stringify(state));
+const saved = await arcane.saves.readText("autosave");
+if (saved) state = JSON.parse(saved);
+```
+
+## Pause and resume
+
+The desktop sends `pause` when the play window loses focus and `resume` when it gets it back, unless the player chose to keep the sound on in the background. Mute your audio and stop the simulation on `pause`: the window is muted by the app either way.
+
+## Errors
+
+A refused call rejects with an `ArcaneError`. Its `code` is the one the desktop app answers, which is not always the native SDK's: a call that needs the network while the app is offline reads `offline` here, where the native SDK raises `network_required`. Lobby, friend and achievement refusals keep their names (`not_owned`, `lobby_full`, `already_friends`, …, see [Errors](/concepts/errors)). The bridge adds its own:
+
+| Code | Meaning |
+|---|---|
+| `rate_limited` | More than 20 calls per second to the same method |
+| `unknown_method` | Not a method of the bridge |
+| `invalid_params` | Missing or malformed parameter |
+| `invalid_slot` | A slot name that is not kebab-case |
+| `save_too_large` | A save over 8 MB |
+| `too_many_slots` | A 33rd slot |
+| `not_authenticated` | The player signed out while the game was open |
