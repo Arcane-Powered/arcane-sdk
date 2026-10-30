@@ -2,7 +2,7 @@
 
 This package tracks the version of the native SDK it wraps.
 
-## 0.13.0
+## 0.14.0
 
 ### Added
 
@@ -20,6 +20,23 @@ This package tracks the version of the native SDK it wraps.
 
 - Needs an Arcane desktop build with the coop network routes for `Arcane.Net`;
   an older one answers `feature_unavailable`.
+
+## 0.13.0
+
+### Added
+
+- **Join a friend.** `ArcaneFriend.Joinable` and `ArcaneFriend.LobbyId` say when
+  a friend is in a lobby of this title other than a code lobby, and whether it
+  has a free slot; pass the id of a joinable one to `Arcane.Lobbies.Join`.
+- **Friend requests from the game.** `Arcane.Friends.SendRequest(userId)` (and `SendRequestAsync`) asks
+  someone met in a lobby to be friends; the request waits in their launcher.
+- `ArcaneErrorCode.UserNotFound` and `ArcaneErrorCode.AlreadyFriends`.
+
+### Changed
+
+- Needs an Arcane desktop build with the friend request route for
+  `SendRequest`; an older one answers `feature_unavailable`, and its friends
+  list reads every friend as not joinable.
 
 ## 0.12.0
 

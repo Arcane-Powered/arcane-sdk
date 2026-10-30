@@ -467,6 +467,19 @@ fn map_known_desktop_error(body: &SdkErrorBody) -> Option<SdkError> {
                 .with_hint("Restart the Arcane Powered desktop app, then retry.")
                 .with_context("detail", detail)
         }
+        "user_not_found" => SdkError::user_not_found("Arcane has no account with that id.")
+            .with_hint("Pass a user id Arcane gave you, such as LobbyMember::user_id.")
+            .with_context("detail", detail),
+        "already_friends" => SdkError::already_friends(
+            "You are already friends with that player, or a request is already pending.",
+        )
+        .with_hint("Check Friends::list before offering to add someone.")
+        .with_context("detail", detail),
+        "friend_request_self" => {
+            SdkError::invalid_argument("A player cannot send a friend request to themselves.")
+                .with_hint("Compare the id against ArcaneClient::user_id before the call.")
+                .with_context("detail", detail)
+        }
         "rate_limited" => SdkError::rate_limited("Arcane is receiving too many of these calls.")
             .with_hint("Search for lobbies when a menu opens or on a timer of a few seconds, not every frame.")
             .with_context("detail", detail),

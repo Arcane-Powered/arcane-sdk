@@ -7,18 +7,20 @@
 //!
 //! The SDK keeps no list of its own: the Arcane desktop app caches for 15
 //! seconds and reports [`FriendList::stale`] when the answer came from that
-//! cache while it was offline. Friend requests, chat and the overlay stay in the
-//! launcher — this is a read of presence, nothing else.
+//! cache while it was offline. [`Friends::send_request`] asks someone met in a
+//! lobby to be friends; accepting, chat and the overlay stay in the launcher.
 
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::desktop::{get_json, offline_only, DesktopCall, OFFLINE_ONLY_ENV};
+use crate::desktop::{get_json, offline_only, post_json, DesktopCall, OFFLINE_ONLY_ENV};
 use crate::error::SdkError;
+use crate::p2p::validate_id;
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(5);
 const FRIENDS_PATH: &str = "/v1/friends";
+const FRIEND_REQUESTS_PATH: &str = "/v1/friends/requests";
 
 /// One friend of the signed-in Arcane account, with their presence.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +34,13 @@ pub struct Friend {
     /// Whether they are playing **this** title right now — the title named by
     /// `ARCANE_GAME_ID`.
     pub in_game: bool,
+    /// Whether [`Friend::lobby_id`] has a free slot. Check it before joining
+    /// with [`crate::P2p::join`].
+    pub joinable: bool,
+    /// The lobby they are in, when it is a lobby of this title other than a
+    /// `code` lobby, full or not. `None` otherwise, including for a lobby of
+    /// another title.
+    pub lobby_id: Option<String>,
 }
 
 /// What the Arcane desktop app knows about this player's friends.
@@ -61,7 +70,14 @@ struct WireFriend {
     online: bool,
     #[serde(default)]
     playing_game_id: Option<String>,
+    #[serde(default)]
+    joinable: bool,
+    #[serde(default)]
+    lobby_id: Option<String>,
 }
+
+#[derive(Debug, Deserialize)]
+struct WireOk {}
 
 /// The friends accessor, borrowed from the client for one call.
 ///
@@ -70,11 +86,12 @@ struct WireFriend {
 #[derive(Debug)]
 pub struct Friends<'a> {
     game_id: &'a str,
+    user_id: Option<&'a str>,
 }
 
 impl<'a> Friends<'a> {
-    pub(crate) fn new(game_id: &'a str) -> Self {
-        Self { game_id }
+    pub(crate) fn new(game_id: &'a str, user_id: Option<&'a str>) -> Self {
+        Self { game_id, user_id }
     }
 
     /// This player's friends, each with `online` and `in_game`.
@@ -91,7 +108,7 @@ impl<'a> Friends<'a> {
     /// the desktop app is not running, `feature_unavailable` when it predates
     /// the route.
     pub fn list(&self) -> Result<FriendList, SdkError> {
-        self.guard_offline()?;
+        self.guard_offline("Listing friends")?;
 
         let response: WireFriendList =
             get_json(FRIENDS_PATH, CALL_TIMEOUT).map_err(DesktopCall::into_sdk_error)?;
@@ -99,14 +116,45 @@ impl<'a> Friends<'a> {
         Ok(map_list(response, self.game_id))
     }
 
-    fn guard_offline(&self) -> Result<(), SdkError> {
+    /// Ask another player to be friends on Arcane — typically someone met in
+    /// a lobby, whose id is [`crate::LobbyMember::user_id`].
+    ///
+    /// The request shows up in their launcher, where they accept or decline
+    /// it. One synchronous loopback round trip.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_argument` for a malformed id or for this player's own id
+    /// (raised before any call), `user_not_found`, `already_friends` when you
+    /// are friends or a request is already pending either way, plus the codes
+    /// of [`Friends::list`].
+    pub fn send_request(&self, user_id: &str) -> Result<(), SdkError> {
+        validate_id("user_id", user_id)?;
+        if self
+            .user_id
+            .is_some_and(|own| own.eq_ignore_ascii_case(user_id))
+        {
+            return Err(SdkError::invalid_argument(
+                "A player cannot send a friend request to themselves.",
+            )
+            .with_hint("Compare the id against ArcaneClient::user_id before the call.")
+            .with_context("user_id", user_id));
+        }
+        self.guard_offline("Sending a friend request")?;
+
+        let body = serde_json::json!({ "user_id": user_id });
+        let _: WireOk = post_json(FRIEND_REQUESTS_PATH, Some(body), CALL_TIMEOUT)
+            .map_err(|call| call.into_sdk_error().with_context("user_id", user_id))?;
+        Ok(())
+    }
+
+    fn guard_offline(&self, action: &str) -> Result<(), SdkError> {
         if !offline_only() {
             return Ok(());
         }
-        Err(SdkError::network_required(
-            "Listing friends needs the Arcane desktop app, and the SDK is running in \
-             offline-only mode.",
-        )
+        Err(SdkError::network_required(format!(
+            "{action} needs the Arcane desktop app, and the SDK is running in offline-only mode."
+        ))
         .with_hint(format!(
             "Unset {OFFLINE_ONLY_ENV} to let the SDK contact the Arcane desktop app."
         ))
@@ -119,11 +167,17 @@ fn map_list(wire: WireFriendList, game_id: &str) -> FriendList {
         friends: wire
             .friends
             .into_iter()
-            .map(|friend| Friend {
-                user_id: friend.user_id,
-                pseudo: friend.pseudo,
-                online: friend.online,
-                in_game: is_in_game(friend.playing_game_id.as_deref(), game_id),
+            .map(|friend| {
+                let in_game = is_in_game(friend.playing_game_id.as_deref(), game_id);
+                let lobby_id = friend.lobby_id.filter(|id| in_game && !id.is_empty());
+                Friend {
+                    user_id: friend.user_id,
+                    pseudo: friend.pseudo,
+                    online: friend.online,
+                    in_game,
+                    joinable: friend.joinable && lobby_id.is_some(),
+                    lobby_id,
+                }
             })
             .collect(),
         stale: wire.stale,
@@ -149,6 +203,8 @@ struct JsonFriend<'a> {
     pseudo: &'a str,
     online: bool,
     in_game: bool,
+    joinable: bool,
+    lobby_id: Option<&'a str>,
 }
 
 pub(crate) fn to_json(list: &FriendList) -> String {
@@ -161,6 +217,8 @@ pub(crate) fn to_json(list: &FriendList) -> String {
                 pseudo: &friend.pseudo,
                 online: friend.online,
                 in_game: friend.in_game,
+                joinable: friend.joinable,
+                lobby_id: friend.lobby_id.as_deref(),
             })
             .collect(),
         stale: list.stale,
@@ -263,7 +321,7 @@ mod tests {
 
         assert!(
             rendered.starts_with(
-                r#"{"friends":[{"user_id":"user-a","pseudo":"Ada","online":true,"in_game":true}"#
+                r#"{"friends":[{"user_id":"user-a","pseudo":"Ada","online":true,"in_game":true,"joinable":false,"lobby_id":null}"#
             ),
             "field order drifted from the header and the docs: {rendered}"
         );
@@ -279,6 +337,8 @@ mod tests {
                 pseudo: pseudo.into(),
                 online: true,
                 in_game: false,
+                joinable: false,
+                lobby_id: None,
             }],
             stale: false,
         };

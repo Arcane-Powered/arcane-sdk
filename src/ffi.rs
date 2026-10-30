@@ -446,9 +446,12 @@ pub unsafe extern "C" fn arcane_sdk_achievement_is_unlocked(key: *const c_char) 
 }
 
 /// Write this player's friends as JSON into `buf`:
-/// `{"friends":[{"user_id","pseudo","online","in_game"}],"stale":bool}`.
+/// `{"friends":[{"user_id","pseudo","online","in_game","joinable","lobby_id"}],"stale":bool}`.
 ///
-/// `in_game` is `true` for a friend playing this title right now. `stale` is
+/// `in_game` is `true` for a friend playing this title right now. `lobby_id`
+/// (else `null`) is their lobby of this title other than a `code` lobby, full or
+/// not, and `joinable` is `true` when it also has a free slot: check it before
+/// passing `lobby_id` to `arcane_sdk_lobby_join`. `stale` is
 /// `true` when the Arcane desktop app answered from its cache because it is
 /// offline. This makes one synchronous loopback call — call it when a menu
 /// opens or on a timer of your own, never from the render loop.
@@ -477,6 +480,48 @@ pub unsafe extern "C" fn arcane_sdk_friends_json(buf: *mut c_char, len: usize) -
             Err(err) => {
                 store_error(&err);
                 ARCANE_ERR_UNAVAILABLE
+            }
+        }
+    })
+}
+
+/// Send a friend request to another Arcane account, typically a lobby member.
+///
+/// `user_id` is NUL-terminated UTF-8. One synchronous loopback call. Returns 0
+/// on success, 1 on a null / non-UTF-8 argument or before init, 2 on an SDK
+/// error written to `err_buf` as `"code: message"` — `user_not_found`, or
+/// `already_friends` when you are friends or a request is already pending.
+///
+/// # Safety
+///
+/// `user_id` must be a valid NUL-terminated C string.
+/// `err_buf` must be null or point to at least `err_len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_friend_request(
+    user_id: *const c_char,
+    err_buf: *mut c_char,
+    err_len: usize,
+) -> c_int {
+    guard_action(err_buf, err_len, || {
+        let Some(Some(user_id)) = c_str(user_id) else {
+            return ARCANE_ERR_ARGUMENT;
+        };
+        let client = match lobby_client("arcane_sdk_friend_request") {
+            Ok(client) => client,
+            Err(err) => {
+                write_err(&err, err_buf, err_len);
+                return ARCANE_ERR_ARGUMENT;
+            }
+        };
+
+        match client.friends().send_request(user_id) {
+            Ok(()) => {
+                clear_error();
+                ARCANE_OK
+            }
+            Err(err) => {
+                write_err(&err, err_buf, err_len);
+                ARCANE_ERR_SDK
             }
         }
     })

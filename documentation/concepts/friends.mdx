@@ -1,7 +1,7 @@
 ---
 title: "Friends"
 description: "Read this player's friends, who is online, and who is in your game right now."
-keywords: ["friends", "presence", "online", "in_game", "stale", "launcher"]
+keywords: ["friends", "presence", "online", "in_game", "joinable", "friend request", "stale", "launcher"]
 ---
 
 One line gives you the list:
@@ -24,6 +24,8 @@ Each entry is the signed-in player's friend on Arcane, with their presence right
 | `pseudo` | `String` | Their display name on Arcane |
 | `online` | `bool` | Signed in to Arcane right now |
 | `in_game` | `bool` | Playing **this** title right now |
+| `joinable` | `bool` | `lobby_id` has a free slot |
+| `lobby_id` | `Option<String>` | Their lobby of this title other than a `code` lobby, full or not — `None` otherwise |
 
 ```rust
 for friend in client.friends().list()?.friends {
@@ -41,6 +43,33 @@ for friend in client.friends().list()?.friends {
 `in_game` is `true` when the friend is playing the same `game_id` as this client — the id Arcane Powered launched you with. A friend playing something else on Arcane is `online`, not `in_game`. That presence is set by the Arcane desktop app when a game opens its [play session](/concepts/session), so it costs your game nothing.
 
 `false` is never a guess about your own title: the client always knows its `game_id`, so `in_game` is `false` only when the friend is playing something else, or nothing at all.
+
+## Joining a friend
+
+A friend with `joinable: true` is in a lobby of your title that is not a `code` lobby, and it still has a free slot. Put a **Join** button next to them and hand `lobby_id` to [`p2p().join`](/concepts/lobbies):
+
+```rust
+for friend in client.friends().list()?.friends {
+    if let (true, Some(lobby_id)) = (friend.joinable, friend.lobby_id.as_deref()) {
+        client.p2p().join(lobby_id, my_endpoint)?;
+        break;
+    }
+}
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+`lobby_id` is only set for a lobby of this title, so a friend in a lobby of another game reads `joinable: false`. A `code` lobby never shows here: it is reached with its join code only. The slot can be taken between the list and the join, so still handle `lobby_full` — and `not_friends` when your friend is a member of a `friends` lobby hosted by someone you are not friends with.
+
+## Sending a friend request
+
+Someone met in a public lobby is not a friend yet. `send_request` asks them, with the `user_id` from the lobby's members:
+
+```rust
+client.friends().send_request(&member.user_id)?;
+# Ok::<(), arcane_sdk::SdkError>(())
+```
+
+The request lands in their Arcane Powered launcher, where they accept or decline it; nothing changes in your game until they do, and the next `list()` then shows them. Sending one to a friend, or to someone a request is already pending with, answers `already_friends`.
 
 ## `stale`
 
@@ -62,7 +91,7 @@ if list.stale {
 
 ## What stays in the launcher
 
-This is a read of presence, and only that. **Friend requests, accepting or removing a friend, chat and the in-game overlay stay in the Arcane Powered desktop app.** A game does not send friend requests on the player's behalf, and there is nothing to call for it.
+A game reads presence and can send a friend request, nothing more. **Accepting, declining or removing a friend, chat and the in-game overlay stay in the Arcane Powered desktop app.**
 
 ## Errors
 
@@ -72,6 +101,9 @@ This is a read of presence, and only that. **Friend requests, accepting or remov
 | `feature_unavailable` | The Arcane desktop app predates the friends route — update it |
 | `arcane_unavailable` | The desktop app is not running |
 | `network_required` | `ARCANE_OFFLINE_ONLY` is set — raised before any call |
+| `invalid_argument` | `send_request` with a malformed id, or your own — raised before any call |
+| `user_not_found` | `send_request` to an id no Arcane account has |
+| `already_friends` | `send_request` to a friend, or with a request already pending either way |
 
 Full table and what to do about each: [Errors](/concepts/errors).
 
@@ -80,12 +112,18 @@ Full table and what to do about each: [Errors](/concepts/errors).
 ```c
 char json[8192];
 if (arcane_sdk_friends_json(json, sizeof(json)) > 0) {
-  /* {"friends":[{"user_id":"…","pseudo":"…","online":true,"in_game":false}],
+  /* {"friends":[{"user_id":"…","pseudo":"…","online":true,"in_game":false,
+                   "joinable":false,"lobby_id":null}],
       "stale":false} */
+}
+
+char err[512];
+if (arcane_sdk_friend_request(member_user_id, err, sizeof(err)) == 2) {
+  /* "already_friends: …" or "user_not_found: …" */
 }
 ```
 
-Same call, same round trip. A `-4` means it failed — read `arcane_sdk_last_error_json` for the code. Size the buffer to the player's friend list (a few hundred bytes per friend); a short buffer gives `-3` and an empty string, never a truncated one. Details: [C ABI](/reference/c-abi).
+`arcane_sdk_friend_request` is an action: `0` on success, `1` for a bad argument or before init, `2` with the reason in `err_buf`. `arcane_sdk_friends_json` is a getter: it returns the bytes written, and a `-4` means it failed — read `arcane_sdk_last_error_json` for the code. Size the buffer to the player's friend list (a few hundred bytes per friend); a short buffer gives `-3` and an empty string, never a truncated one. Details: [C ABI](/reference/c-abi).
 
 ## Next steps
 

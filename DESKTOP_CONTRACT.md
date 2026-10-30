@@ -431,8 +431,14 @@ desktop too old) maps to `feature_unavailable`.
 ```
 GET /v1/friends
 → 200 { "friends": [ { "user_id": "…", "pseudo": "…", "online": true,
-         "playing_game_id": "…|null" } ], "stale": false }
+         "playing_game_id": "…|null", "joinable": false, "lobby_id": "…|null" } ],
+       "stale": false }
 → 401 not_authenticated
+
+POST /v1/friends/requests { "user_id": "<uuid>" }
+→ 200 { "ok": true }
+→ 400 invalid_request · 400 friend_request_self · 404 user_not_found
+→ 409 already_friends · 401 not_authenticated
 ```
 
 - The route is **not** scoped to a title: it answers for the signed-in account, and the
@@ -445,9 +451,14 @@ GET /v1/friends
 - `playing_game_id` is the `game_id` of the title the friend is playing — the same value
   the desktop puts in `ARCANE_GAME_ID` and the SDK puts in the `{game_id}` routes. The desktop sets
   that presence itself, so nothing here depends on the game.
+- `lobby_id` and `joinable` mirror the friend's presence: set while they are online in a
+  lobby of any visibility but `code`, `joinable` while it has a free slot. The desktop app sends them for any title; the SDK keeps them only when
+  `in_game`, so a game never sees a lobby of another title.
+- `POST /v1/friends/requests` relays to cloud `POST /friends/request { user_id }`. The
+  request shows in the other player's launcher; accepting, chat and the overlay stay
+  launcher flows.
 - One synchronous round trip on the calling thread. The SDK never polls friends in the
   background and never opens the deep link for them.
-- Friend requests, chat and the overlay are launcher flows. The SDK only reads presence.
 
 ### What the SDK does around this
 
@@ -457,7 +468,9 @@ GET /v1/friends
 | Desktop older than this route | Bare `404` → `feature_unavailable` |
 | `401 not_authenticated` | `not_authenticated`, retryable — the player can sign in and retry |
 | `ARCANE_OFFLINE_ONLY` set | `network_required`, raised before any call |
-| A friend is playing another title | Their `in_game` is `false`; `online` still comes through |
+| A friend is playing another title | Their `in_game` is `false`; `online` still comes through, `joinable` is `false` and `lobby_id` is `None` |
+| `send_request` to this player's own id | `invalid_argument`, raised before any call |
+| `404 user_not_found` · `409 already_friends` | The matching SDK code, with `user_id` in the error context |
 
 ---
 

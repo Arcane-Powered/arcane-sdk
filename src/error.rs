@@ -45,6 +45,11 @@ pub enum ErrorCode {
     NotFriends,
     /// Only the lobby's host may do this — change its metadata or close it.
     NotHost,
+    /// No Arcane account has that id.
+    UserNotFound,
+    /// You are already friends with that player, or a friend request between
+    /// you is already pending either way.
+    AlreadyFriends,
     /// The coop network was asked for a lobby this player is not a member of.
     NotInLobby,
     /// The Arcane desktop app has no play session open for this game, so it
@@ -90,6 +95,8 @@ impl ErrorCode {
             Self::LobbyClosed => "lobby_closed",
             Self::NotFriends => "not_friends",
             Self::NotHost => "not_host",
+            Self::UserNotFound => "user_not_found",
+            Self::AlreadyFriends => "already_friends",
             Self::NotInLobby => "not_in_lobby",
             Self::NoOpenSession => "no_open_session",
             Self::RateLimited => "rate_limited",
@@ -304,6 +311,14 @@ impl SdkError {
 
     pub(crate) fn not_host(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::NotHost, message)
+    }
+
+    pub(crate) fn user_not_found(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::UserNotFound, message)
+    }
+
+    pub(crate) fn already_friends(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::AlreadyFriends, message)
     }
 
     pub(crate) fn not_in_lobby(message: impl Into<String>) -> Self {
