@@ -212,6 +212,9 @@ for friend in &list.friends {
 impl P2p<'_> {
     pub fn create_lobby(&self, max_players: u8, visibility: Visibility, payload: &[u8])
         -> Result<Lobby, SdkError>;
+    pub fn create(&self, options: LobbyOptions<'_>) -> Result<Lobby, SdkError>;
+    pub fn set_metadata(&self, lobby_id: &str, metadata: &[(&str, &str)]) -> Result<Lobby, SdkError>;
+    pub fn search(&self, query: &LobbyQuery) -> Result<Vec<LobbySummary>, SdkError>;
     pub fn join_by_code(&self, join_code: &str, payload: &[u8]) -> Result<Lobby, SdkError>;
     pub fn join(&self, lobby_id: &str, payload: &[u8]) -> Result<Lobby, SdkError>;
     pub fn get_lobby(&self, lobby_id: &str) -> Result<Lobby, SdkError>;
@@ -238,6 +241,14 @@ let joined = client.p2p().join_by_code("k7p3qx", my_endpoint)?;   // case-insens
 ```
 
 **Errors:** `invalid_argument` for an oversized payload, a join code that is not six characters of `A–H J–N P–Z 2–9`, or a `lobby_id` outside `A–Za–z0–9-` — all raised before any network call; `lobby_not_found`, `lobby_full`, `lobby_closed`, `not_friends`, `not_owned`, `not_authenticated`, `network_required`, `arcane_unavailable`, `feature_unavailable`.
+
+### `create`, `set_metadata`, `search`
+
+`create` takes a `LobbyOptions` — `max_players`, `visibility`, `payload` and up to `MAX_LOBBY_METADATA_PAIRS` (16) `metadata` pairs — and is the only way to open a `Visibility::Public` lobby with metadata; `create_lobby` is `create` with no metadata. `set_metadata` replaces the whole set on a lobby this player hosts and sends the other members `LobbyUpdated`. `search` lists open public lobbies of this game, friends' first, every `LobbyQuery::filters` pair matched exactly, at most `MAX_LOBBY_SEARCH_RESULTS` (50).
+
+Keys are 1–`MAX_LOBBY_METADATA_KEY_LEN` (32) characters of `a–z 0–9 _`, values at most `MAX_LOBBY_METADATA_VALUE_LEN` (128). Anything else is `invalid_argument` before any call.
+
+**Errors:** those of `create_lobby`, plus `not_host` from `set_metadata` and `rate_limited` from `search`.
 
 ### `get_lobby`
 
@@ -371,7 +382,7 @@ pub enum LobbyPollingState {
     Unavailable,      // the desktop app predates the lobby routes
 }
 
-pub enum Visibility { Friends, Code, FriendsAndCode }
+pub enum Visibility { Friends, Code, FriendsAndCode, Public }
 
 pub struct Lobby {
     pub lobby_id: String,
@@ -380,6 +391,30 @@ pub struct Lobby {
     pub host_payload: Vec<u8>,         // the host's connection blob, decoded
     pub members: Vec<LobbyMember>,
     pub max_players: u8,
+    pub metadata: BTreeMap<String, String>,   // the host's searchable pairs
+}
+
+pub struct LobbyOptions<'a> {
+    pub max_players: u8,
+    pub visibility: Visibility,
+    pub payload: &'a [u8],
+    pub metadata: &'a [(&'a str, &'a str)],
+}
+
+pub struct LobbyQuery {
+    pub filters: Vec<(String, String)>,       // every pair must match exactly
+    pub has_free_slot: bool,                  // default true
+    pub limit: u8,                            // 1..=50, default 20
+}
+
+pub struct LobbySummary {
+    pub lobby_id: String,
+    pub host_user_id: String,
+    pub host_pseudo: String,
+    pub members: u8,
+    pub max_players: u8,
+    pub metadata: BTreeMap<String, String>,
+    pub host_is_friend: bool,
 }
 
 pub struct LobbyMember {
@@ -394,6 +429,7 @@ pub enum LobbyEvent {
     MemberJoined { lobby_id: String, user_id: String, pseudo: String, payload: Vec<u8> },
     MemberLeft   { lobby_id: String, user_id: String },
     LobbyClosed  { lobby_id: String },
+    LobbyUpdated { lobby_id: String, metadata: BTreeMap<String, String> },
     Resync,                            // events were dropped — re-read with get_lobby
 }
 
@@ -404,9 +440,14 @@ pub const MAX_GAME_ID_LEN: usize = 256;
 pub const MAX_ACHIEVEMENT_KEY_LEN: usize = 64;
 pub const MAX_LOBBY_PAYLOAD_LEN: usize = 4096;
 pub const JOIN_CODE_LEN: usize = 6;
+pub const MAX_LOBBY_METADATA_PAIRS: usize = 16;
+pub const MAX_LOBBY_METADATA_KEY_LEN: usize = 32;
+pub const MAX_LOBBY_METADATA_VALUE_LEN: usize = 128;
+pub const MAX_LOBBY_METADATA_BYTES: usize = 2048;
+pub const MAX_LOBBY_SEARCH_RESULTS: u8 = 50;
 ```
 
-`OwnershipStatus` implements `Display` (`"owned"` / `"drm_disabled"`), and so do `TrackingState` (`"active"` / `"pending"` / `"disabled"`), `LobbyPollingState` (`"off"` / `"active"` / `"unavailable"`) and `Visibility` (`"friends"` / `"code"` / `"friends_and_code"`). `SessionSnapshot` is `Debug + Clone`; `Achievement`, `Unlock`, `Friend`, `FriendList`, `Lobby`, `LobbyMember` and `LobbyEvent` are `Debug + Clone + PartialEq`. `LobbyEvent::lobby_id()` reads the lobby id of any variant, and `None` for `Resync`, which is about every lobby this client is in.
+`OwnershipStatus` implements `Display` (`"owned"` / `"drm_disabled"`), and so do `TrackingState` (`"active"` / `"pending"` / `"disabled"`), `LobbyPollingState` (`"off"` / `"active"` / `"unavailable"`) and `Visibility` (`"friends"` / `"code"` / `"friends_and_code"` / `"public"`). `SessionSnapshot` is `Debug + Clone`; `Achievement`, `Unlock`, `Friend`, `FriendList`, `Lobby`, `LobbyMember`, `LobbyQuery`, `LobbySummary` and `LobbyEvent` are `Debug + Clone + PartialEq`, `LobbyOptions` is `Debug + Clone + Copy`, and `LobbyQuery::default()` searches 20 lobbies with a free slot and no filter. `LobbyEvent::lobby_id()` reads the lobby id of any variant, and `None` for `Resync`, which is about every lobby this client is in.
 
 ## Crate types
 

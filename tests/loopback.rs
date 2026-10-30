@@ -15,7 +15,9 @@ use std::time::{Duration, Instant};
 use std::os::raw::{c_char, c_int};
 
 use arcane_sdk::ffi;
-use arcane_sdk::{ArcaneClient, LobbyEvent, OwnershipStatus, TrackingState, Visibility};
+use arcane_sdk::{
+    ArcaneClient, LobbyEvent, LobbyOptions, LobbyQuery, OwnershipStatus, TrackingState, Visibility,
+};
 use tempfile::TempDir;
 
 const GAME_ID: &str = "7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34";
@@ -33,6 +35,7 @@ struct Reply {
 #[derive(Clone, Debug)]
 struct Request {
     line: String,
+    headers: Vec<String>,
     body: String,
 }
 
@@ -157,6 +160,7 @@ impl Drop for Stub {
         std::env::remove_var("ARCANE_GAME_ID");
         std::env::remove_var("ARCANE_USER_ID");
         std::env::remove_var("ARCANE_SESSION_TICK_MS");
+        std::env::remove_var("ARCANE_SDK_TOKEN");
     }
 }
 
@@ -187,6 +191,7 @@ where
     }
 
     let mut content_length = 0usize;
+    let mut headers = Vec::new();
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line) {
@@ -194,6 +199,7 @@ where
             Ok(_) if line == "\r\n" || line == "\n" => break,
             Ok(_) => {
                 let lowered = line.to_ascii_lowercase();
+                headers.push(lowered.trim_end().to_string());
                 if let Some(value) = lowered.strip_prefix("content-length:") {
                     content_length = value.trim().parse().unwrap_or(0);
                 }
@@ -209,6 +215,7 @@ where
 
     let request = Request {
         line: request_line,
+        headers,
         body: String::from_utf8_lossy(&body).to_string(),
     };
     let reply = handler(&request);
@@ -278,10 +285,7 @@ fn a_refresh_response_field_wins_over_the_health_field() {
 fn the_c_abi_reports_the_game_id_init_was_given_before_any_refresh() {
     let _stub = Stub::start(HEALTHY, DRM_OFF);
 
-    assert_eq!(
-        unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) },
-        0
-    );
+    assert_eq!(unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) }, 0);
 
     let mut buf = [0 as c_char; 128];
     let written = unsafe { ffi::arcane_sdk_game_id(buf.as_mut_ptr(), buf.len()) };
@@ -908,10 +912,7 @@ fn the_c_abi_singleton_sees_the_cache_filled_through_its_clone() {
         ACHIEVEMENTS,
     );
 
-    assert_eq!(
-        unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) },
-        0
-    );
+    assert_eq!(unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) }, 0);
     assert_eq!(
         unsafe { ffi::arcane_sdk_achievement_is_unlocked(c"first_blood".as_ptr()) },
         -4,
@@ -1112,10 +1113,7 @@ fn offline_only_mode_refuses_the_friend_list_without_a_request() {
 fn the_c_abi_writes_the_friend_list_as_json() {
     let _stub = friends_stub(FRIENDS);
 
-    assert_eq!(
-        unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) },
-        0
-    );
+    assert_eq!(unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) }, 0);
 
     let mut buf = [0 as c_char; 2048];
     let written = unsafe { ffi::arcane_sdk_friends_json(buf.as_mut_ptr(), buf.len()) };
@@ -1171,10 +1169,7 @@ const AWKWARD_FRIEND: Reply = Reply {
 fn the_c_abi_escapes_a_pseudo_that_carries_json_metacharacters() {
     let _stub = friends_stub(AWKWARD_FRIEND);
 
-    assert_eq!(
-        unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) },
-        0
-    );
+    assert_eq!(unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) }, 0);
 
     let mut buf = [0 as c_char; 2048];
     assert!(unsafe { ffi::arcane_sdk_friends_json(buf.as_mut_ptr(), buf.len()) } > 0);
@@ -1699,10 +1694,7 @@ fn arming_wakes_the_session_thread_rather_than_waiting_out_its_tick() {
 fn the_c_abi_writes_a_lobby_as_json() {
     let _stub = lobby_stub(LOBBY);
 
-    assert_eq!(
-        unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) },
-        0
-    );
+    assert_eq!(unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) }, 0);
 
     let mut buf = [0 as c_char; 4096];
     let written = unsafe {
@@ -1784,10 +1776,7 @@ fn the_c_abi_keeps_the_events_queued_when_the_buffer_is_too_small() {
     });
     std::env::set_var("ARCANE_SESSION_TICK_MS", "150");
 
-    assert_eq!(
-        unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) },
-        0
-    );
+    assert_eq!(unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) }, 0);
 
     // Exactly the size of an empty queue: `{"events":[]}` plus its NUL.
     let mut tiny = [0 as c_char; 14];
@@ -2050,10 +2039,7 @@ fn the_c_abi_reads_a_lobby_and_renders_a_resync() {
     });
     std::env::set_var("ARCANE_SESSION_TICK_MS", "150");
 
-    assert_eq!(
-        unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) },
-        0
-    );
+    assert_eq!(unsafe { ffi::arcane_sdk_init(std::ptr::null_mut(), 0) }, 0);
 
     let mut buf = [0 as c_char; 4096];
     let written =
@@ -2154,4 +2140,204 @@ fn the_c_abi_reports_an_invalid_game_id_env() {
     assert_eq!(rc, 2);
     assert!(read_c_string(&err).starts_with("invalid_game_id:"));
     assert_eq!(ffi::arcane_sdk_is_initialized(), 0);
+}
+
+const SEARCH: Reply = Reply {
+    status: "200 OK",
+    body: r#"{"lobbies":[{"lobby_id":"lobby-2","host_user_id":"user-c","host_pseudo":"Cy",
+              "members":1,"max_players":4,"metadata":{"mode":"coop"},"host_is_friend":true}]}"#,
+};
+
+const NOT_HOST: Reply = Reply {
+    status: "403 Forbidden",
+    body: r#"{"error":"not_host","message":"only the host"}"#,
+};
+
+const SEARCH_RATE_LIMITED: Reply = Reply {
+    status: "429 Too Many Requests",
+    body: r#"{"error":"rate_limited","message":"slow down"}"#,
+};
+
+fn public_lobby_stub(search: Reply, metadata: Reply) -> Stub {
+    Stub::start_with(move |request| {
+        if request.line.contains("/v1/health") {
+            HEALTHY
+        } else if request.line.contains("/lobbies/events") {
+            NO_EVENTS
+        } else if request.line.contains("/launch-context") {
+            NO_LAUNCH_CODE
+        } else if request.line.contains("/lobbies/search") {
+            search
+        } else if request.line.contains("/metadata") {
+            metadata
+        } else if request.line.contains("/lobbies") {
+            LOBBY
+        } else {
+            DRM_OFF
+        }
+    })
+}
+
+#[test]
+fn a_public_lobby_is_created_with_its_metadata() {
+    let stub = public_lobby_stub(SEARCH, LOBBY);
+    let client = ArcaneClient::init().expect("init");
+
+    client
+        .p2p()
+        .create(LobbyOptions {
+            max_players: 4,
+            visibility: Visibility::Public,
+            payload: HOST_PAYLOAD,
+            metadata: &[("mode", "coop")],
+        })
+        .expect("create");
+
+    let created = stub.matching("/lobbies ");
+    assert_eq!(created.len(), 1);
+    let body = created[0].json();
+    assert_eq!(body["visibility"], "public");
+    assert_eq!(body["metadata"]["mode"], "coop");
+}
+
+#[test]
+fn searching_sends_the_filters_and_maps_the_summaries() {
+    let stub = public_lobby_stub(SEARCH, LOBBY);
+    let client = ArcaneClient::init().expect("init");
+
+    let found = client
+        .p2p()
+        .search(&LobbyQuery {
+            filters: vec![("mode".into(), "coop".into())],
+            ..LobbyQuery::default()
+        })
+        .expect("search");
+
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].lobby_id, "lobby-2");
+    assert_eq!(found[0].host_pseudo, "Cy");
+    assert!(found[0].host_is_friend);
+    assert_eq!(
+        found[0].metadata.get("mode").map(String::as_str),
+        Some("coop")
+    );
+
+    let searched = stub.matching("/lobbies/search");
+    assert_eq!(searched.len(), 1);
+    assert!(searched[0]
+        .line
+        .contains("/lobbies/search?has_free_slot=true&limit=20&meta.mode=coop "));
+}
+
+#[test]
+fn a_bad_filter_or_limit_never_reaches_the_desktop() {
+    let stub = public_lobby_stub(SEARCH, LOBBY);
+    let client = ArcaneClient::init().expect("init");
+
+    let bad_key = client.p2p().search(&LobbyQuery {
+        filters: vec![("Mode".into(), "coop".into())],
+        ..LobbyQuery::default()
+    });
+    assert_eq!(bad_key.expect_err("bad key").code(), "invalid_argument");
+
+    let bad_limit = client.p2p().search(&LobbyQuery {
+        limit: 0,
+        ..LobbyQuery::default()
+    });
+    assert_eq!(bad_limit.expect_err("bad limit").code(), "invalid_argument");
+
+    assert!(stub.matching("/lobbies/search").is_empty());
+}
+
+#[test]
+fn a_search_past_the_rate_limit_is_its_own_code() {
+    let _stub = public_lobby_stub(SEARCH_RATE_LIMITED, LOBBY);
+    let client = ArcaneClient::init().expect("init");
+
+    let err = client
+        .p2p()
+        .search(&LobbyQuery::default())
+        .expect_err("limited");
+    assert_eq!(err.code(), "rate_limited");
+    assert!(err.is_retryable());
+}
+
+#[test]
+fn setting_metadata_patches_the_lobby_and_maps_not_host() {
+    let stub = public_lobby_stub(SEARCH, LOBBY);
+    let client = ArcaneClient::init().expect("init");
+
+    client
+        .p2p()
+        .set_metadata("lobby-1", &[("map", "docks")])
+        .expect("set metadata");
+
+    let patched = stub.matching("/metadata");
+    assert_eq!(patched.len(), 1);
+    assert!(patched[0].line.starts_with(
+        "PATCH /v1/games/7c9e6f21-4b58-4a3d-8e10-5d2f9b0c1a34/lobbies/lobby-1/metadata "
+    ));
+    assert_eq!(patched[0].json()["metadata"]["map"], "docks");
+    drop(client);
+    drop(stub);
+
+    let _stub = public_lobby_stub(SEARCH, NOT_HOST);
+    let client = ArcaneClient::init().expect("init");
+    let err = client
+        .p2p()
+        .set_metadata("lobby-1", &[("map", "docks")])
+        .expect_err("not the host");
+    assert_eq!(err.code(), "not_host");
+}
+
+#[test]
+fn every_call_carries_the_launch_token_and_bodyless_posts_are_json() {
+    let stub = lobby_stub(Reply {
+        status: "200 OK",
+        body: r#"{"lobby_id":"lobby-1","join_code":null,"host_user_id":"user-host",
+                  "host_payload":"dWRwOi8vMTAuMC4wLjE6Nzc3Nw==","max_players":4,"members":[]}"#,
+    });
+    std::env::set_var("ARCANE_SDK_TOKEN", " launch-secret ");
+    let client = ArcaneClient::init().expect("init");
+    client.p2p().get_lobby("lobby-1").expect("get");
+    client.p2p().leave("lobby-1").expect("leave");
+
+    let requests = stub.matching("/lobbies/lobby-1");
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        assert!(
+            request
+                .headers
+                .iter()
+                .any(|h| h == "authorization: bearer launch-secret"),
+            "no token on {}",
+            request.line.trim_end()
+        );
+    }
+
+    let left = stub.matching("/lobbies/lobby-1/leave");
+    assert_eq!(left.len(), 1);
+    assert!(left[0]
+        .headers
+        .iter()
+        .any(|h| h == "content-type: application/json"));
+}
+
+#[test]
+fn a_refused_launch_token_reads_as_arcane_unavailable() {
+    let _stub = Stub::start_with(|request| {
+        if request.line.contains("/v1/health") {
+            HEALTHY
+        } else if request.line.contains("/lobbies/") {
+            Reply {
+                status: "401 Unauthorized",
+                body: r#"{"error":"sdk_token_required","message":"Send Authorization."}"#,
+            }
+        } else {
+            DRM_OFF
+        }
+    });
+    let client = ArcaneClient::init().expect("init");
+    let err = client.p2p().get_lobby("lobby-1").expect_err("refused");
+    assert_eq!(err.code(), "arcane_unavailable");
 }

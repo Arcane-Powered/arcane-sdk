@@ -15,16 +15,23 @@
 //!   `-3` buffer too small, `-4` value not available.
 //!
 //! Every failure is also recorded for `arcane_sdk_last_error_json`.
+//!
+//! No panic ever crosses into the engine: every entry point catches it, records
+//! an `internal` error and answers its failure value, so the game keeps running.
 
+use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_longlong};
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::RwLock;
+
+use serde::Deserialize;
 
 use crate::achievements;
 use crate::client::ArcaneClient;
 use crate::error::{OwnershipStatus, SdkError};
 use crate::friends;
-use crate::p2p::{self, Visibility};
+use crate::p2p::{self, LobbyOptions, LobbyQuery, Visibility};
 
 /// Action return codes.
 pub const ARCANE_OK: c_int = 0;
@@ -45,6 +52,7 @@ pub const ARCANE_OWNERSHIP_DRM_DISABLED: c_int = 1;
 pub const ARCANE_LOBBY_FRIENDS: c_int = 0;
 pub const ARCANE_LOBBY_CODE: c_int = 1;
 pub const ARCANE_LOBBY_FRIENDS_AND_CODE: c_int = 2;
+pub const ARCANE_LOBBY_PUBLIC: c_int = 3;
 
 static CLIENT: RwLock<Option<ArcaneClient>> = RwLock::new(None);
 static LAST_ERROR: RwLock<Option<SdkError>> = RwLock::new(None);
@@ -126,6 +134,44 @@ where
     }
 }
 
+fn panic_error(payload: Box<dyn std::any::Any + Send>) -> SdkError {
+    let detail = payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_default();
+    let err = SdkError::internal("The Arcane SDK hit an unexpected error and recovered.")
+        .with_hint("The game can keep running; report the context to Arcane Powered.");
+    if detail.is_empty() {
+        err
+    } else {
+        err.with_context("panic", detail)
+    }
+}
+
+/// Run an entry point, answering `fallback` with an `internal` error instead of
+/// unwinding into the engine.
+fn guard<T>(fallback: T, body: impl FnOnce() -> T) -> T {
+    match panic::catch_unwind(AssertUnwindSafe(body)) {
+        Ok(value) => value,
+        Err(payload) => {
+            store_error(&panic_error(payload));
+            fallback
+        }
+    }
+}
+
+/// [`guard`] for the actions that report into an `err_buf`.
+fn guard_action(err_buf: *mut c_char, err_len: usize, body: impl FnOnce() -> c_int) -> c_int {
+    match panic::catch_unwind(AssertUnwindSafe(body)) {
+        Ok(value) => value,
+        Err(payload) => {
+            write_err(&panic_error(payload), err_buf, err_len);
+            ARCANE_ERR_SDK
+        }
+    }
+}
+
 /// Verify ownership and build the process-wide client. Call once at launch.
 ///
 /// You pass no id: Arcane Powered puts the game id of this title in
@@ -141,7 +187,7 @@ where
 /// `err_buf` must be null or point to at least `err_len` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn arcane_sdk_init(err_buf: *mut c_char, err_len: usize) -> c_int {
-    match ArcaneClient::init() {
+    guard_action(err_buf, err_len, || match ArcaneClient::init() {
         Ok(client) => {
             *CLIENT.write().unwrap_or_else(|e| e.into_inner()) = Some(client);
             clear_error();
@@ -151,7 +197,7 @@ pub unsafe extern "C" fn arcane_sdk_init(err_buf: *mut c_char, err_len: usize) -
             write_err(&err, err_buf, err_len);
             ARCANE_ERR_SDK
         }
-    }
+    })
 }
 
 /// Re-run the ownership check against Arcane desktop and update the client.
@@ -164,23 +210,27 @@ pub unsafe extern "C" fn arcane_sdk_init(err_buf: *mut c_char, err_len: usize) -
 /// `err_buf` must be null or point to at least `err_len` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn arcane_sdk_refresh(err_buf: *mut c_char, err_len: usize) -> c_int {
-    let mut guard = CLIENT.write().unwrap_or_else(|e| e.into_inner());
-    let Some(client) = guard.as_mut() else {
-        let err = SdkError::not_initialized("The Arcane SDK client is not initialised.")
-            .with_hint("Call arcane_sdk_init once at launch before calling arcane_sdk_refresh.");
-        write_err(&err, err_buf, err_len);
-        return ARCANE_ERR_ARGUMENT;
-    };
-    match client.refresh() {
-        Ok(_) => {
-            clear_error();
-            ARCANE_OK
-        }
-        Err(err) => {
+    guard_action(err_buf, err_len, || {
+        let mut guard = CLIENT.write().unwrap_or_else(|e| e.into_inner());
+        let Some(client) = guard.as_mut() else {
+            let err = SdkError::not_initialized("The Arcane SDK client is not initialised.")
+                .with_hint(
+                    "Call arcane_sdk_init once at launch before calling arcane_sdk_refresh.",
+                );
             write_err(&err, err_buf, err_len);
-            ARCANE_ERR_SDK
+            return ARCANE_ERR_ARGUMENT;
+        };
+        match client.refresh() {
+            Ok(_) => {
+                clear_error();
+                ARCANE_OK
+            }
+            Err(err) => {
+                write_err(&err, err_buf, err_len);
+                ARCANE_ERR_SDK
+            }
         }
-    }
+    })
 }
 
 /// End the play session and drop the client.
@@ -190,11 +240,13 @@ pub unsafe extern "C" fn arcane_sdk_refresh(err_buf: *mut c_char, err_len: usize
 /// want on an editor play-mode reload.
 #[no_mangle]
 pub extern "C" fn arcane_sdk_shutdown() {
-    let client = { CLIENT.write().unwrap_or_else(|e| e.into_inner()).take() };
-    if let Some(client) = client {
-        client.shutdown();
-    }
-    clear_error();
+    guard((), || {
+        let client = { CLIENT.write().unwrap_or_else(|e| e.into_inner()).take() };
+        if let Some(client) = client {
+            client.shutdown();
+        }
+        clear_error();
+    })
 }
 
 /// Count one rendered frame, for FPS sampling. Call once per frame.
@@ -203,10 +255,12 @@ pub extern "C" fn arcane_sdk_shutdown() {
 /// relaxed increment. Does nothing before `arcane_sdk_init` succeeds.
 #[no_mangle]
 pub extern "C" fn arcane_sdk_frame() {
-    let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
-    if let Some(client) = guard.as_ref() {
-        client.frame();
-    }
+    guard((), || {
+        let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(client) = guard.as_ref() {
+            client.frame();
+        }
+    })
 }
 
 /// Record the current display settings, attached to the FPS samples that follow.
@@ -226,25 +280,27 @@ pub unsafe extern "C" fn arcane_sdk_set_graphics(
     resolution: *const c_char,
     preset: *const c_char,
 ) -> c_int {
-    if resolution.is_null() || preset.is_null() {
-        return ARCANE_ERR_ARGUMENT;
-    }
-    let (Ok(resolution), Ok(preset)) = (
-        CStr::from_ptr(resolution).to_str(),
-        CStr::from_ptr(preset).to_str(),
-    ) else {
-        return ARCANE_ERR_ARGUMENT;
-    };
+    guard(ARCANE_ERR_ARGUMENT, || {
+        if resolution.is_null() || preset.is_null() {
+            return ARCANE_ERR_ARGUMENT;
+        }
+        let (Ok(resolution), Ok(preset)) = (
+            CStr::from_ptr(resolution).to_str(),
+            CStr::from_ptr(preset).to_str(),
+        ) else {
+            return ARCANE_ERR_ARGUMENT;
+        };
 
-    let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
-    let Some(client) = guard.as_ref() else {
-        let err = SdkError::not_initialized("The Arcane SDK client is not initialised.")
-            .with_hint("Call arcane_sdk_init once at launch before arcane_sdk_set_graphics.");
-        store_error(&err);
-        return ARCANE_ERR_ARGUMENT;
-    };
-    client.set_graphics(resolution, preset);
-    ARCANE_OK
+        let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
+        let Some(client) = guard.as_ref() else {
+            let err = SdkError::not_initialized("The Arcane SDK client is not initialised.")
+                .with_hint("Call arcane_sdk_init once at launch before arcane_sdk_set_graphics.");
+            store_error(&err);
+            return ARCANE_ERR_ARGUMENT;
+        };
+        client.set_graphics(resolution, preset);
+        ARCANE_OK
+    })
 }
 
 /// Write the play session state as JSON into `buf`:
@@ -257,7 +313,9 @@ pub unsafe extern "C" fn arcane_sdk_set_graphics(
 /// `buf` must be null or point to at least `len` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn arcane_sdk_session_json(buf: *mut c_char, len: usize) -> c_int {
-    with_client(buf, len, |c| Some(c.session().to_json()))
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        with_client(buf, len, |c| Some(c.session().to_json()))
+    })
 }
 
 /// Write every achievement of this title as JSON into `buf`:
@@ -277,22 +335,24 @@ pub unsafe extern "C" fn arcane_sdk_session_json(buf: *mut c_char, len: usize) -
 /// `buf` must be null or point to at least `len` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn arcane_sdk_achievements_json(buf: *mut c_char, len: usize) -> c_int {
-    let Some(client) = client_snapshot() else {
-        let err = SdkError::not_initialized("The Arcane SDK client is not initialised.")
-            .with_hint("Call arcane_sdk_init once at launch before reading achievements.");
-        store_error(&err);
-        return ARCANE_ERR_NOT_INITIALIZED;
-    };
-    match client.achievements().list() {
-        Ok(list) => {
-            clear_error();
-            write_str(&achievements::to_json(&list), buf, len)
-        }
-        Err(err) => {
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        let Some(client) = client_snapshot() else {
+            let err = SdkError::not_initialized("The Arcane SDK client is not initialised.")
+                .with_hint("Call arcane_sdk_init once at launch before reading achievements.");
             store_error(&err);
-            ARCANE_ERR_UNAVAILABLE
+            return ARCANE_ERR_NOT_INITIALIZED;
+        };
+        match client.achievements().list() {
+            Ok(list) => {
+                clear_error();
+                write_str(&achievements::to_json(&list), buf, len)
+            }
+            Err(err) => {
+                store_error(&err);
+                ARCANE_ERR_UNAVAILABLE
+            }
         }
-    }
+    })
 }
 
 /// Unlock an achievement for the signed-in player.
@@ -315,29 +375,33 @@ pub unsafe extern "C" fn arcane_sdk_achievement_unlock(
     err_buf: *mut c_char,
     err_len: usize,
 ) -> c_int {
-    if key.is_null() {
-        return ARCANE_ERR_ARGUMENT;
-    }
-    let Ok(key) = CStr::from_ptr(key).to_str() else {
-        return ARCANE_ERR_ARGUMENT;
-    };
+    guard_action(err_buf, err_len, || {
+        if key.is_null() {
+            return ARCANE_ERR_ARGUMENT;
+        }
+        let Ok(key) = CStr::from_ptr(key).to_str() else {
+            return ARCANE_ERR_ARGUMENT;
+        };
 
-    let Some(client) = client_snapshot() else {
-        let err = SdkError::not_initialized("The Arcane SDK client is not initialised.")
-            .with_hint("Call arcane_sdk_init once at launch before arcane_sdk_achievement_unlock.");
-        write_err(&err, err_buf, err_len);
-        return ARCANE_ERR_ARGUMENT;
-    };
-    match client.achievements().unlock(key) {
-        Ok(_) => {
-            clear_error();
-            ARCANE_OK
-        }
-        Err(err) => {
+        let Some(client) = client_snapshot() else {
+            let err = SdkError::not_initialized("The Arcane SDK client is not initialised.")
+                .with_hint(
+                    "Call arcane_sdk_init once at launch before arcane_sdk_achievement_unlock.",
+                );
             write_err(&err, err_buf, err_len);
-            ARCANE_ERR_SDK
+            return ARCANE_ERR_ARGUMENT;
+        };
+        match client.achievements().unlock(key) {
+            Ok(_) => {
+                clear_error();
+                ARCANE_OK
+            }
+            Err(err) => {
+                write_err(&err, err_buf, err_len);
+                ARCANE_ERR_SDK
+            }
         }
-    }
+    })
 }
 
 /// Whether an achievement is unlocked, from the cache the last
@@ -353,21 +417,23 @@ pub unsafe extern "C" fn arcane_sdk_achievement_unlock(
 /// `key` must be a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn arcane_sdk_achievement_is_unlocked(key: *const c_char) -> c_int {
-    if key.is_null() {
-        return ARCANE_ERR_BAD_BUFFER;
-    }
-    let Ok(key) = CStr::from_ptr(key).to_str() else {
-        return ARCANE_ERR_BAD_BUFFER;
-    };
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        if key.is_null() {
+            return ARCANE_ERR_BAD_BUFFER;
+        }
+        let Ok(key) = CStr::from_ptr(key).to_str() else {
+            return ARCANE_ERR_BAD_BUFFER;
+        };
 
-    let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
-    let Some(client) = guard.as_ref() else {
-        return ARCANE_ERR_NOT_INITIALIZED;
-    };
-    match client.achievements().is_unlocked(key) {
-        Some(unlocked) => c_int::from(unlocked),
-        None => ARCANE_ERR_UNAVAILABLE,
-    }
+        let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
+        let Some(client) = guard.as_ref() else {
+            return ARCANE_ERR_NOT_INITIALIZED;
+        };
+        match client.achievements().is_unlocked(key) {
+            Some(unlocked) => c_int::from(unlocked),
+            None => ARCANE_ERR_UNAVAILABLE,
+        }
+    })
 }
 
 /// Write this player's friends as JSON into `buf`:
@@ -387,22 +453,24 @@ pub unsafe extern "C" fn arcane_sdk_achievement_is_unlocked(key: *const c_char) 
 /// `buf` must be null or point to at least `len` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn arcane_sdk_friends_json(buf: *mut c_char, len: usize) -> c_int {
-    let Some(client) = client_snapshot() else {
-        let err = SdkError::not_initialized("The Arcane SDK client is not initialised.")
-            .with_hint("Call arcane_sdk_init once at launch before reading friends.");
-        store_error(&err);
-        return ARCANE_ERR_NOT_INITIALIZED;
-    };
-    match client.friends().list() {
-        Ok(list) => {
-            clear_error();
-            write_str(&friends::to_json(&list), buf, len)
-        }
-        Err(err) => {
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        let Some(client) = client_snapshot() else {
+            let err = SdkError::not_initialized("The Arcane SDK client is not initialised.")
+                .with_hint("Call arcane_sdk_init once at launch before reading friends.");
             store_error(&err);
-            ARCANE_ERR_UNAVAILABLE
+            return ARCANE_ERR_NOT_INITIALIZED;
+        };
+        match client.friends().list() {
+            Ok(list) => {
+                clear_error();
+                write_str(&friends::to_json(&list), buf, len)
+            }
+            Err(err) => {
+                store_error(&err);
+                ARCANE_ERR_UNAVAILABLE
+            }
         }
-    }
+    })
 }
 
 /// Read a NUL-terminated C string, treating null as absent.
@@ -436,6 +504,7 @@ fn visibility_arg(visibility: c_int) -> Option<Visibility> {
         ARCANE_LOBBY_FRIENDS => Some(Visibility::Friends),
         ARCANE_LOBBY_CODE => Some(Visibility::Code),
         ARCANE_LOBBY_FRIENDS_AND_CODE => Some(Visibility::FriendsAndCode),
+        ARCANE_LOBBY_PUBLIC => Some(Visibility::Public),
         _ => None,
     }
 }
@@ -470,11 +539,11 @@ fn lobby_client(action: &str) -> Result<ArcaneClient, SdkError> {
 
 /// Open a lobby with this player as its host and write it as JSON into `buf`.
 ///
-/// `visibility` is `ARCANE_LOBBY_FRIENDS` (0), `ARCANE_LOBBY_CODE` (1) or
-/// `ARCANE_LOBBY_FRIENDS_AND_CODE` (2). `payload_b64` is your connection blob,
+/// `visibility` is `ARCANE_LOBBY_FRIENDS` (0), `ARCANE_LOBBY_CODE` (1),
+/// `ARCANE_LOBBY_FRIENDS_AND_CODE` (2) or `ARCANE_LOBBY_PUBLIC` (3). `payload_b64` is your connection blob,
 /// base64-encoded, at most 4096 raw bytes — null means no payload. The JSON is
 /// `{"lobby_id","join_code","host_user_id","host_payload","members":[{"user_id",
-/// "pseudo","payload"}],"max_players"}`, payloads base64.
+/// "pseudo","payload"}],"max_players","metadata":{}}`, payloads base64.
 ///
 /// One synchronous loopback call — never from the render loop. Returns the
 /// bytes written, or `-1` when not initialised, `-2` on a bad argument or
@@ -493,25 +562,234 @@ pub unsafe extern "C" fn arcane_sdk_lobby_create(
     buf: *mut c_char,
     len: usize,
 ) -> c_int {
-    let Some(payload) = payload_arg(payload_b64) else {
-        return bad_lobby_argument("The lobby payload is null-terminated but not base64.");
-    };
-    let Some(visibility) = visibility_arg(visibility) else {
-        return bad_lobby_argument("That is not an Arcane lobby visibility.");
-    };
-    let client = match lobby_client("arcane_sdk_lobby_create") {
-        Ok(client) => client,
-        Err(err) => {
-            store_error(&err);
-            return ARCANE_ERR_NOT_INITIALIZED;
-        }
-    };
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        let Some(payload) = payload_arg(payload_b64) else {
+            return bad_lobby_argument("The lobby payload is null-terminated but not base64.");
+        };
+        let Some(visibility) = visibility_arg(visibility) else {
+            return bad_lobby_argument("That is not an Arcane lobby visibility.");
+        };
+        let client = match lobby_client("arcane_sdk_lobby_create") {
+            Ok(client) => client,
+            Err(err) => {
+                store_error(&err);
+                return ARCANE_ERR_NOT_INITIALIZED;
+            }
+        };
 
-    lobby_result(
-        client.p2p().create_lobby(max_players, visibility, &payload),
-        buf,
-        len,
-    )
+        lobby_result(
+            client.p2p().create_lobby(max_players, visibility, &payload),
+            buf,
+            len,
+        )
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateOptionsArg {
+    max_players: u8,
+    visibility: String,
+    #[serde(default)]
+    payload: Option<String>,
+    #[serde(default)]
+    metadata: BTreeMap<String, String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MetadataArg {
+    #[serde(default)]
+    metadata: BTreeMap<String, String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchArg {
+    #[serde(default)]
+    filters: BTreeMap<String, String>,
+    #[serde(default)]
+    has_free_slot: Option<bool>,
+    #[serde(default)]
+    limit: Option<u8>,
+}
+
+fn visibility_name(name: &str) -> Option<Visibility> {
+    match name {
+        "friends" => Some(Visibility::Friends),
+        "code" => Some(Visibility::Code),
+        "friends_and_code" => Some(Visibility::FriendsAndCode),
+        "public" => Some(Visibility::Public),
+        _ => None,
+    }
+}
+
+/// # Safety
+///
+/// `raw` must be null or a valid NUL-terminated C string.
+unsafe fn json_arg<T: for<'de> Deserialize<'de>>(raw: *const c_char, empty: &str) -> Option<T> {
+    let text = match c_str(raw)? {
+        Some(text) if !text.trim().is_empty() => text,
+        _ => empty,
+    };
+    serde_json::from_str(text).ok()
+}
+
+fn bad_json_argument(detail: &str) -> c_int {
+    let err = SdkError::invalid_argument(detail).with_hint(
+        "Pass a JSON object as documented in arcane_sdk.h; metadata is at most 16 string pairs.",
+    );
+    store_error(&err);
+    ARCANE_ERR_BAD_BUFFER
+}
+
+fn initialized_client(action: &str) -> Result<ArcaneClient, c_int> {
+    lobby_client(action).map_err(|err| {
+        store_error(&err);
+        ARCANE_ERR_NOT_INITIALIZED
+    })
+}
+
+/// Open a lobby from a JSON options object and write it as JSON into `buf`.
+///
+/// `options_json` is `{"max_players":4,"visibility":"public","payload":"<base64>",
+/// "metadata":{"mode":"coop"}}` — `visibility` is `friends`, `code`,
+/// `friends_and_code` or `public`; `payload` and `metadata` are optional. A
+/// `public` lobby is listed by `arcane_sdk_lobby_search` to every player who
+/// owns the game. Same JSON out, return values and threading rules as
+/// `arcane_sdk_lobby_create`, with `"metadata"` added.
+///
+/// # Safety
+///
+/// `options_json` must be null or a valid NUL-terminated C string. `buf` must
+/// be null or point to at least `len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_lobby_create_json(
+    options_json: *const c_char,
+    buf: *mut c_char,
+    len: usize,
+) -> c_int {
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        let Some(options) = json_arg::<CreateOptionsArg>(options_json, "") else {
+            return bad_json_argument("The lobby options are not a valid JSON object.");
+        };
+        let Some(visibility) = visibility_name(&options.visibility) else {
+            return bad_json_argument("That is not an Arcane lobby visibility.");
+        };
+        let Some(payload) = p2p::decode_payload_arg(options.payload.as_deref().unwrap_or_default())
+        else {
+            return bad_lobby_argument("The lobby payload is not base64.");
+        };
+        let client = match initialized_client("arcane_sdk_lobby_create_json") {
+            Ok(client) => client,
+            Err(code) => return code,
+        };
+        let metadata: Vec<(&str, &str)> = options
+            .metadata
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+
+        lobby_result(
+            client.p2p().create(LobbyOptions {
+                max_players: options.max_players,
+                visibility,
+                payload: &payload,
+                metadata: &metadata,
+            }),
+            buf,
+            len,
+        )
+    })
+}
+
+/// Replace the metadata of a lobby this player hosts, and write the lobby as
+/// JSON into `buf`.
+///
+/// `metadata_json` is `{"metadata":{"map":"harbor","mode":"coop"}}`: the whole
+/// set, not a patch — `{}` clears it. The other members get a `lobby_updated`
+/// event. Same return values as `arcane_sdk_lobby_create`; a caller that is
+/// not the host gets `-4` with `not_host`.
+///
+/// # Safety
+///
+/// `lobby_id` and `metadata_json` must be null or valid NUL-terminated C
+/// strings. `buf` must be null or point to at least `len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_lobby_set_metadata(
+    lobby_id: *const c_char,
+    metadata_json: *const c_char,
+    buf: *mut c_char,
+    len: usize,
+) -> c_int {
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        let Some(Some(lobby_id)) = c_str(lobby_id) else {
+            return bad_lobby_argument("The lobby id is null or not UTF-8.");
+        };
+        let Some(arg) = json_arg::<MetadataArg>(metadata_json, "{}") else {
+            return bad_json_argument("The lobby metadata is not a valid JSON object.");
+        };
+        let client = match initialized_client("arcane_sdk_lobby_set_metadata") {
+            Ok(client) => client,
+            Err(code) => return code,
+        };
+        let metadata: Vec<(&str, &str)> = arg
+            .metadata
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+
+        lobby_result(client.p2p().set_metadata(lobby_id, &metadata), buf, len)
+    })
+}
+
+/// List the open public lobbies of this game and write them as JSON into
+/// `buf`.
+///
+/// `query_json` is `{"filters":{"mode":"coop"},"has_free_slot":true,"limit":20}`,
+/// every field optional; null means no filter, free slots only, 20 results.
+/// Lobbies hosted by a friend come first, then the newest. The JSON is
+/// `{"lobbies":[{"lobby_id","host_user_id","host_pseudo","members",
+/// "max_players","metadata","host_is_friend"}]}` — join one with
+/// `arcane_sdk_lobby_join`. Same return values and threading rules as
+/// `arcane_sdk_lobby_create`.
+///
+/// # Safety
+///
+/// `query_json` must be null or a valid NUL-terminated C string. `buf` must be
+/// null or point to at least `len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn arcane_sdk_lobby_search(
+    query_json: *const c_char,
+    buf: *mut c_char,
+    len: usize,
+) -> c_int {
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        let Some(arg) = json_arg::<SearchArg>(query_json, "{}") else {
+            return bad_json_argument("The lobby search query is not a valid JSON object.");
+        };
+        let client = match initialized_client("arcane_sdk_lobby_search") {
+            Ok(client) => client,
+            Err(code) => return code,
+        };
+        let defaults = LobbyQuery::default();
+        let query = LobbyQuery {
+            filters: arg.filters.into_iter().collect(),
+            has_free_slot: arg.has_free_slot.unwrap_or(defaults.has_free_slot),
+            limit: arg.limit.unwrap_or(defaults.limit),
+        };
+
+        match client.p2p().search(&query) {
+            Ok(lobbies) => {
+                clear_error();
+                write_str(&p2p::summaries_to_json(&lobbies), buf, len)
+            }
+            Err(err) => {
+                store_error(&err);
+                ARCANE_ERR_UNAVAILABLE
+            }
+        }
+    })
 }
 
 /// Join the lobby a six-character code points at, and write it as JSON into
@@ -533,21 +811,23 @@ pub unsafe extern "C" fn arcane_sdk_lobby_join_code(
     buf: *mut c_char,
     len: usize,
 ) -> c_int {
-    let Some(Some(join_code)) = c_str(join_code) else {
-        return bad_lobby_argument("The join code is null or not UTF-8.");
-    };
-    let Some(payload) = payload_arg(payload_b64) else {
-        return bad_lobby_argument("The lobby payload is null-terminated but not base64.");
-    };
-    let client = match lobby_client("arcane_sdk_lobby_join_code") {
-        Ok(client) => client,
-        Err(err) => {
-            store_error(&err);
-            return ARCANE_ERR_NOT_INITIALIZED;
-        }
-    };
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        let Some(Some(join_code)) = c_str(join_code) else {
+            return bad_lobby_argument("The join code is null or not UTF-8.");
+        };
+        let Some(payload) = payload_arg(payload_b64) else {
+            return bad_lobby_argument("The lobby payload is null-terminated but not base64.");
+        };
+        let client = match lobby_client("arcane_sdk_lobby_join_code") {
+            Ok(client) => client,
+            Err(err) => {
+                store_error(&err);
+                return ARCANE_ERR_NOT_INITIALIZED;
+            }
+        };
 
-    lobby_result(client.p2p().join_by_code(join_code, &payload), buf, len)
+        lobby_result(client.p2p().join_by_code(join_code, &payload), buf, len)
+    })
 }
 
 /// Join a lobby by id — what an invite event carries — and write it as JSON
@@ -566,21 +846,23 @@ pub unsafe extern "C" fn arcane_sdk_lobby_join(
     buf: *mut c_char,
     len: usize,
 ) -> c_int {
-    let Some(Some(lobby_id)) = c_str(lobby_id) else {
-        return bad_lobby_argument("The lobby id is null or not UTF-8.");
-    };
-    let Some(payload) = payload_arg(payload_b64) else {
-        return bad_lobby_argument("The lobby payload is null-terminated but not base64.");
-    };
-    let client = match lobby_client("arcane_sdk_lobby_join") {
-        Ok(client) => client,
-        Err(err) => {
-            store_error(&err);
-            return ARCANE_ERR_NOT_INITIALIZED;
-        }
-    };
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        let Some(Some(lobby_id)) = c_str(lobby_id) else {
+            return bad_lobby_argument("The lobby id is null or not UTF-8.");
+        };
+        let Some(payload) = payload_arg(payload_b64) else {
+            return bad_lobby_argument("The lobby payload is null-terminated but not base64.");
+        };
+        let client = match lobby_client("arcane_sdk_lobby_join") {
+            Ok(client) => client,
+            Err(err) => {
+                store_error(&err);
+                return ARCANE_ERR_NOT_INITIALIZED;
+            }
+        };
 
-    lobby_result(client.p2p().join(lobby_id, &payload), buf, len)
+        lobby_result(client.p2p().join(lobby_id, &payload), buf, len)
+    })
 }
 
 /// Read a lobby as Arcane knows it right now and write it as JSON into `buf`.
@@ -599,18 +881,20 @@ pub unsafe extern "C" fn arcane_sdk_lobby_get(
     buf: *mut c_char,
     len: usize,
 ) -> c_int {
-    let Some(Some(lobby_id)) = c_str(lobby_id) else {
-        return bad_lobby_argument("The lobby id is null or not UTF-8.");
-    };
-    let client = match lobby_client("arcane_sdk_lobby_get") {
-        Ok(client) => client,
-        Err(err) => {
-            store_error(&err);
-            return ARCANE_ERR_NOT_INITIALIZED;
-        }
-    };
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        let Some(Some(lobby_id)) = c_str(lobby_id) else {
+            return bad_lobby_argument("The lobby id is null or not UTF-8.");
+        };
+        let client = match lobby_client("arcane_sdk_lobby_get") {
+            Ok(client) => client,
+            Err(err) => {
+                store_error(&err);
+                return ARCANE_ERR_NOT_INITIALIZED;
+            }
+        };
 
-    lobby_result(client.p2p().get_lobby(lobby_id), buf, len)
+        lobby_result(client.p2p().get_lobby(lobby_id), buf, len)
+    })
 }
 
 /// Invite one friend to a lobby.
@@ -631,28 +915,30 @@ pub unsafe extern "C" fn arcane_sdk_lobby_invite(
     err_buf: *mut c_char,
     err_len: usize,
 ) -> c_int {
-    let (Some(Some(lobby_id)), Some(Some(to_user_id))) = (c_str(lobby_id), c_str(to_user_id))
-    else {
-        return ARCANE_ERR_ARGUMENT;
-    };
-    let client = match lobby_client("arcane_sdk_lobby_invite") {
-        Ok(client) => client,
-        Err(err) => {
-            write_err(&err, err_buf, err_len);
+    guard_action(err_buf, err_len, || {
+        let (Some(Some(lobby_id)), Some(Some(to_user_id))) = (c_str(lobby_id), c_str(to_user_id))
+        else {
             return ARCANE_ERR_ARGUMENT;
-        }
-    };
+        };
+        let client = match lobby_client("arcane_sdk_lobby_invite") {
+            Ok(client) => client,
+            Err(err) => {
+                write_err(&err, err_buf, err_len);
+                return ARCANE_ERR_ARGUMENT;
+            }
+        };
 
-    match client.p2p().invite(lobby_id, to_user_id) {
-        Ok(()) => {
-            clear_error();
-            ARCANE_OK
+        match client.p2p().invite(lobby_id, to_user_id) {
+            Ok(()) => {
+                clear_error();
+                ARCANE_OK
+            }
+            Err(err) => {
+                write_err(&err, err_buf, err_len);
+                ARCANE_ERR_SDK
+            }
         }
-        Err(err) => {
-            write_err(&err, err_buf, err_len);
-            ARCANE_ERR_SDK
-        }
-    }
+    })
 }
 
 /// Leave a lobby. For the host this ends it — there is no host migration.
@@ -669,13 +955,15 @@ pub unsafe extern "C" fn arcane_sdk_lobby_leave(
     err_buf: *mut c_char,
     err_len: usize,
 ) -> c_int {
-    lobby_action(
-        lobby_id,
-        err_buf,
-        err_len,
-        "arcane_sdk_lobby_leave",
-        |client, id| client.p2p().leave(id),
-    )
+    guard_action(err_buf, err_len, || {
+        lobby_action(
+            lobby_id,
+            err_buf,
+            err_len,
+            "arcane_sdk_lobby_leave",
+            |client, id| client.p2p().leave(id),
+        )
+    })
 }
 
 /// Close a lobby this player hosts. Its members get a `lobby_closed` event.
@@ -692,13 +980,15 @@ pub unsafe extern "C" fn arcane_sdk_lobby_close(
     err_buf: *mut c_char,
     err_len: usize,
 ) -> c_int {
-    lobby_action(
-        lobby_id,
-        err_buf,
-        err_len,
-        "arcane_sdk_lobby_close",
-        |client, id| client.p2p().close(id),
-    )
+    guard_action(err_buf, err_len, || {
+        lobby_action(
+            lobby_id,
+            err_buf,
+            err_len,
+            "arcane_sdk_lobby_close",
+            |client, id| client.p2p().close(id),
+        )
+    })
 }
 
 /// # Safety
@@ -750,17 +1040,19 @@ where
 /// `buf` must be null or point to at least `len` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn arcane_sdk_launch_join_code(buf: *mut c_char, len: usize) -> c_int {
-    let client = match lobby_client("arcane_sdk_launch_join_code") {
-        Ok(client) => client,
-        Err(err) => {
-            store_error(&err);
-            return ARCANE_ERR_NOT_INITIALIZED;
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        let client = match lobby_client("arcane_sdk_launch_join_code") {
+            Ok(client) => client,
+            Err(err) => {
+                store_error(&err);
+                return ARCANE_ERR_NOT_INITIALIZED;
+            }
+        };
+        match client.p2p().launch_join_code() {
+            Some(code) => write_str(&code, buf, len),
+            None => ARCANE_ERR_UNAVAILABLE,
         }
-    };
-    match client.p2p().launch_join_code() {
-        Some(code) => write_str(&code, buf, len),
-        None => ARCANE_ERR_UNAVAILABLE,
-    }
+    })
 }
 
 /// Write the lobby events collected since the last call as JSON into `buf`, and
@@ -780,27 +1072,31 @@ pub unsafe extern "C" fn arcane_sdk_launch_join_code(buf: *mut c_char, len: usiz
 /// `buf` must be null or point to at least `len` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn arcane_sdk_lobby_events_json(buf: *mut c_char, len: usize) -> c_int {
-    let client = match lobby_client("arcane_sdk_lobby_events_json") {
-        Ok(client) => client,
-        Err(err) => {
-            store_error(&err);
-            return ARCANE_ERR_NOT_INITIALIZED;
-        }
-    };
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        let client = match lobby_client("arcane_sdk_lobby_events_json") {
+            Ok(client) => client,
+            Err(err) => {
+                store_error(&err);
+                return ARCANE_ERR_NOT_INITIALIZED;
+            }
+        };
 
-    let (rendered, through) = client.p2p().events_json();
-    let written = write_str(&rendered, buf, len);
-    if let (true, Some(through)) = (written >= 0, through) {
-        client.p2p().discard(through);
-    }
-    written
+        let (rendered, through) = client.p2p().events_json();
+        let written = write_str(&rendered, buf, len);
+        if let (true, Some(through)) = (written >= 0, through) {
+            client.p2p().discard(through);
+        }
+        written
+    })
 }
 
 /// Whether a client is currently initialised. Returns 1 or 0.
 #[no_mangle]
 pub extern "C" fn arcane_sdk_is_initialized() -> c_int {
-    let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
-    c_int::from(guard.is_some())
+    guard(0, || {
+        let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
+        c_int::from(guard.is_some())
+    })
 }
 
 /// Ownership as of the last check.
@@ -808,29 +1104,35 @@ pub extern "C" fn arcane_sdk_is_initialized() -> c_int {
 /// Returns 0 (owned), 1 (DRM disabled for this title), or -1 if not initialised.
 #[no_mangle]
 pub extern "C" fn arcane_sdk_ownership() -> c_int {
-    let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
-    match guard.as_ref().map(ArcaneClient::ownership) {
-        Some(OwnershipStatus::Owned) => ARCANE_OWNERSHIP_OWNED,
-        Some(OwnershipStatus::DrmDisabled) => ARCANE_OWNERSHIP_DRM_DISABLED,
-        None => ARCANE_ERR_NOT_INITIALIZED,
-    }
+    guard(ARCANE_ERR_NOT_INITIALIZED, || {
+        let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref().map(ArcaneClient::ownership) {
+            Some(OwnershipStatus::Owned) => ARCANE_OWNERSHIP_OWNED,
+            Some(OwnershipStatus::DrmDisabled) => ARCANE_OWNERSHIP_DRM_DISABLED,
+            None => ARCANE_ERR_NOT_INITIALIZED,
+        }
+    })
 }
 
 /// Unix timestamp of the ownership ticket's expiry, or -1 when unknown.
 #[no_mangle]
 pub extern "C" fn arcane_sdk_ticket_expires_at() -> c_longlong {
-    let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
-    guard
-        .as_ref()
-        .and_then(ArcaneClient::ticket_expires_at)
-        .unwrap_or(-1) as c_longlong
+    guard(-1, || {
+        let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
+        guard
+            .as_ref()
+            .and_then(ArcaneClient::ticket_expires_at)
+            .unwrap_or(-1) as c_longlong
+    })
 }
 
 /// Unix timestamp of the last successful check, or -1 when not initialised.
 #[no_mangle]
 pub extern "C" fn arcane_sdk_checked_at() -> c_longlong {
-    let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
-    guard.as_ref().map(ArcaneClient::checked_at).unwrap_or(-1) as c_longlong
+    guard(-1, || {
+        let guard = CLIENT.read().unwrap_or_else(|e| e.into_inner());
+        guard.as_ref().map(ArcaneClient::checked_at).unwrap_or(-1) as c_longlong
+    })
 }
 
 /// Write the signed-in Arcane account id into `buf`.
@@ -840,7 +1142,9 @@ pub extern "C" fn arcane_sdk_checked_at() -> c_longlong {
 /// `buf` must be null or point to at least `len` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn arcane_sdk_user_id(buf: *mut c_char, len: usize) -> c_int {
-    with_client(buf, len, |c| c.user_id().map(str::to_string))
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        with_client(buf, len, |c| c.user_id().map(str::to_string))
+    })
 }
 
 /// Write the game id this client was initialised with into `buf`.
@@ -850,7 +1154,9 @@ pub unsafe extern "C" fn arcane_sdk_user_id(buf: *mut c_char, len: usize) -> c_i
 /// `buf` must be null or point to at least `len` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn arcane_sdk_game_id(buf: *mut c_char, len: usize) -> c_int {
-    with_client(buf, len, |c| Some(c.game_id().to_string()))
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        with_client(buf, len, |c| Some(c.game_id().to_string()))
+    })
 }
 
 /// Write this machine's device fingerprint into `buf`.
@@ -860,7 +1166,9 @@ pub unsafe extern "C" fn arcane_sdk_game_id(buf: *mut c_char, len: usize) -> c_i
 /// `buf` must be null or point to at least `len` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn arcane_sdk_device_hash(buf: *mut c_char, len: usize) -> c_int {
-    with_client(buf, len, |c| Some(c.device_hash().to_string()))
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        with_client(buf, len, |c| Some(c.device_hash().to_string()))
+    })
 }
 
 /// Write the last error as JSON into `buf`:
@@ -873,11 +1181,13 @@ pub unsafe extern "C" fn arcane_sdk_device_hash(buf: *mut c_char, len: usize) ->
 /// `buf` must be null or point to at least `len` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn arcane_sdk_last_error_json(buf: *mut c_char, len: usize) -> c_int {
-    let guard = LAST_ERROR.read().unwrap_or_else(|e| e.into_inner());
-    match guard.as_ref() {
-        Some(err) => write_str(&err.to_json(), buf, len),
-        None => ARCANE_ERR_UNAVAILABLE,
-    }
+    guard(ARCANE_ERR_UNAVAILABLE, || {
+        let guard = LAST_ERROR.read().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(err) => write_str(&err.to_json(), buf, len),
+            None => ARCANE_ERR_UNAVAILABLE,
+        }
+    })
 }
 
 #[cfg(test)]
@@ -1054,5 +1364,104 @@ mod tests {
             unsafe { arcane_sdk_set_graphics(std::ptr::null(), std::ptr::null()) },
             ARCANE_ERR_ARGUMENT
         );
+    }
+
+    #[test]
+    fn a_panic_never_crosses_the_c_boundary() {
+        let _guard = GLOBAL_STATE.lock().unwrap_or_else(|e| e.into_inner());
+
+        let value = guard(-7, || -> c_int { panic!("boom") });
+        assert_eq!(value, -7);
+
+        let mut buf = [0 as c_char; 512];
+        let written = unsafe { arcane_sdk_last_error_json(buf.as_mut_ptr(), buf.len()) };
+        assert!(written > 0);
+        let parsed: serde_json::Value = serde_json::from_str(&read_c_string(&buf)).unwrap();
+        assert_eq!(parsed["code"], "internal");
+        assert!(parsed["context"].to_string().contains("boom"));
+
+        let mut err = [0 as c_char; 256];
+        let rc = guard_action(err.as_mut_ptr(), err.len(), || {
+            panic!("{}", String::from("again"))
+        });
+        assert_eq!(rc, ARCANE_ERR_SDK);
+        assert!(read_c_string(&err).starts_with("internal:"));
+
+        clear_error();
+    }
+
+    #[test]
+    fn the_json_lobby_entry_points_check_their_arguments_before_init() {
+        let _guard = GLOBAL_STATE.lock().unwrap_or_else(|e| e.into_inner());
+
+        arcane_sdk_shutdown();
+        let mut buf = [0 as c_char; 256];
+        let (ptr, len) = (buf.as_mut_ptr(), buf.len());
+
+        unsafe {
+            assert_eq!(
+                arcane_sdk_lobby_create_json(std::ptr::null(), ptr, len),
+                ARCANE_ERR_BAD_BUFFER
+            );
+            assert_eq!(
+                arcane_sdk_lobby_create_json(c"not json".as_ptr(), ptr, len),
+                ARCANE_ERR_BAD_BUFFER
+            );
+            assert_eq!(
+                arcane_sdk_lobby_create_json(
+                    c"{\"max_players\":4,\"visibility\":\"open\"}".as_ptr(),
+                    ptr,
+                    len
+                ),
+                ARCANE_ERR_BAD_BUFFER
+            );
+            assert_eq!(
+                arcane_sdk_lobby_create_json(
+                    c"{\"max_players\":4,\"visibility\":\"public\",\"extra\":1}".as_ptr(),
+                    ptr,
+                    len
+                ),
+                ARCANE_ERR_BAD_BUFFER
+            );
+            assert_eq!(
+                arcane_sdk_lobby_create_json(
+                    c"{\"max_players\":4,\"visibility\":\"public\",\"metadata\":{\"mode\":\"coop\"}}".as_ptr(),
+                    ptr,
+                    len
+                ),
+                ARCANE_ERR_NOT_INITIALIZED
+            );
+            assert_eq!(
+                arcane_sdk_lobby_search(c"{\"limit\":\"many\"}".as_ptr(), ptr, len),
+                ARCANE_ERR_BAD_BUFFER
+            );
+            assert_eq!(
+                arcane_sdk_lobby_search(std::ptr::null(), ptr, len),
+                ARCANE_ERR_NOT_INITIALIZED
+            );
+            assert_eq!(
+                arcane_sdk_lobby_set_metadata(std::ptr::null(), c"{}".as_ptr(), ptr, len),
+                ARCANE_ERR_BAD_BUFFER
+            );
+            assert_eq!(
+                arcane_sdk_lobby_set_metadata(
+                    c"lobby-1".as_ptr(),
+                    c"{\"metadata\":[]}".as_ptr(),
+                    ptr,
+                    len
+                ),
+                ARCANE_ERR_BAD_BUFFER
+            );
+            assert_eq!(
+                arcane_sdk_lobby_set_metadata(c"lobby-1".as_ptr(), std::ptr::null(), ptr, len),
+                ARCANE_ERR_NOT_INITIALIZED
+            );
+        }
+        assert_eq!(
+            visibility_arg(ARCANE_LOBBY_PUBLIC),
+            Some(Visibility::Public)
+        );
+        assert_eq!(visibility_name("public"), Some(Visibility::Public));
+        assert_eq!(visibility_name("Public"), None);
     }
 }

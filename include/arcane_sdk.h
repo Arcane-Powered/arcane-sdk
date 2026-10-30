@@ -13,6 +13,21 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+// Most key / value pairs a lobby carries in its metadata.
+#define MAX_LOBBY_METADATA_PAIRS 16
+
+// Longest metadata key, in bytes: lowercase ASCII letters, digits and `_`.
+#define MAX_LOBBY_METADATA_KEY_LEN 32
+
+// Longest metadata value, in characters.
+#define MAX_LOBBY_METADATA_VALUE_LEN 128
+
+// Largest lobby metadata set, in bytes of its JSON object.
+#define MAX_LOBBY_METADATA_BYTES 2048
+
+// Most lobbies one [`P2p::search`] returns.
+#define MAX_LOBBY_SEARCH_RESULTS 50
+
 // Action return codes.
 #define ARCANE_OK 0
 
@@ -40,6 +55,8 @@
 #define ARCANE_LOBBY_CODE 1
 
 #define ARCANE_LOBBY_FRIENDS_AND_CODE 2
+
+#define ARCANE_LOBBY_PUBLIC 3
 
 #ifdef __cplusplus
 extern "C" {
@@ -94,11 +111,7 @@ int arcane_sdk_achievements_json(char *buf, size_t len);
 // Unix timestamp of the last successful check, or -1 when not initialised.
 long long arcane_sdk_checked_at(void);
 
-// Write the device fingerprint into `buf` — this machine *and* this account.
-//
-// Derived from the account key, not the hardware: the same machine reports a
-// different value for a different signed-in account. Empty when DRM is off for
-// the title and no fingerprint is cached yet.
+// Write this machine's device fingerprint into `buf`.
 //
 // # Safety
 //
@@ -187,11 +200,11 @@ int arcane_sdk_lobby_close(const char *lobby_id, char *err_buf, size_t err_len);
 
 // Open a lobby with this player as its host and write it as JSON into `buf`.
 //
-// `visibility` is `ARCANE_LOBBY_FRIENDS` (0), `ARCANE_LOBBY_CODE` (1) or
-// `ARCANE_LOBBY_FRIENDS_AND_CODE` (2). `payload_b64` is your connection blob,
+// `visibility` is `ARCANE_LOBBY_FRIENDS` (0), `ARCANE_LOBBY_CODE` (1),
+// `ARCANE_LOBBY_FRIENDS_AND_CODE` (2) or `ARCANE_LOBBY_PUBLIC` (3). `payload_b64` is your connection blob,
 // base64-encoded, at most 4096 raw bytes — null means no payload. The JSON is
 // `{"lobby_id","join_code","host_user_id","host_payload","members":[{"user_id",
-// "pseudo","payload"}],"max_players"}`, payloads base64.
+// "pseudo","payload"}],"max_players","metadata":{}}`, payloads base64.
 //
 // One synchronous loopback call — never from the render loop. Returns the
 // bytes written, or `-1` when not initialised, `-2` on a bad argument or
@@ -208,6 +221,21 @@ int arcane_sdk_lobby_create(uint8_t max_players,
                             const char *payload_b64,
                             char *buf,
                             size_t len);
+
+// Open a lobby from a JSON options object and write it as JSON into `buf`.
+//
+// `options_json` is `{"max_players":4,"visibility":"public","payload":"<base64>",
+// "metadata":{"mode":"coop"}}` — `visibility` is `friends`, `code`,
+// `friends_and_code` or `public`; `payload` and `metadata` are optional. A
+// `public` lobby is listed by `arcane_sdk_lobby_search` to every player who
+// owns the game. Same JSON out, return values and threading rules as
+// `arcane_sdk_lobby_create`, with `"metadata"` added.
+//
+// # Safety
+//
+// `options_json` must be null or a valid NUL-terminated C string. `buf` must
+// be null or point to at least `len` writable bytes.
+int arcane_sdk_lobby_create_json(const char *options_json, char *buf, size_t len);
 
 // Write the lobby events collected since the last call as JSON into `buf`, and
 // drop them:
@@ -293,6 +321,41 @@ int arcane_sdk_lobby_join_code(const char *join_code,
 // `lobby_id` must be a valid NUL-terminated C string. `err_buf` must be null
 // or point to at least `err_len` writable bytes.
 int arcane_sdk_lobby_leave(const char *lobby_id, char *err_buf, size_t err_len);
+
+// List the open public lobbies of this game and write them as JSON into
+// `buf`.
+//
+// `query_json` is `{"filters":{"mode":"coop"},"has_free_slot":true,"limit":20}`,
+// every field optional; null means no filter, free slots only, 20 results.
+// Lobbies hosted by a friend come first, then the newest. The JSON is
+// `{"lobbies":[{"lobby_id","host_user_id","host_pseudo","members",
+// "max_players","metadata","host_is_friend"}]}` — join one with
+// `arcane_sdk_lobby_join`. Same return values and threading rules as
+// `arcane_sdk_lobby_create`.
+//
+// # Safety
+//
+// `query_json` must be null or a valid NUL-terminated C string. `buf` must be
+// null or point to at least `len` writable bytes.
+int arcane_sdk_lobby_search(const char *query_json, char *buf, size_t len);
+
+// Replace the metadata of a lobby this player hosts, and write the lobby as
+// JSON into `buf`.
+//
+// `metadata_json` is `{"metadata":{"map":"harbor","mode":"coop"}}`: the whole
+// set, not a patch — `{}` clears it. The other members get a `lobby_updated`
+// event. Same return values as `arcane_sdk_lobby_create`; a caller that is
+// not the host gets `-4` with `not_host`.
+//
+// # Safety
+//
+// `lobby_id` and `metadata_json` must be null or valid NUL-terminated C
+// strings. `buf` must be null or point to at least `len` writable bytes.
+
+int arcane_sdk_lobby_set_metadata(const char *lobby_id,
+                                  const char *metadata_json,
+                                  char *buf,
+                                  size_t len);
 
 // Ownership as of the last check.
 //

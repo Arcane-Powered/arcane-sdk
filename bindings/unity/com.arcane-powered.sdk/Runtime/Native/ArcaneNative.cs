@@ -47,6 +47,7 @@ namespace ArcanePowered.Native
         internal const int LobbyFriends = 0;
         internal const int LobbyCode = 1;
         internal const int LobbyFriendsAndCode = 2;
+        internal const int LobbyPublic = 3;
 
         private const CallingConvention Cdecl = CallingConvention.Cdecl;
 
@@ -122,6 +123,15 @@ namespace ArcanePowered.Native
             byte[] payload_b64,
             byte[] buf,
             UIntPtr len);
+
+        [DllImport(Lib, CallingConvention = Cdecl)]
+        internal static extern int arcane_sdk_lobby_create_json(byte[] options_json, byte[] buf, UIntPtr len);
+
+        [DllImport(Lib, CallingConvention = Cdecl)]
+        internal static extern int arcane_sdk_lobby_set_metadata(byte[] lobby_id, byte[] metadata_json, byte[] buf, UIntPtr len);
+
+        [DllImport(Lib, CallingConvention = Cdecl)]
+        internal static extern int arcane_sdk_lobby_search(byte[] query_json, byte[] buf, UIntPtr len);
 
         [DllImport(Lib, CallingConvention = Cdecl)]
         internal static extern int arcane_sdk_lobby_join(byte[] lobby_id, byte[] payload_b64, byte[] buf, UIntPtr len);

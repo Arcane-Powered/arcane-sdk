@@ -77,8 +77,9 @@ pub use client::{ArcaneClient, MAX_GAME_ID_LEN};
 pub use error::{ErrorCode, OwnershipStatus, SdkError};
 pub use friends::{Friend, FriendList, Friends};
 pub use p2p::{
-    Lobby, LobbyEvent, LobbyMember, LobbyPollingState, P2p, Visibility, JOIN_CODE_LEN,
-    MAX_LOBBY_PAYLOAD_LEN,
+    Lobby, LobbyEvent, LobbyMember, LobbyOptions, LobbyPollingState, LobbyQuery, LobbySummary, P2p,
+    Visibility, JOIN_CODE_LEN, MAX_LOBBY_METADATA_BYTES, MAX_LOBBY_METADATA_KEY_LEN, MAX_LOBBY_METADATA_PAIRS,
+    MAX_LOBBY_METADATA_VALUE_LEN, MAX_LOBBY_PAYLOAD_LEN, MAX_LOBBY_SEARCH_RESULTS,
 };
 pub use session::{SessionSnapshot, TrackingState};
 

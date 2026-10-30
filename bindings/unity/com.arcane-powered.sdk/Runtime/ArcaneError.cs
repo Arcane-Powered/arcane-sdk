@@ -96,6 +96,12 @@ namespace ArcanePowered
         /// this version cannot read.
         /// </summary>
         InvalidResponse,
+
+        /// <summary>Only the lobby's host may do that.</summary>
+        NotHost,
+
+        /// <summary>Too many calls in a short time. Wait, then try again.</summary>
+        RateLimited,
     }
 
     /// <summary>
@@ -349,6 +355,8 @@ namespace ArcanePowered
                 case "internal": return ArcaneErrorCode.Internal;
                 case "plugin_missing": return ArcaneErrorCode.PluginMissing;
                 case "invalid_response": return ArcaneErrorCode.InvalidResponse;
+                case "not_host": return ArcaneErrorCode.NotHost;
+                case "rate_limited": return ArcaneErrorCode.RateLimited;
                 default: return ArcaneErrorCode.Unknown;
             }
         }

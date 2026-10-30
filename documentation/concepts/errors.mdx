@@ -40,7 +40,7 @@ match ArcaneClient::init() {
 |------|---------|------------|-----------|
 | `missing_game_id` | `ARCANE_GAME_ID` is unset or empty — the game was started outside Arcane Powered | Launch the game from the Arcane desktop app. For [local development](/concepts/local-development), set the variable to your title's game id | no |
 | `invalid_game_id` | The value in `ARCANE_GAME_ID` is over 256 bytes, or has a character outside `A–Z a–z 0–9 _ - .` | Check the value in the environment — the context names the bad character and its index | no |
-| `invalid_argument` | An argument other than the game id is empty, oversized, or has a forbidden character: an [achievement](/concepts/achievements) key over 64 bytes or outside `a–z 0–9 _ - .` (keys are lowercase), a [lobby](/concepts/lobbies) payload over 4096 bytes, a join code that is not six characters of `A–H J–N P–Z 2–9`, or a lobby / user id outside `A–Za–z0–9-` | Check the value. Raised before any network call, or when Arcane rejects it | no |
+| `invalid_argument` | An argument other than the game id is empty, oversized, or has a forbidden character: an [achievement](/concepts/achievements) key over 64 bytes or outside `a–z 0–9 _ - .` (keys are lowercase), a [lobby](/concepts/lobbies) payload over 4096 bytes, a join code that is not six characters of `A–H J–N P–Z 2–9`, a lobby / user id outside `A–Za–z0–9-`, lobby metadata or search filters that break the [metadata rules](/concepts/lobbies) (16 pairs, keys `a–z 0–9 _` up to 32 bytes, values up to 128 characters, 2048 bytes in all), or a search limit outside 1–50 | Check the value. Raised before any network call, or when Arcane rejects it | no |
 | `ticket_missing` | No ticket cached for the signed-in account, or an empty ticket while DRM is on | Open Arcane desktop once while online. `init` normally refreshes this for you | yes |
 | `ticket_expired` | JWT past `exp` (beyond ±5 min skew) | `init` normally refreshes this for you; otherwise reconnect online via Arcane | yes |
 | `ticket_invalid` | Bad JWT, missing/unreadable JWKS, unknown `kid`, wrong title, `own=false`, corrupt file | Refresh via Arcane. If `expected` ≠ `ticket_gid` in the context, your game id is wrong | no |
@@ -54,6 +54,8 @@ match ArcaneClient::init() {
 | `unknown_achievement` | The desktop app knows the route, but the title defines no achievement with that key | Check the key against the Arcane portal, and that the achievement is published. The context carries `achievement_key` | no |
 | `lobby_not_found` | No open [lobby](/concepts/lobbies) with that id or join code | The code may be mistyped, or the lobby ended. Ask the host for a fresh one | no |
 | `lobby_full` | The lobby already holds `max_players` | Offer another lobby, or host one. A retry only helps once somebody leaves | no |
+| `not_host` | A lobby member who is not the host tried to change its metadata | Only the host calls `set_metadata` | no |
+| `rate_limited` | Too many lobby searches in a short time | Wait a few seconds and search again; refresh a browser every few seconds, not every frame | yes |
 | `lobby_closed` | The host closed the lobby, or their play session expired | There is no host migration — open a new lobby | no |
 | `not_friends` | The lobby is open to the host's friends and this account is not one of them | Ask the host for a join code, or become friends on Arcane first | no |
 | `ambiguous_session` | Several accounts hold a ticket for this title and Arcane has not recorded which is signed in | Open Arcane desktop once so it records the session. Needs a build that writes `session.json` | no |
@@ -90,9 +92,17 @@ An already-unlocked or `queued` answer is a **success**, not an error — see [A
 
 A `stale` answer — the desktop app served its own cache because it is offline — is a **success**, not an error. See [Friends](/concepts/friends).
 
-### `P2p::create_lobby` / `join_by_code` / `join` / `get_lobby` / `invite` / `leave` / `close` — the `arcane_sdk_lobby_*` functions
+### `P2p::create_lobby` / `create` / `join_by_code` / `join` / `get_lobby` / `invite` / `leave` / `close` — the `arcane_sdk_lobby_*` functions
 
-`invalid_argument` (oversized payload, malformed join code or id — all raised before any call), `lobby_not_found`, `lobby_full`, `lobby_closed`, `not_friends`, `not_owned`, `not_authenticated`, `network_required` (also under `ARCANE_OFFLINE_ONLY`, raised before any call), `arcane_unavailable`, `feature_unavailable`.
+`invalid_argument` (oversized payload, malformed join code, id or metadata — all raised before any call), `lobby_not_found`, `lobby_full`, `lobby_closed`, `not_friends`, `not_owned`, `not_authenticated`, `network_required` (also under `ARCANE_OFFLINE_ONLY`, raised before any call), `arcane_unavailable`, `feature_unavailable`. `close` also answers `not_host` when a member who is not the host calls it.
+
+### `P2p::set_metadata` — `arcane_sdk_lobby_set_metadata`
+
+`invalid_argument` (malformed id or metadata, raised before any call), `not_host`, `lobby_not_found`, `lobby_closed`, `not_authenticated`, `network_required` (also under `ARCANE_OFFLINE_ONLY`, raised before any call), `arcane_unavailable`, `feature_unavailable`.
+
+### `P2p::search` — `arcane_sdk_lobby_search`
+
+`invalid_argument` (malformed filters or a limit outside 1–50, raised before any call), `rate_limited`, `not_owned`, `not_authenticated`, `network_required` (also under `ARCANE_OFFLINE_ONLY`, raised before any call), `arcane_unavailable`, `feature_unavailable`.
 
 `P2p::poll_events` / `arcane_sdk_lobby_events_json` and `P2p::launch_join_code` / `arcane_sdk_launch_join_code` never fail. A lobby object Arcane sends without an id, or carrying a payload over 4096 bytes, is refused as `arcane_unavailable` rather than half-read. A desktop app that predates the lobby routes makes `launch_join_code` answer `None` and stops event polling silently — read `client.session().lobby_events` for that, it is `Unavailable`. See [Lobbies](/concepts/lobbies).
 

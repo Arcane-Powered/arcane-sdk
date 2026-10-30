@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Text;
 using System.Threading.Tasks;
 using ArcanePowered.Json;
 using ArcanePowered.Native;
@@ -45,6 +47,10 @@ namespace ArcanePowered
         /// <summary>The lobby is over — the host closed it or their session expired.</summary>
         /// <remarks>Raised on Unity's main thread, like <see cref="InviteReceived"/>.</remarks>
         public event Action<ArcaneLobbyEvent> LobbyClosed;
+
+        /// <summary>The host changed the lobby's metadata — read <see cref="ArcaneLobbyEvent.Metadata"/>.</summary>
+        /// <remarks>Raised on Unity's main thread, like <see cref="InviteReceived"/>.</remarks>
+        public event Action<ArcaneLobbyEvent> LobbyUpdated;
 
         /// <summary>
         /// Arcane dropped events before this client fetched them: re-read the
@@ -142,6 +148,248 @@ namespace ArcanePowered
                 ArcaneLobby lobby;
                 ArcaneError ignored;
                 TryCreate(maxPlayers, visibility, payload, out lobby, out ignored);
+                return lobby;
+            });
+        }
+
+        /// <summary>
+        /// Open a lobby from <paramref name="options"/> — the form that takes a
+        /// public visibility and metadata — answering <see langword="false"/>
+        /// instead of throwing.
+        /// </summary>
+        public bool TryCreate(ArcaneLobbyOptions options, out ArcaneLobby lobby, out ArcaneError error)
+        {
+            lobby = null;
+
+            if (options == null)
+            {
+                error = ArcaneError.Argument("Lobby options are required.", null);
+                return false;
+            }
+
+            if (options.MaxPlayers < 2 || options.MaxPlayers > 64)
+            {
+                error = ArcaneError.Argument(
+                    "A lobby holds between 2 and 64 players.",
+                    "Pass the capacity your game supports, host included.");
+                return false;
+            }
+
+            if (!TryCheckMetadata(options.Metadata, out error))
+            {
+                return false;
+            }
+
+            byte[] encoded;
+            if (!TryEncodePayload(options.Payload, out encoded, out error))
+            {
+                return false;
+            }
+
+            var json = new StringBuilder("{\"max_players\":");
+            json.Append(options.MaxPlayers.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"visibility\":");
+            AppendString(json, VisibilityName(options.Visibility));
+            if (encoded != null)
+            {
+                json.Append(",\"payload\":");
+                AppendString(json, Convert.ToBase64String(options.Payload));
+            }
+
+            json.Append(",\"metadata\":");
+            AppendObject(json, options.Metadata);
+            json.Append('}');
+
+            byte[] body = ArcaneBuffer.ToUtf8(json.ToString());
+            return ReadLobby(
+                (buffer, length) => ArcaneNative.arcane_sdk_lobby_create_json(body, buffer, length),
+                out lobby,
+                out error);
+        }
+
+        /// <summary>Open a lobby from options, throwing <see cref="ArcaneException"/> on failure.</summary>
+        public ArcaneLobby Create(ArcaneLobbyOptions options)
+        {
+            ArcaneLobby lobby;
+            ArcaneError error;
+            if (!TryCreate(options, out lobby, out error))
+            {
+                throw new ArcaneException(error);
+            }
+
+            return lobby;
+        }
+
+        /// <summary>Open a lobby from options on a background thread.</summary>
+        /// <remarks>
+        /// Completes off Unity's main thread, so hand the result back with
+        /// <see cref="Arcane.RunOnMainThread"/> before you touch the scene. A failure
+        /// answers <see langword="null"/> and leaves the reason in <see cref="Arcane.LastError"/> —
+        /// use the <c>Try…</c> form to be handed the error itself.
+        /// </remarks>
+        public Task<ArcaneLobby> CreateAsync(ArcaneLobbyOptions options)
+        {
+            return Task.Run(() =>
+            {
+                ArcaneLobby lobby;
+                ArcaneError ignored;
+                TryCreate(options, out lobby, out ignored);
+                return lobby;
+            });
+        }
+
+        /// <summary>
+        /// List the open public lobbies of this game, answering
+        /// <see langword="false"/> instead of throwing.
+        /// </summary>
+        /// <remarks>
+        /// Lobbies hosted by a friend come first, then the newest. Pass
+        /// <see langword="null"/> for no filter, free slots only, 20 results.
+        /// </remarks>
+        public bool TrySearch(ArcaneLobbyQuery query, out ArcaneLobbySummary[] lobbies, out ArcaneError error)
+        {
+            lobbies = Array.Empty<ArcaneLobbySummary>();
+            query = query ?? new ArcaneLobbyQuery();
+
+            if (query.Limit < 1 || query.Limit > ArcaneLobbyQuery.MaxResults)
+            {
+                error = ArcaneError.Argument(
+                    "A search answers between 1 and " + ArcaneLobbyQuery.MaxResults + " lobbies.",
+                    null);
+                return false;
+            }
+
+            if (!TryCheckMetadata(query.Filters, out error))
+            {
+                return false;
+            }
+
+            var json = new StringBuilder("{\"filters\":");
+            AppendObject(json, query.Filters);
+            json.Append(",\"has_free_slot\":");
+            json.Append(query.HasFreeSlot ? "true" : "false");
+            json.Append(",\"limit\":");
+            json.Append(query.Limit.ToString(CultureInfo.InvariantCulture));
+            json.Append('}');
+
+            byte[] body = ArcaneBuffer.ToUtf8(json.ToString());
+            ArcaneJson root;
+            if (!ArcaneCall.ReadJson(
+                    (buffer, length) => ArcaneNative.arcane_sdk_lobby_search(body, buffer, length),
+                    ArcaneBuffer.ListBufferSize,
+                    out root,
+                    out error))
+            {
+                return false;
+            }
+
+            var found = new List<ArcaneLobbySummary>();
+            foreach (var node in root["lobbies"].Items)
+            {
+                found.Add(ArcaneLobbySummary.FromJson(node));
+            }
+
+            lobbies = found.ToArray();
+            return true;
+        }
+
+        /// <summary>List the open public lobbies, throwing on failure.</summary>
+        public ArcaneLobbySummary[] Search(ArcaneLobbyQuery query)
+        {
+            ArcaneLobbySummary[] lobbies;
+            ArcaneError error;
+            if (!TrySearch(query, out lobbies, out error))
+            {
+                throw new ArcaneException(error);
+            }
+
+            return lobbies;
+        }
+
+        /// <summary>List the open public lobbies on a background thread.</summary>
+        /// <remarks>
+        /// Completes off Unity's main thread, so hand the result back with
+        /// <see cref="Arcane.RunOnMainThread"/> before you touch the scene. A failure
+        /// answers an empty array and leaves the reason in <see cref="Arcane.LastError"/> —
+        /// use the <c>Try…</c> form to be handed the error itself.
+        /// </remarks>
+        public Task<ArcaneLobbySummary[]> SearchAsync(ArcaneLobbyQuery query)
+        {
+            return Task.Run(() =>
+            {
+                ArcaneLobbySummary[] lobbies;
+                ArcaneError ignored;
+                TrySearch(query, out lobbies, out ignored);
+                return lobbies;
+            });
+        }
+
+        /// <summary>
+        /// Replace the metadata of a lobby this player hosts, answering
+        /// <see langword="false"/> instead of throwing.
+        /// </summary>
+        /// <remarks>
+        /// The whole set, not a patch: an empty dictionary clears it. The other
+        /// members get <see cref="LobbyUpdated"/>.
+        /// </remarks>
+        public bool TrySetMetadata(
+            string lobbyId,
+            IDictionary<string, string> metadata,
+            out ArcaneLobby lobby,
+            out ArcaneError error)
+        {
+            lobby = null;
+
+            if (string.IsNullOrEmpty(lobbyId))
+            {
+                error = ArcaneError.Argument("A lobby id is required.", null);
+                return false;
+            }
+
+            if (!TryCheckMetadata(metadata, out error))
+            {
+                return false;
+            }
+
+            var json = new StringBuilder("{\"metadata\":");
+            AppendObject(json, metadata);
+            json.Append('}');
+
+            byte[] id = ArcaneBuffer.ToUtf8(lobbyId);
+            byte[] body = ArcaneBuffer.ToUtf8(json.ToString());
+            return ReadLobby(
+                (buffer, length) => ArcaneNative.arcane_sdk_lobby_set_metadata(id, body, buffer, length),
+                out lobby,
+                out error);
+        }
+
+        /// <summary>Replace a lobby's metadata, throwing on failure.</summary>
+        public ArcaneLobby SetMetadata(string lobbyId, IDictionary<string, string> metadata)
+        {
+            ArcaneLobby lobby;
+            ArcaneError error;
+            if (!TrySetMetadata(lobbyId, metadata, out lobby, out error))
+            {
+                throw new ArcaneException(error);
+            }
+
+            return lobby;
+        }
+
+        /// <summary>Replace a lobby's metadata on a background thread.</summary>
+        /// <remarks>
+        /// Completes off Unity's main thread, so hand the result back with
+        /// <see cref="Arcane.RunOnMainThread"/> before you touch the scene. A failure
+        /// answers <see langword="null"/> and leaves the reason in <see cref="Arcane.LastError"/> —
+        /// use the <c>Try…</c> form to be handed the error itself.
+        /// </remarks>
+        public Task<ArcaneLobby> SetMetadataAsync(string lobbyId, IDictionary<string, string> metadata)
+        {
+            return Task.Run(() =>
+            {
+                ArcaneLobby lobby;
+                ArcaneError ignored;
+                TrySetMetadata(lobbyId, metadata, out lobby, out ignored);
                 return lobby;
             });
         }
@@ -520,6 +768,9 @@ namespace ArcanePowered
                 case ArcaneLobbyEventType.LobbyClosed:
                     Raise(LobbyClosed, lobbyEvent);
                     break;
+                case ArcaneLobbyEventType.LobbyUpdated:
+                    Raise(LobbyUpdated, lobbyEvent);
+                    break;
                 case ArcaneLobbyEventType.Resync:
                     Raise(ResyncRequested, lobbyEvent);
                     break;
@@ -555,13 +806,139 @@ namespace ArcanePowered
             lobby = null;
 
             ArcaneJson root;
-            if (!ArcaneCall.ReadJson(getter, ArcaneBuffer.ListBufferSize, out root, out error))
+            if (!ArcaneCall.ReadJson(getter, ArcaneBuffer.LobbyBufferSize, out root, out error))
             {
                 return false;
             }
 
             lobby = ArcaneLobby.FromJson(root);
             return true;
+        }
+
+        private static string VisibilityName(ArcaneLobbyVisibility visibility)
+        {
+            switch (visibility)
+            {
+                case ArcaneLobbyVisibility.Code: return "code";
+                case ArcaneLobbyVisibility.FriendsAndCode: return "friends_and_code";
+                case ArcaneLobbyVisibility.Public: return "public";
+                default: return "friends";
+            }
+        }
+
+        private static bool TryCheckMetadata(IDictionary<string, string> metadata, out ArcaneError error)
+        {
+            error = null;
+            if (metadata == null)
+            {
+                return true;
+            }
+
+            if (metadata.Count > ArcaneLobbyOptions.MaxMetadataPairs)
+            {
+                error = ArcaneError.Argument(
+                    "A lobby carries at most " + ArcaneLobbyOptions.MaxMetadataPairs + " metadata pairs.",
+                    "Keep the few values players search on: a mode, a map, a region.");
+                return false;
+            }
+
+            foreach (var pair in metadata)
+            {
+                if (!IsMetadataKey(pair.Key) || pair.Value == null || CodePoints(pair.Value) > 128)
+                {
+                    error = ArcaneError.Argument(
+                        "The lobby metadata pair \"" + pair.Key + "\" is malformed.",
+                        "Keys are 1–32 characters of a–z, 0–9 and _; values at most 128 characters.");
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static int CodePoints(string value)
+        {
+            int count = 0;
+            for (int i = 0; i < value.Length; i++)
+            {
+                if (!char.IsLowSurrogate(value[i]))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private static bool IsMetadataKey(string key)
+        {
+            if (string.IsNullOrEmpty(key) || key.Length > 32)
+            {
+                return false;
+            }
+
+            foreach (char c in key)
+            {
+                bool allowed = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+                if (!allowed)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static void AppendObject(StringBuilder json, IDictionary<string, string> pairs)
+        {
+            json.Append('{');
+            if (pairs != null)
+            {
+                bool first = true;
+                foreach (var pair in pairs)
+                {
+                    if (!first)
+                    {
+                        json.Append(',');
+                    }
+
+                    first = false;
+                    AppendString(json, pair.Key);
+                    json.Append(':');
+                    AppendString(json, pair.Value);
+                }
+            }
+
+            json.Append('}');
+        }
+
+        private static void AppendString(StringBuilder json, string value)
+        {
+            json.Append('"');
+            foreach (char c in value)
+            {
+                switch (c)
+                {
+                    case '"': json.Append("\\\""); break;
+                    case '\\': json.Append("\\\\"); break;
+                    case '\n': json.Append("\\n"); break;
+                    case '\r': json.Append("\\r"); break;
+                    case '\t': json.Append("\\t"); break;
+                    default:
+                        if (c < 0x20)
+                        {
+                            json.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
+                        }
+                        else
+                        {
+                            json.Append(c);
+                        }
+
+                        break;
+                }
+            }
+
+            json.Append('"');
         }
 
         private static bool TryEncodePayload(byte[] payload, out byte[] encoded, out ArcaneError error)

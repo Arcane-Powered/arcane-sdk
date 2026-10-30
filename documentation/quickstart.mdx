@@ -6,6 +6,10 @@ keywords: ["install", "quickstart", "ArcaneClient", "init", "ARCANE_GAME_ID", "l
 
 Link the SDK, build one client at launch, keep it for the session. That is the full default integration — you pass nothing to `init`, because Arcane Powered gives your process the ids it needs.
 
+<Tip>
+  **On Unity?** Follow [Unity](/engines/unity) instead: add the package, click **Tools ▸ Arcane Powered ▸ Install native plugins**, set the game id, press Play. About five minutes, and no Rust toolchain.
+</Tip>
+
 ## Prerequisites
 
 - [Rust](https://rustup.rs/) (edition 2021), or a native engine that can load the C ABI
@@ -21,7 +25,7 @@ Arcane Powered sets `ARCANE_GAME_ID` and `ARCANE_USER_ID` on your game process w
 
     ```toml Cargo.toml
     [dependencies]
-    arcane-sdk = "0.10"
+    arcane-sdk = "0.12"
     ```
 
     Engines (Unity / Unreal / C++): build the shared library, include `include/arcane_sdk.h`, and load the [C ABI](/reference/c-abi).

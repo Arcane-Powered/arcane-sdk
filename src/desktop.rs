@@ -27,6 +27,11 @@ pub(crate) const SDK_PORT_ENV: &str = "ARCANE_SDK_PORT";
 /// only make a check fail earlier — it never lets one pass.
 pub(crate) const OFFLINE_ONLY_ENV: &str = "ARCANE_OFFLINE_ONLY";
 
+/// The per-launch secret Arcane Powered hands the game process. The desktop
+/// refuses every `/v1/games/…` and `/v1/friends` call that does not carry it as
+/// a bearer token.
+pub(crate) const SDK_TOKEN_ENV: &str = "ARCANE_SDK_TOKEN";
+
 const HEALTH_PATH: &str = "/v1/health";
 const POLL_INTERVAL: Duration = Duration::from_millis(400);
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(25);
@@ -87,6 +92,20 @@ pub(crate) fn sdk_http_port() -> u16 {
         .and_then(|raw| raw.trim().parse::<u16>().ok())
         .filter(|port| *port != 0)
         .unwrap_or(DEFAULT_SDK_HTTP_PORT)
+}
+
+fn sdk_token() -> Option<String> {
+    env::var(SDK_TOKEN_ENV)
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|token| !token.is_empty())
+}
+
+fn authorize(request: ureq::Request) -> ureq::Request {
+    match sdk_token() {
+        Some(token) => request.set("Authorization", &format!("Bearer {token}")),
+        None => request,
+    }
 }
 
 fn base_url() -> String {
@@ -178,10 +197,14 @@ fn call_json<T: DeserializeOwned>(
     body: Option<Value>,
     url: String,
 ) -> Result<T, DesktopCall> {
+    let request = authorize(request);
     let sent = match body {
         Some(value) => request
             .set("Content-Type", "application/json")
             .send_string(&value.to_string()),
+        None if request.method() == "POST" => request
+            .set("Content-Type", "application/json")
+            .send_string(""),
         None => request.call(),
     };
 
@@ -251,6 +274,16 @@ pub(crate) fn delete_json<T: DeserializeOwned>(
     let url = format!("{}{path}", base_url());
     let request = http_agent(read_timeout).delete(&url);
     call_json(request, None, url)
+}
+
+pub(crate) fn patch_json<T: DeserializeOwned>(
+    path: &str,
+    body: Option<Value>,
+    read_timeout: Duration,
+) -> Result<T, DesktopCall> {
+    let url = format!("{}{path}", base_url());
+    let request = http_agent(read_timeout).request("PATCH", &url);
+    call_json(request, body, url)
 }
 
 pub(crate) fn post_json<T: DeserializeOwned>(
@@ -397,6 +430,28 @@ fn map_known_desktop_error(body: &SdkErrorBody) -> Option<SdkError> {
         )
         .with_hint("Ask the host for a join code, or become friends on Arcane first.")
         .with_context("detail", detail),
+        "not_host" => SdkError::not_host("Only the host of this lobby can do that.")
+            .with_hint("Check Lobby::host_user_id against ArcaneClient::user_id before the call.")
+            .with_context("detail", detail),
+        "invalid_payload" | "invalid_metadata" => {
+            SdkError::invalid_argument("Arcane rejected the lobby payload or metadata.")
+                .with_hint(
+                    "A payload is at most 4096 bytes; metadata is at most 16 pairs, keys of \
+                     1-32 characters a-z, 0-9 or _, values of at most 128 characters.",
+                )
+                .with_context("detail", detail)
+        }
+        "sdk_token_required" | "sdk_token_mismatch" => SdkError::arcane_unavailable(
+            "The Arcane desktop app refused this game's call: it carries no valid launch token.",
+        )
+        .with_hint(
+            "Launch the game from Arcane Powered, which sets ARCANE_SDK_TOKEN. A build started by \
+             hand cannot reach the desktop app's game routes.",
+        )
+        .with_context("detail", detail),
+        "rate_limited" => SdkError::rate_limited("Arcane is receiving too many of these calls.")
+            .with_hint("Search for lobbies when a menu opens or on a timer of a few seconds, not every frame.")
+            .with_context("detail", detail),
         "game_not_found" => SdkError::ticket_invalid("Arcane does not know this title.")
             .with_hint(
                 "Confirm the game id compiled into your build matches the one in the \

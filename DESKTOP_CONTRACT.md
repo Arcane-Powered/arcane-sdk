@@ -289,11 +289,14 @@ game binary is extractable, and an attacker can simply patch out the init call.
 Real enforcement belongs on the server, where entitlement checks cannot be
 edited by the client.
 
-Note for the desktop team, separately from the SDK: the loopback currently has
-no authentication of any kind. Any local process — including a web page issuing
-`fetch` against `127.0.0.1:39284` — can call these endpoints. Whether that
-matters is a desktop-side decision, but it is worth being deliberate about
-before endpoints beyond ownership are added.
+The desktop loopback checks every caller: `Host` must be `127.0.0.1:39284` or
+`localhost:39284`, a request carrying `Origin` or `Sec-Fetch-*` is refused, every
+POST needs `Content-Type: application/json` even with no body (`415`), and every
+`/v1/games/{game_id}/**` and `/v1/friends*` route needs
+`Authorization: Bearer <ARCANE_SDK_TOKEN>` (`401 sdk_token_required`,
+`403 sdk_token_mismatch`). The SDK sends the token on every call when the
+variable is set and a JSON content type on every POST; a refused token reads as
+`arcane_unavailable`.
 
 ---
 
@@ -303,13 +306,14 @@ before endpoints beyond ownership are added.
 |---|---|
 | `ARCANE_GAME_ID` | The title to check (§0). *Set by the desktop; a developer may set it by hand.* |
 | `ARCANE_USER_ID` | The account whose ticket to read (§0). *Set by the desktop; a developer may set it by hand.* |
+| `ARCANE_SDK_TOKEN` | The per-launch secret sent as `Authorization: Bearer` on every loopback call (§6). *Set by the desktop; a game started by hand has none and cannot reach the game routes.* |
 | `ARCANE_DRM_ROOT` | Replaces `{app_data}/Arcane Powered/drm`. |
 | `ARCANE_SDK_PORT` | Replaces the loopback port `39284`. |
 | `ARCANE_OFFLINE_ONLY` | `1`/`true`: never contact or launch the desktop app. Can only make a check fail earlier, never let one pass. Also disables the session thread entirely. |
 | `ARCANE_SESSION_TICK_MS` | Replaces the 60 s session heartbeat period, so a test does not have to wait a minute. Does not change the FPS window schedule. |
 
 The last four are developer/QA overrides and must never be set by a shipped game.
-The first two are the launch environment, and are expected in production.
+The first three are the launch environment, and are expected in production.
 
 ---
 
@@ -461,9 +465,10 @@ old) maps to `feature_unavailable`.
 
 ```
 POST /v1/games/{game_id}/lobbies
-{ "max_players": 4, "visibility": "friends" | "code" | "friends_and_code", "payload": "<base64 ≤ 4 KiB>" }
+{ "max_players": 4, "visibility": "friends" | "code" | "friends_and_code" | "public", "payload": "<base64 ≤ 4 KiB>",
+  "metadata": { "mode": "coop" } }
 → 200 { "lobby_id", "join_code": "K7P3QX" | null, "host_user_id", "host_payload", "visibility", "max_players",
-         "members": [ { "user_id", "pseudo", "payload" } ], "expires_at" }
+         "members": [ { "user_id", "pseudo", "payload" } ], "metadata": { … }, "expires_at" }
 
 POST /v1/games/{game_id}/lobbies/join       { "join_code": "K7P3QX", "payload": "…" }   → 200 same lobby object
 POST /v1/games/{game_id}/lobbies/{id}/join  { "payload": "…" }                          → 200 same lobby object
@@ -473,18 +478,26 @@ GET  /v1/games/{game_id}/lobbies/{id}                                           
 POST /v1/games/{game_id}/lobbies/{id}/invite  { "to_user_id": "…" }   → 200 { "ok": true }
 POST /v1/games/{game_id}/lobbies/{id}/leave                             → 200 { "ok": true }
 DELETE /v1/games/{game_id}/lobbies/{id}                                  → 200 { "ok": true }  (host)
+PATCH  /v1/games/{game_id}/lobbies/{id}/metadata  { "metadata": { … } }  → 200 same lobby object  (host)
+→ 403 not_host · 422 invalid_metadata
+
+GET  /v1/games/{game_id}/lobbies/search?has_free_slot=true&limit=20&meta.mode=coop
+→ 200 { "lobbies": [ { "lobby_id", "host_user_id", "host_pseudo", "members", "max_players",
+         "metadata": { … }, "host_is_friend" } ] }
+→ 403 not_owned · 429 rate_limited { "retry_after_seconds" }
 
 GET  /v1/games/{game_id}/lobbies/events?after={cursor}
-→ 200 { "events": [ { "id": "…", "type": "invite" | "member_joined" | "member_left" | "lobby_closed",
+→ 200 { "events": [ { "id": "…", "type": "invite" | "member_joined" | "member_left" | "lobby_closed" | "lobby_updated",
          "lobby_id", "join_code": "…|null", "from_user_id": "…|null", "user_id": "…|null",
-         "pseudo": "…|null", "payload": "…|null" } ], "cursor": "…", "dropped": false }
+         "pseudo": "…|null", "payload": "…|null", "metadata": { … }? } ], "cursor": "…", "dropped": false }
 
 GET  /v1/games/{game_id}/launch-context   → 200 { "join_code": "K7P3QX" | null }
 ```
 
 - Arcane provides the **meeting point only**. There is no relay, no NAT traversal, no
-  transport and no host migration in the SDK, and no public lobby list: game traffic is
-  the game's own netcode. The lobby carries who is in it and one opaque blob per member.
+  transport and no host migration in the SDK: game traffic is the game's own netcode.
+  Only a `public` lobby is listed, by `/lobbies/search`, and only to accounts that own
+  the game. The lobby carries who is in it and one opaque blob per member.
 - `payload` is that blob — an address, a ticket from the game's netcode, whatever it
   wants. It is **base64 (standard alphabet, padded)** on the wire, at most **4096 raw
   bytes**. The SDK refuses a longer one with `invalid_argument` before any call, and
@@ -510,6 +523,12 @@ GET  /v1/games/{game_id}/launch-context   → 200 { "join_code": "K7P3QX" | null
   ABI), delivered **before** the events of that same answer, and the cursor keeps its
   usual meaning. A game that gets one re-reads the lobbies it is in with `GET
   /lobbies/{id}` rather than trusting what the earlier events built up.
+- `metadata` is at most 16 pairs, keys `^[a-z0-9_]{1,32}$`, values at most 128
+  characters, and 2048 bytes in all once serialized as a JSON object. The SDK validates it before any call (`invalid_argument`). `PATCH
+  …/metadata` replaces the whole set and sends `lobby_updated` to the other members.
+  `search` filters with `meta.<key>=<value>` query parameters, every pair matched
+  exactly; friends' lobbies come first, then the newest, at most 50 (`limit`, default
+  20). The desktop app caches an identical search for 5 s.
 - `GET /lobbies/{id}` answers the same lobby object as create and join, for exactly
   that: reading a lobby without joining or leaving anything.
 - A `payload` longer than 4096 raw bytes is refused on the way in as well as on the way
@@ -527,7 +546,7 @@ GET  /v1/games/{game_id}/launch-context   → 200 { "join_code": "K7P3QX" | null
 | `p2p()` called | The `arcane-session` thread polls `/lobbies/events` on every tick — every 5 s while the client is in an open lobby, 60 s otherwise. Heartbeats keep their own 60 s schedule |
 | Desktop older than these routes | Bare `404` on `/lobbies/events` disarms polling **silently** and for good: `session().lobby_events` becomes `unavailable` and nothing else is requested. The game-facing calls return `feature_unavailable` |
 | Desktop unreachable | `arcane_unavailable` on the game-facing calls; the poll records the failure and retries on the next tick |
-| `404 lobby_not_found` · `409 lobby_full` · `410 lobby_closed` · `403 not_friends` | The matching SDK code, with `lobby_id` or `join_code` in the error context |
+| `404 lobby_not_found` · `409 lobby_full` · `410 lobby_closed` · `403 not_friends` · `403 not_host` · `429 rate_limited` | The matching SDK code, with `lobby_id` or `join_code` in the error context |
 | `ARCANE_OFFLINE_ONLY` set | `network_required` on every lobby call, raised before any request; `launch_join_code()` answers `None` |
 | Events never polled by the game | The queue keeps the 256 most recent events and drops the oldest |
 

@@ -2,10 +2,11 @@
 //!
 //! Arcane hosts the **lobby** — a host, its members, a capacity, a join code —
 //! and carries an opaque `payload` for each member. Your game keeps its own
-//! netcode: there is no relay here, no NAT traversal, no host migration and no
-//! public matchmaking. What Arcane gives you is the part that is annoying to
-//! build yourself: a place for players to find each other, invitations between
-//! friends, and "Join" from the launcher.
+//! netcode: there is no relay here, no NAT traversal and no host migration.
+//! What Arcane gives you is the part that is annoying to build yourself: a
+//! place for players to find each other — by friends, by code, or by
+//! [`P2p::search`] over the [`Visibility::Public`] lobbies of your game —
+//! invitations between friends, and "Join" from the launcher.
 //!
 //! ```no_run
 //! # use arcane_sdk::Visibility;
@@ -25,7 +26,7 @@
 //! in an open lobby the thread polls every 5 seconds instead of every 60;
 //! heartbeats keep their own schedule either way.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, Weak};
 use std::time::Duration;
@@ -36,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::desktop::{
-    delete_json, get_json, offline_only, post_json, DesktopCall, GAMES_PATH_PREFIX,
+    delete_json, get_json, offline_only, patch_json, post_json, DesktopCall, GAMES_PATH_PREFIX,
     OFFLINE_ONLY_ENV,
 };
 use crate::error::{ErrorCode, SdkError};
@@ -54,6 +55,21 @@ pub const MAX_LOBBY_PAYLOAD_LEN: usize = 4096;
 /// Number of characters in a join code.
 pub const JOIN_CODE_LEN: usize = 6;
 
+/// Most key / value pairs a lobby carries in its metadata.
+pub const MAX_LOBBY_METADATA_PAIRS: usize = 16;
+
+/// Longest metadata key, in bytes: lowercase ASCII letters, digits and `_`.
+pub const MAX_LOBBY_METADATA_KEY_LEN: usize = 32;
+
+/// Longest metadata value, in characters.
+pub const MAX_LOBBY_METADATA_VALUE_LEN: usize = 128;
+
+/// Largest lobby metadata set, in bytes of its JSON object.
+pub const MAX_LOBBY_METADATA_BYTES: usize = 2048;
+
+/// Most lobbies one [`P2p::search`] returns.
+pub const MAX_LOBBY_SEARCH_RESULTS: u8 = 50;
+
 const MAX_ID_LEN: usize = 64;
 const MAX_QUEUED_EVENTS: usize = 256;
 const MAX_SEEN_EVENT_IDS: usize = 256;
@@ -64,8 +80,9 @@ const BASE64_LEN_LIMIT: usize = MAX_LOBBY_PAYLOAD_LEN.div_ceil(3) * 4;
 
 /// Who can join a lobby.
 ///
-/// Arcane never lists lobbies publicly: a lobby is reachable through the host's
-/// friends, through its join code, or both.
+/// Only a [`Visibility::Public`] lobby is ever listed, and only to players who
+/// own the game; the others are reachable through the host's friends, through
+/// their join code, or both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Visibility {
     /// The host's friends can see it in the launcher and join. No join code is
@@ -75,15 +92,21 @@ pub enum Visibility {
     Code,
     /// Both: friends see it, and the code works for anyone who has it.
     FriendsAndCode,
+    /// Anyone who owns the game finds it with [`P2p::search`] and joins it by
+    /// id; friends see it in the launcher too. The join code still goes to the
+    /// host and the members only.
+    Public,
 }
 
 impl Visibility {
-    /// Stable wire string: `"friends"`, `"code"`, `"friends_and_code"`.
+    /// Stable wire string: `"friends"`, `"code"`, `"friends_and_code"`,
+    /// `"public"`.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Friends => "friends",
             Self::Code => "code",
             Self::FriendsAndCode => "friends_and_code",
+            Self::Public => "public",
         }
     }
 }
@@ -116,6 +139,63 @@ pub struct Lobby {
     pub members: Vec<LobbyMember>,
     /// Capacity the host asked for.
     pub max_players: u8,
+    /// What the host says about the lobby — mode, map, region — and what
+    /// [`P2p::search`] filters on. Only the host changes it, with
+    /// [`P2p::set_metadata`].
+    pub metadata: BTreeMap<String, String>,
+}
+
+/// What [`P2p::create`] opens.
+#[derive(Debug, Clone, Copy)]
+pub struct LobbyOptions<'a> {
+    /// Capacity, host included: 2 to 64.
+    pub max_players: u8,
+    /// Who can find and join it.
+    pub visibility: Visibility,
+    /// The host's connection blob, at most [`MAX_LOBBY_PAYLOAD_LEN`] bytes.
+    pub payload: &'a [u8],
+    /// At most [`MAX_LOBBY_METADATA_PAIRS`] pairs, searchable on a
+    /// [`Visibility::Public`] lobby.
+    pub metadata: &'a [(&'a str, &'a str)],
+}
+
+/// What [`P2p::search`] looks for among the open [`Visibility::Public`]
+/// lobbies of this game.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LobbyQuery {
+    /// Metadata a lobby must carry, every pair matched exactly.
+    pub filters: Vec<(String, String)>,
+    /// Leave full lobbies out. On by default.
+    pub has_free_slot: bool,
+    /// How many lobbies to return, 1 to [`MAX_LOBBY_SEARCH_RESULTS`]. 20 by
+    /// default.
+    pub limit: u8,
+}
+
+impl Default for LobbyQuery {
+    fn default() -> Self {
+        Self {
+            filters: Vec::new(),
+            has_free_slot: true,
+            limit: 20,
+        }
+    }
+}
+
+/// One lobby [`P2p::search`] found. Join it with [`P2p::join`] and its
+/// [`lobby_id`](LobbySummary::lobby_id).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LobbySummary {
+    pub lobby_id: String,
+    pub host_user_id: String,
+    pub host_pseudo: String,
+    /// Players in it right now, host included.
+    pub members: u8,
+    pub max_players: u8,
+    pub metadata: BTreeMap<String, String>,
+    /// Whether the host is a friend of this player. Friends' lobbies come
+    /// first.
+    pub host_is_friend: bool,
 }
 
 /// One player in a lobby, with the blob they published.
@@ -156,6 +236,12 @@ pub enum LobbyEvent {
     /// The lobby is over: the host closed it or their play session expired.
     /// There is no host migration — open a new lobby.
     LobbyClosed { lobby_id: String },
+    /// The host changed the lobby's metadata. `metadata` is the whole new
+    /// set, not a difference.
+    LobbyUpdated {
+        lobby_id: String,
+        metadata: BTreeMap<String, String>,
+    },
     /// Arcane dropped events before this client fetched them, so the queue has
     /// a hole in it. Re-read the lobbies you are in with [`P2p::get_lobby`]
     /// instead of trusting what the earlier events built up.
@@ -170,7 +256,8 @@ impl LobbyEvent {
             Self::Invite { lobby_id, .. }
             | Self::MemberJoined { lobby_id, .. }
             | Self::MemberLeft { lobby_id, .. }
-            | Self::LobbyClosed { lobby_id } => Some(lobby_id),
+            | Self::LobbyClosed { lobby_id }
+            | Self::LobbyUpdated { lobby_id, .. } => Some(lobby_id),
             Self::Resync => None,
         }
     }
@@ -456,13 +543,46 @@ impl<'a> P2p<'a> {
         visibility: Visibility,
         payload: &[u8],
     ) -> Result<Lobby, SdkError> {
-        let encoded = encode_payload(payload)?;
+        self.create(LobbyOptions {
+            max_players,
+            visibility,
+            payload,
+            metadata: &[],
+        })
+    }
+
+    /// Open a lobby with this player as its host, with metadata.
+    ///
+    /// The same call as [`P2p::create_lobby`], plus up to
+    /// [`MAX_LOBBY_METADATA_PAIRS`] key / value pairs that other players see in
+    /// [`P2p::search`] when the lobby is [`Visibility::Public`].
+    ///
+    /// ```no_run
+    /// # use arcane_sdk::{LobbyOptions, Visibility};
+    /// # let client = arcane_sdk::ArcaneClient::init()?;
+    /// let lobby = client.p2p().create(LobbyOptions {
+    ///     max_players: 4,
+    ///     visibility: Visibility::Public,
+    ///     payload: b"udp://203.0.113.7:7777",
+    ///     metadata: &[("mode", "coop"), ("map", "crypt")],
+    /// })?;
+    /// # Ok::<(), arcane_sdk::SdkError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// `invalid_argument` for an oversized payload or malformed metadata
+    /// (raised before any call), plus the codes of [`P2p::create_lobby`].
+    pub fn create(&self, options: LobbyOptions<'_>) -> Result<Lobby, SdkError> {
+        let encoded = encode_payload(options.payload)?;
+        let metadata = metadata_arg(options.metadata.iter().copied())?;
         self.guard_offline("Creating a lobby")?;
 
         let body = json!({
-            "max_players": max_players,
-            "visibility": visibility.as_str(),
+            "max_players": options.max_players,
+            "visibility": options.visibility.as_str(),
             "payload": encoded,
+            "metadata": metadata,
         });
         let wire: WireLobby = post_json(&self.lobbies_path(), Some(body), CALL_TIMEOUT)
             .map_err(DesktopCall::into_sdk_error)?;
@@ -543,6 +663,83 @@ impl<'a> P2p<'a> {
                 .map_err(|call| call.into_sdk_error().with_context("lobby_id", lobby_id))?;
 
         map_lobby(wire)
+    }
+
+    /// Replace the metadata of a lobby this player hosts.
+    ///
+    /// The members get a [`LobbyEvent::LobbyUpdated`] with the new set. Pass
+    /// the whole set every time: a key left out is removed.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_argument` for a malformed id or metadata (raised before any
+    /// call), `not_host`, `lobby_not_found`, `lobby_closed`, plus the codes of
+    /// [`P2p::create_lobby`].
+    pub fn set_metadata(
+        &self,
+        lobby_id: &str,
+        metadata: &[(&str, &str)],
+    ) -> Result<Lobby, SdkError> {
+        validate_id("lobby_id", lobby_id)?;
+        let metadata = metadata_arg(metadata.iter().copied())?;
+        self.guard_offline("Changing a lobby")?;
+
+        let body = json!({ "metadata": metadata });
+        let wire: WireLobby = patch_json(
+            &format!("{}/{lobby_id}/metadata", self.lobbies_path()),
+            Some(body),
+            CALL_TIMEOUT,
+        )
+        .map_err(|call| call.into_sdk_error().with_context("lobby_id", lobby_id))?;
+
+        map_lobby(wire)
+    }
+
+    /// Find open [`Visibility::Public`] lobbies of this game.
+    ///
+    /// Friends' lobbies come first, then the newest. Lobbies whose host has
+    /// stopped playing are never listed. One synchronous loopback round trip;
+    /// the desktop app answers the same query from a 5-second cache, so call
+    /// it when a menu opens or every few seconds, never per frame.
+    ///
+    /// ```no_run
+    /// # use arcane_sdk::LobbyQuery;
+    /// # let client = arcane_sdk::ArcaneClient::init()?;
+    /// let found = client.p2p().search(&LobbyQuery {
+    ///     filters: vec![("mode".into(), "coop".into())],
+    ///     ..LobbyQuery::default()
+    /// })?;
+    /// if let Some(first) = found.first() {
+    ///     client.p2p().join(&first.lobby_id, b"udp://198.51.100.4:7777")?;
+    /// }
+    /// # Ok::<(), arcane_sdk::SdkError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// `invalid_argument` for malformed filters or a limit out of range
+    /// (raised before any call), `rate_limited`, `not_owned`, plus the codes of
+    /// [`P2p::create_lobby`].
+    pub fn search(&self, query: &LobbyQuery) -> Result<Vec<LobbySummary>, SdkError> {
+        if query.limit == 0 || query.limit > MAX_LOBBY_SEARCH_RESULTS {
+            return Err(
+                SdkError::invalid_argument("The search limit is out of range.")
+                    .with_context("limit", query.limit)
+                    .with_context("max", MAX_LOBBY_SEARCH_RESULTS),
+            );
+        }
+        let filters = metadata_arg(
+            query
+                .filters
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        )?;
+        self.guard_offline("Searching for lobbies")?;
+
+        let wire: WireSearch = get_json(&search_path(self.game_id, query, &filters), CALL_TIMEOUT)
+            .map_err(DesktopCall::into_sdk_error)?;
+
+        Ok(wire.lobbies.into_iter().filter_map(map_summary).collect())
     }
 
     /// Invite one friend to a lobby.
@@ -753,6 +950,68 @@ pub(crate) fn encode_payload(payload: &[u8]) -> Result<String, SdkError> {
     Ok(BASE64.encode(payload))
 }
 
+fn is_metadata_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= MAX_LOBBY_METADATA_KEY_LEN
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+/// Check metadata before any call, so a bad key is the game's own
+/// `invalid_argument` rather than a refusal from Arcane.
+pub(crate) fn metadata_arg<'k>(
+    pairs: impl Iterator<Item = (&'k str, &'k str)>,
+) -> Result<BTreeMap<String, String>, SdkError> {
+    let mut metadata = BTreeMap::new();
+    for (key, value) in pairs {
+        if !is_metadata_key(key) {
+            return Err(
+                SdkError::invalid_argument("A lobby metadata key is malformed.")
+                    .with_hint("Keys are 1 to 32 characters of a-z, 0-9 and _.")
+                    .with_context("key", key),
+            );
+        }
+        if value.chars().count() > MAX_LOBBY_METADATA_VALUE_LEN {
+            return Err(
+                SdkError::invalid_argument("A lobby metadata value is too long.")
+                    .with_context("key", key)
+                    .with_context("max_length", MAX_LOBBY_METADATA_VALUE_LEN),
+            );
+        }
+        metadata.insert(key.to_string(), value.to_string());
+    }
+    if metadata.len() > MAX_LOBBY_METADATA_PAIRS {
+        return Err(
+            SdkError::invalid_argument("A lobby carries too many metadata pairs.")
+                .with_context("pairs", metadata.len())
+                .with_context("max", MAX_LOBBY_METADATA_PAIRS),
+        );
+    }
+    let bytes = serde_json::to_vec(&metadata)
+        .map(|v| v.len())
+        .unwrap_or(usize::MAX);
+    if bytes > MAX_LOBBY_METADATA_BYTES {
+        return Err(SdkError::invalid_argument(
+            "The lobby metadata is over 2048 bytes as JSON.",
+        )
+        .with_context("bytes", bytes)
+        .with_context("max_bytes", MAX_LOBBY_METADATA_BYTES));
+    }
+    Ok(metadata)
+}
+
+fn search_path(game_id: &str, query: &LobbyQuery, filters: &BTreeMap<String, String>) -> String {
+    let mut path = format!(
+        "{GAMES_PATH_PREFIX}/{game_id}/lobbies/search?has_free_slot={}&limit={}",
+        query.has_free_slot, query.limit
+    );
+    for (key, value) in filters {
+        path.push_str(&format!("&meta.{key}={}", encode_query(value)));
+    }
+    path
+}
+
 /// Decode a base64 payload argument from the C ABI. `None` when it is not
 /// base64 at all — the caller reports a bad argument rather than sending bytes
 /// the game did not mean.
@@ -839,7 +1098,33 @@ struct WireLobby {
     #[serde(default)]
     max_players: u8,
     #[serde(default)]
+    metadata: BTreeMap<String, String>,
+    #[serde(default)]
     members: Vec<WireMember>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WireSearch {
+    #[serde(default)]
+    lobbies: Vec<WireSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WireSummary {
+    #[serde(default)]
+    lobby_id: String,
+    #[serde(default)]
+    host_user_id: String,
+    #[serde(default)]
+    host_pseudo: String,
+    #[serde(default)]
+    members: u8,
+    #[serde(default)]
+    max_players: u8,
+    #[serde(default)]
+    metadata: BTreeMap<String, String>,
+    #[serde(default)]
+    host_is_friend: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -882,6 +1167,23 @@ struct WireEvent {
     pseudo: Option<String>,
     #[serde(default)]
     payload: Option<String>,
+    #[serde(default)]
+    metadata: Option<BTreeMap<String, String>>,
+}
+
+fn map_summary(wire: WireSummary) -> Option<LobbySummary> {
+    if wire.lobby_id.trim().is_empty() {
+        return None;
+    }
+    Some(LobbySummary {
+        lobby_id: wire.lobby_id,
+        host_user_id: wire.host_user_id,
+        host_pseudo: wire.host_pseudo,
+        members: wire.members,
+        max_players: wire.max_players,
+        metadata: wire.metadata,
+        host_is_friend: wire.host_is_friend,
+    })
 }
 
 fn map_lobby(wire: WireLobby) -> Result<Lobby, SdkError> {
@@ -910,6 +1212,7 @@ fn map_lobby(wire: WireLobby) -> Result<Lobby, SdkError> {
             })
             .collect::<Result<Vec<_>, SdkError>>()?,
         max_players: wire.max_players,
+        metadata: wire.metadata,
     })
 }
 
@@ -940,6 +1243,10 @@ fn map_event(wire: WireEvent) -> Option<Incoming> {
             user_id: wire.user_id.unwrap_or_default(),
         },
         "lobby_closed" => LobbyEvent::LobbyClosed { lobby_id },
+        "lobby_updated" => LobbyEvent::LobbyUpdated {
+            lobby_id,
+            metadata: wire.metadata.unwrap_or_default(),
+        },
         _ => return None,
     };
 
@@ -1008,6 +1315,23 @@ struct JsonLobby<'a> {
     host_payload: String,
     members: Vec<JsonMember<'a>>,
     max_players: u8,
+    metadata: &'a BTreeMap<String, String>,
+}
+
+#[derive(Serialize)]
+struct JsonSearch<'a> {
+    lobbies: Vec<JsonSummary<'a>>,
+}
+
+#[derive(Serialize)]
+struct JsonSummary<'a> {
+    lobby_id: &'a str,
+    host_user_id: &'a str,
+    host_pseudo: &'a str,
+    members: u8,
+    max_players: u8,
+    metadata: &'a BTreeMap<String, String>,
+    host_is_friend: bool,
 }
 
 #[derive(Serialize)]
@@ -1044,6 +1368,10 @@ enum JsonEvent<'a> {
     LobbyClosed {
         lobby_id: &'a str,
     },
+    LobbyUpdated {
+        lobby_id: &'a str,
+        metadata: &'a BTreeMap<String, String>,
+    },
     Resync,
 }
 
@@ -1063,8 +1391,27 @@ pub(crate) fn to_json(lobby: &Lobby) -> String {
             })
             .collect(),
         max_players: lobby.max_players,
+        metadata: &lobby.metadata,
     };
     serde_json::to_string(&rendered).unwrap_or_else(|_| r#"{"lobby_id":""}"#.to_string())
+}
+
+pub(crate) fn summaries_to_json(lobbies: &[LobbySummary]) -> String {
+    let rendered = JsonSearch {
+        lobbies: lobbies
+            .iter()
+            .map(|lobby| JsonSummary {
+                lobby_id: &lobby.lobby_id,
+                host_user_id: &lobby.host_user_id,
+                host_pseudo: &lobby.host_pseudo,
+                members: lobby.members,
+                max_players: lobby.max_players,
+                metadata: &lobby.metadata,
+                host_is_friend: lobby.host_is_friend,
+            })
+            .collect(),
+    };
+    serde_json::to_string(&rendered).unwrap_or_else(|_| r#"{"lobbies":[]}"#.to_string())
 }
 
 fn render_events<'a>(events: impl Iterator<Item = &'a LobbyEvent>) -> String {
@@ -1097,6 +1444,9 @@ fn render_events<'a>(events: impl Iterator<Item = &'a LobbyEvent>) -> String {
                     JsonEvent::MemberLeft { lobby_id, user_id }
                 }
                 LobbyEvent::LobbyClosed { lobby_id } => JsonEvent::LobbyClosed { lobby_id },
+                LobbyEvent::LobbyUpdated { lobby_id, metadata } => {
+                    JsonEvent::LobbyUpdated { lobby_id, metadata }
+                }
                 LobbyEvent::Resync => JsonEvent::Resync,
             })
             .collect(),
@@ -1579,7 +1929,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            r#"{"lobby_id":"lobby-1","join_code":"K7P3QX","host_user_id":"user-host","host_payload":"dWRwOi8vMTAuMC4wLjE6Nzc3Nw==","members":[{"user_id":"user-host","pseudo":"Ada","payload":"dWRwOi8vMTAuMC4wLjE6Nzc3Nw=="},{"user_id":"user-b","pseudo":"Bo","payload":""}],"max_players":4}"#
+            r#"{"lobby_id":"lobby-1","join_code":"K7P3QX","host_user_id":"user-host","host_payload":"dWRwOi8vMTAuMC4wLjE6Nzc3Nw==","members":[{"user_id":"user-host","pseudo":"Ada","payload":"dWRwOi8vMTAuMC4wLjE6Nzc3Nw=="},{"user_id":"user-b","pseudo":"Bo","payload":""}],"max_players":4,"metadata":{}}"#
         );
     }
 
@@ -1690,5 +2040,119 @@ mod tests {
             .context()
             .iter()
             .any(|(k, v)| k == "field" && v == "lobby_id"));
+    }
+
+    #[test]
+    fn metadata_is_checked_before_any_call() {
+        let ok = metadata_arg([("mode", "coop"), ("map_2", "harbor")].into_iter()).expect("valid");
+        assert_eq!(ok.get("mode").map(String::as_str), Some("coop"));
+
+        for key in [
+            "",
+            "Mode",
+            "game-mode",
+            "a b",
+            &"k".repeat(MAX_LOBBY_METADATA_KEY_LEN + 1),
+        ] {
+            let err = metadata_arg([(key, "v")].into_iter()).expect_err(key);
+            assert_eq!(err.code(), "invalid_argument");
+        }
+
+        let long = "é".repeat(MAX_LOBBY_METADATA_VALUE_LEN + 1);
+        assert_eq!(
+            metadata_arg([("mode", long.as_str())].into_iter())
+                .expect_err("too long")
+                .code(),
+            "invalid_argument"
+        );
+        let fits = "é".repeat(MAX_LOBBY_METADATA_VALUE_LEN);
+        assert!(metadata_arg([("mode", fits.as_str())].into_iter()).is_ok());
+
+        let keys: Vec<String> = (0..=MAX_LOBBY_METADATA_PAIRS)
+            .map(|i| format!("k{i}"))
+            .collect();
+        let pairs = keys.iter().map(|k| (k.as_str(), "v"));
+        assert_eq!(
+            metadata_arg(pairs).expect_err("too many").code(),
+            "invalid_argument"
+        );
+    }
+
+    #[test]
+    fn a_search_path_carries_every_filter_encoded() {
+        let query = LobbyQuery {
+            filters: vec![
+                ("mode".into(), "co op".into()),
+                ("map".into(), "a&b".into()),
+            ],
+            has_free_slot: false,
+            limit: 5,
+        };
+        let filters = metadata_arg(query.filters.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .expect("filters");
+
+        assert_eq!(
+            search_path("game-1", &query, &filters),
+            format!(
+                "{GAMES_PATH_PREFIX}/game-1/lobbies/search?has_free_slot=false&limit=5&meta.map=a%26b&meta.mode=co%20op"
+            )
+        );
+    }
+
+    #[test]
+    fn a_lobby_carries_its_metadata_and_defaults_to_none() {
+        let lobby = parse_lobby(LOBBY);
+        assert!(lobby.metadata.is_empty());
+
+        let lobby = parse_lobby(
+            r#"{"lobby_id":"lobby-1","host_user_id":"u","visibility":"public",
+                "max_players":4,"members":[],"metadata":{"mode":"coop"}}"#,
+        );
+        assert_eq!(lobby.metadata.get("mode").map(String::as_str), Some("coop"));
+    }
+
+    #[test]
+    fn search_results_map_and_render_back_to_json() {
+        let wire: WireSearch = serde_json::from_str(
+            r#"{"lobbies":[
+                {"lobby_id":"lobby-1","host_user_id":"u1","host_pseudo":"Ada","members":1,
+                 "max_players":4,"metadata":{"mode":"coop"},"host_is_friend":true},
+                {"host_user_id":"u2"}
+            ]}"#,
+        )
+        .expect("wire search");
+        let lobbies: Vec<LobbySummary> = wire.lobbies.into_iter().filter_map(map_summary).collect();
+
+        assert_eq!(lobbies.len(), 1);
+        assert_eq!(lobbies[0].host_pseudo, "Ada");
+        assert!(lobbies[0].host_is_friend);
+
+        let rendered: serde_json::Value =
+            serde_json::from_str(&summaries_to_json(&lobbies)).expect("json");
+        assert_eq!(rendered["lobbies"][0]["lobby_id"], "lobby-1");
+        assert_eq!(rendered["lobbies"][0]["metadata"]["mode"], "coop");
+        assert_eq!(rendered["lobbies"][0]["members"], 1);
+    }
+
+    #[test]
+    fn a_lobby_updated_event_carries_the_new_metadata() {
+        let events = parse_events(
+            r#"{"events":[{"type":"lobby_updated","lobby_id":"lobby-1","metadata":{"map":"docks"}}]}"#,
+        );
+
+        let mut metadata = BTreeMap::new();
+        metadata.insert("map".to_string(), "docks".to_string());
+        assert_eq!(
+            events,
+            vec![LobbyEvent::LobbyUpdated {
+                lobby_id: "lobby-1".into(),
+                metadata
+            }]
+        );
+
+        let rendered: serde_json::Value =
+            serde_json::from_str(&render_events(events.iter())).expect("json");
+        assert_eq!(rendered["events"][0]["type"], "lobby_updated");
+        assert_eq!(rendered["events"][0]["metadata"]["map"], "docks");
     }
 }

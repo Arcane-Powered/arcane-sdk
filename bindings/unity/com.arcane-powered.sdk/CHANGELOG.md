@@ -2,6 +2,36 @@
 
 This package tracks the version of the native SDK it wraps.
 
+## 0.12.0
+
+### Added
+
+- **Public lobbies.** `ArcaneLobbyVisibility.Public` lists a lobby to every
+  player who owns the game. `Arcane.Lobbies.Search(ArcaneLobbyQuery)` finds
+  them, friends' lobbies first, filtered on metadata.
+- **Lobby metadata.** Up to 16 key/value pairs on a lobby, set at creation with
+  `Arcane.Lobbies.Create(ArcaneLobbyOptions)` and replaced by the host with
+  `SetMetadata`. Members get the new `LobbyUpdated` event; `ArcaneLobby.Metadata`
+  and `ArcaneLobbyEvent.Metadata` carry it.
+- `ArcaneErrorCode.NotHost` and `ArcaneErrorCode.RateLimited`.
+- **Tools ▸ Arcane Powered ▸ Install native plugins** downloads the prebuilt
+  Windows, macOS and Linux libraries of this version from its GitHub release.
+  Building them with Rust is no longer required.
+
+### Changed
+
+- A panic inside the native library is caught at the C boundary and returned as
+  an `internal` error instead of aborting the engine.
+- Needs an Arcane desktop build with the lobby search and metadata routes for
+  the new calls; an older one answers `feature_unavailable`.
+
+### Fixed
+
+- **Every game call failed against a current desktop app.** The SDK now sends
+  the `ARCANE_SDK_TOKEN` the desktop gives each launch as a bearer token, and a
+  JSON content type on POSTs without a body. Before, the desktop refused them
+  with `sdk_token_required` or `415`.
+
 ## 0.11.0
 
 ### Fixed

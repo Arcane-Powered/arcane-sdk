@@ -29,6 +29,9 @@ namespace ArcanePowered.Native
         /// <summary>Starting size for the list JSON getters, which grow from here.</summary>
         internal const int ListBufferSize = 8192;
 
+        /// <summary>A full 64-player lobby with the largest payloads, so an action never runs twice to grow the buffer.</summary>
+        internal const int LobbyBufferSize = 512 * 1024;
+
         /// <summary>Ceiling for the growth loop: past this a title's list is a bug, not a big title.</summary>
         internal const int MaxBufferSize = 4 * 1024 * 1024;
 
