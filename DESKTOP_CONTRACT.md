@@ -715,3 +715,50 @@ version u8 (1) · kind u8 · peer u16 · length u32 · data[length]
 | `allow_relay: false` and no direct path | `relay_refused` event for that player; nothing is relayed. |
 | More than 64 MiB of messages waiting | New unreliable messages are dropped; a reliable one closes the network with `receive_overflow`. |
 | `ARCANE_OFFLINE_ONLY` | `network_required` from `Net::open`; no call is made. |
+
+## 14. Browser games — the `postMessage` bridge
+
+An HTML5 build runs in a cross-origin iframe of the desktop's `play-<game_id>` window and
+has no loopback port. `@arcane/sdk-web` (`bindings/js`) speaks `postMessage` to the host
+page (`play.html`), which only listens when the build declared `sdk_bridge`.
+
+Request, game → host, sent to the parent:
+
+```json
+{ "arcane": 1, "id": 7, "method": "achievements.unlock", "params": { "key": "first-blood" } }
+```
+
+Reply, host → game, posted to the game's own origin only:
+
+```json
+{ "arcane": 1, "id": 7, "result": { … } }
+{ "arcane": 1, "id": 7, "error": "not_owned", "message": "…" }
+{ "arcane": 1, "event": "pause" }   { "arcane": 1, "event": "resume" }
+```
+
+The host page drops any message whose `source` is not the game's iframe or whose `origin`
+is not `https://<game_id><VITE_WEB_PLAY_HOST_SUFFIX>`, answers `hello` itself with
+`{ available: true, game_id, focused }`, limits each method to 20 calls per second
+(`rate_limited`) and hands the rest to the Tauri command `web_play_bridge_call`.
+
+The desktop maps a fixed allow-list of methods onto the routes above, called in-process on
+the loopback router with a launch token issued when the play window opens and revoked when it
+closes, so every check and every cache of the native path applies unchanged:
+
+| Method | Route |
+|---|---|
+| `achievements.list` / `achievements.unlock { key }` | §9 |
+| `friends.list` / `friends.sendRequest { user_id }` / `friends.events { after? }` | §10 |
+| `p2p.create` · `p2p.joinByCode` · `p2p.join { lobby_id }` · `p2p.getLobby` · `p2p.setMetadata` · `p2p.search` · `p2p.invite` · `p2p.leave` · `p2p.close` · `p2p.events { after? }` · `p2p.launchContext` | §11 |
+
+Path parameters are percent-encoded, so a `lobby_id` can never reach another route. The coop
+network (§13) is not bridged.
+
+`saves.list` · `saves.read { slot }` · `saves.write { slot, data }` · `saves.delete { slot }`
+are the desktop's own: one file per slot in
+`<data_dir>/Arcane Powered/web-saves/<user_id>/<game_id>/`, kebab-case slot names of 64
+characters at most, 8 MB per slot, 32 slots (`invalid_slot`, `save_too_large`,
+`too_many_slots`). `data` is a `Uint8Array` between the game and the host page and base64
+between the host page and Rust. The first write adopts the folder as the confirmed save folder
+of the game's `arcane:` subject, and closing the window after a write backs it up, so the
+slots follow the player like any Arcane game's saves.
