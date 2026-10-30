@@ -13,10 +13,10 @@ import { Arcane } from "@arcane/sdk-web";
 
 const arcane = await Arcane.init();
 if (arcane.available) {
-  await arcane.achievements.unlock("first-blood");
-  await arcane.saves.write("slot-1", JSON.stringify(state));
   arcane.on("pause", () => game.pause());
   arcane.on("resume", () => game.resume());
+  await arcane.achievements.unlock("first-blood");
+  await arcane.saves.write("slot-1", JSON.stringify(state));
 }
 ```
 

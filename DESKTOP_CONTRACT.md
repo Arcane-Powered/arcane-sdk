@@ -439,6 +439,12 @@ POST /v1/friends/requests { "user_id": "<uuid>" }
 → 200 { "ok": true }
 → 400 invalid_request · 400 friend_request_self · 404 user_not_found
 → 409 already_friends · 401 not_authenticated
+
+GET /v1/friends/events?after={cursor}
+→ 200 { "events": [ { "id": 12, "type": "presence", "user_id": "…", "online": true,
+         "playing_game_id": "…|null", "joinable": false, "lobby_id": "…|null" } ],
+       "cursor": 12, "dropped": false }
+→ 401 not_authenticated
 ```
 
 - The route is **not** scoped to a title: it answers for the signed-in account, and the
@@ -459,6 +465,11 @@ POST /v1/friends/requests { "user_id": "<uuid>" }
   launcher flows.
 - One synchronous round trip on the calling thread. The SDK never polls friends in the
   background and never opens the deep link for them.
+- `GET /v1/friends/events` is the presence queue the desktop keeps per signed-in account,
+  fed by the `presence` WebSocket events: 256 events at most, each kept 5 minutes.
+  `after` is the last `id` read (0 or absent for everything still queued); `dropped` is
+  `true` when events newer than `after` were already evicted, and the caller should read
+  `/v1/friends` again. Today only the web bridge reads it (§14).
 
 ### What the SDK does around this
 
@@ -736,7 +747,10 @@ Reply, host → game, posted to the game's own origin only:
 { "arcane": 1, "event": "pause" }   { "arcane": 1, "event": "resume" }
 ```
 
-The host page drops any message whose `source` is not the game's iframe or whose `origin`
+`@arcane/sdk-web` posts `hello` with target origin `*`, since it cannot know which webview
+origin the app runs on, then sends every later call to the origin that answered `hello` and
+drops messages from any other origin (`hostOrigin` pins it from the start). The host page
+drops any message whose `source` is not the game's iframe or whose `origin`
 is not `https://<game_id><VITE_WEB_PLAY_HOST_SUFFIX>`, answers `hello` itself with
 `{ available: true, game_id, focused }`, limits each method to 20 calls per second
 (`rate_limited`) and hands the rest to the Tauri command `web_play_bridge_call`.

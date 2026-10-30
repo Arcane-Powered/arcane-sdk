@@ -4,7 +4,7 @@ description: "Unlock achievements, read friends, host lobbies and keep cloud-syn
 keywords: ["html5", "web", "webgl", "javascript", "typescript", "postMessage", "browser game", "sdk-web"]
 ---
 
-A browser game published on Arcane runs in the desktop app, inside a sandboxed iframe of its own play window. It cannot load the native SDK and has no loopback port, so `@arcane/sdk-web` talks to the play window with `postMessage` instead. The desktop checks every call and answers with the same data the native SDK gets: the names below are the Rust API's, and the [error codes](/concepts/errors) are the same.
+A browser game published on Arcane runs in the desktop app, inside a sandboxed iframe of its own play window. It cannot load the native SDK and has no loopback port, so `@arcane/sdk-web` talks to the play window with `postMessage` instead. The desktop checks every call and answers with the same data the native SDK gets, under the names of the Rust API.
 
 ```ts
 import { Arcane } from "@arcane/sdk-web";
@@ -12,9 +12,9 @@ import { Arcane } from "@arcane/sdk-web";
 const arcane = await Arcane.init();
 
 if (arcane.available) {
-  await arcane.achievements.unlock("first-blood");   // idempotent
   arcane.on("pause", () => game.pause());
   arcane.on("resume", () => game.resume());
+  await arcane.achievements.unlock("first-blood");   // idempotent
 }
 ```
 
@@ -23,8 +23,12 @@ if (arcane.available) {
 <Steps>
   <Step title="Add the package">
     ```bash
-    npm install @arcane/sdk-web
+    bun add @arcane/sdk-web
     ```
+
+    <Note>
+      The package is not on npm yet. Until it is, build it from `bindings/js` in the SDK repository (`bun install && bun run build`) and import `dist/index.js` from your game.
+    </Note>
 
     It has no dependency and works with any bundler or engine export (Godot, Unity WebGL, Construct, Phaser, plain JS) that lets you run a script.
   </Step>
@@ -32,7 +36,7 @@ if (arcane.available) {
     When you publish the build from the publisher portal, tick **The game uses the Arcane web SDK**. A build that does not declare it never gets an answer: `init()` resolves with `available: false`.
   </Step>
   <Step title="Initialise once">
-    Call `Arcane.init()` at start-up and keep the result. It waits at most one second for the desktop.
+    Call `Arcane.init()` at start-up and keep the result. It waits at most one second for the desktop, then sends every call to the origin of the play window that answered and ignores messages from any other. Pass `hostOrigin` to pin that origin from the first message.
   </Step>
 </Steps>
 
@@ -70,7 +74,7 @@ The desktop sends `pause` when the play window loses focus and `resume` when it 
 
 ## Errors
 
-A refused call rejects with an `ArcaneError` whose `code` is one of the SDK's codes (`not_owned`, `offline`, `lobby_full`, …) or one of the bridge's own:
+A refused call rejects with an `ArcaneError`. Its `code` is the one the desktop app answers, which is not always the native SDK's: a call that needs the network while the app is offline reads `offline` here, where the native SDK raises `network_required`. Lobby, friend and achievement refusals keep their names (`not_owned`, `lobby_full`, `already_friends`, …, see [Errors](/concepts/errors)). The bridge adds its own:
 
 | Code | Meaning |
 |---|---|

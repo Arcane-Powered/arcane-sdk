@@ -182,6 +182,7 @@ class Bridge implements Transport {
 	constructor(
 		private readonly target: Window,
 		private readonly source: Window,
+		private hostOrigin: string,
 	) {
 		source.addEventListener("message", (event) => this.receive(event));
 	}
@@ -190,7 +191,7 @@ class Bridge implements Transport {
 		const id = this.nextId++;
 		return new Promise((resolve, reject) => {
 			this.pending.set(id, { method, resolve, reject });
-			this.target.postMessage({ arcane: PROTOCOL, id, method, params: params ?? null }, "*");
+			this.target.postMessage({ arcane: PROTOCOL, id, method, params: params ?? null }, this.hostOrigin);
 		});
 	}
 
@@ -211,6 +212,7 @@ class Bridge implements Transport {
 
 	private receive(event: MessageEvent) {
 		if (event.source !== this.target) return;
+		if (this.hostOrigin !== "*" && event.origin !== this.hostOrigin) return;
 		const data = event.data;
 		if (!data || typeof data !== "object" || data.arcane !== PROTOCOL) return;
 		if (data.event === "pause" || data.event === "resume") {
@@ -220,6 +222,7 @@ class Bridge implements Transport {
 		const pending = this.pending.get(data.id);
 		if (!pending) return;
 		this.pending.delete(data.id);
+		if (pending.method === "hello" && this.hostOrigin === "*" && event.origin) this.hostOrigin = event.origin;
 		if (typeof data.error === "string") pending.reject(new ArcaneError(data.error, data.message ?? data.error));
 		else pending.resolve(data.result);
 	}
@@ -227,6 +230,7 @@ class Bridge implements Transport {
 
 export interface InitOptions {
 	timeoutMs?: number;
+	hostOrigin?: string;
 	parent?: Window;
 	self?: Window;
 }
@@ -253,7 +257,7 @@ export class Arcane {
 		const self = options.self ?? (typeof window === "undefined" ? undefined : window);
 		const parent = options.parent ?? self?.parent;
 		if (!self || !parent || parent === self) return new Arcane(false, null, null);
-		const bridge = new Bridge(parent, self);
+		const bridge = new Bridge(parent, self, options.hostOrigin ?? "*");
 		const hello = bridge.call("hello") as Promise<{ available?: boolean; game_id?: string }>;
 		const id = bridge.lastId;
 		const timeout = new Promise<null>((resolve) =>
@@ -280,7 +284,10 @@ class Achievements {
 	async list(): Promise<Achievement[]> {
 		if (!this.transport) return [];
 		const reply = (await this.transport.call("achievements.list")) as { achievements?: Achievement[] };
-		const list = reply?.achievements ?? [];
+		const list = (reply?.achievements ?? []).map((achievement) => ({
+			...achievement,
+			unlocked: achievement.unlocked ?? achievement.unlocked_at != null,
+		}));
 		for (const achievement of list) this.unlocked.set(achievement.key, achievement.unlocked);
 		return list;
 	}

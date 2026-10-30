@@ -24,7 +24,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "type-check": "tsc -p tsconfig.json --noEmit",
-    "test": "bun test test"
+    "test": "bun test test",
+    "prepublishOnly": "bun run build"
   },
   "devDependencies": {
     "typescript": "^5.6.3"

@@ -3,24 +3,26 @@ import { Arcane, ArcaneError } from "../src/index";
 
 type Handler = (method: string, params: any) => { result?: unknown; error?: string; message?: string } | null;
 
+const HOST = "tauri://localhost";
+
 function frame(handler: Handler) {
 	const listeners: ((event: any) => void)[] = [];
-	const calls: { method: string; params: any }[] = [];
+	const calls: { method: string; params: any; targetOrigin: string }[] = [];
 	const self: any = {
 		addEventListener: (_type: string, listener: (event: any) => void) => listeners.push(listener),
 	};
 	const parent: any = {
-		postMessage(message: any) {
-			calls.push({ method: message.method, params: message.params });
+		postMessage(message: any, targetOrigin: string) {
+			calls.push({ method: message.method, params: message.params, targetOrigin });
 			const reply = handler(message.method, message.params);
 			if (!reply) return;
 			queueMicrotask(() => {
-				for (const listener of listeners) listener({ source: parent, data: { arcane: 1, id: message.id, ...reply } });
+				for (const listener of listeners) listener({ source: parent, origin: HOST, data: { arcane: 1, id: message.id, ...reply } });
 			});
 		},
 	};
-	const emit = (data: unknown, source: unknown = parent) => {
-		for (const listener of listeners) listener({ source, data });
+	const emit = (data: unknown, source: unknown = parent, origin = HOST) => {
+		for (const listener of listeners) listener({ source, origin, data });
 	};
 	return { self, parent, calls, emit };
 }
@@ -66,7 +68,7 @@ describe("calls", () => {
 		const unlock = await arcane.achievements.unlock("first-blood");
 		expect(unlock?.key).toBe("first-blood");
 		expect(arcane.achievements.isUnlocked("first-blood")).toBe(true);
-		expect(calls.at(-1)).toEqual({ method: "achievements.unlock", params: { key: "first-blood" } });
+		expect(calls.at(-1)).toEqual({ method: "achievements.unlock", params: { key: "first-blood" }, targetOrigin: HOST });
 	});
 
 	test("an error reply rejects with its code", async () => {
@@ -89,6 +91,52 @@ describe("calls", () => {
 		expect(paused).toBe(0);
 		emit({ arcane: 1, event: "pause" });
 		expect(paused).toBe(1);
+	});
+
+	test("list reads unlocked from unlocked_at", async () => {
+		const { self, parent } = frame(
+			hello((method) =>
+				method === "achievements.list"
+					? {
+							result: {
+								achievements: [
+									{ key: "a", title: "A", hidden: false, tier: "patina", unlocked_at: "2026-10-30T10:00:00Z" },
+									{ key: "b", title: "B", hidden: false, tier: "patina", unlocked_at: null },
+								],
+							},
+						}
+					: null,
+			),
+		);
+		const arcane = await Arcane.init({ self, parent });
+		const list = await arcane.achievements.list();
+		expect(list.map((a) => a.unlocked)).toEqual([true, false]);
+		expect(arcane.achievements.isUnlocked("a")).toBe(true);
+		expect(arcane.achievements.isUnlocked("b")).toBe(false);
+	});
+});
+
+describe("origin", () => {
+	test("hello goes to any origin, then calls are pinned to the host that answered", async () => {
+		const { self, parent, calls, emit } = frame(hello(() => ({ result: { achievements: [] } })));
+		const arcane = await Arcane.init({ self, parent });
+		await arcane.achievements.list();
+		expect(calls[0].targetOrigin).toBe("*");
+		expect(calls.at(-1)?.targetOrigin).toBe(HOST);
+		let paused = 0;
+		arcane.on("pause", () => paused++);
+		emit({ arcane: 1, event: "pause" }, parent, "https://evil.example");
+		expect(paused).toBe(0);
+	});
+
+	test("hostOrigin pins every message from the start", async () => {
+		const { self, parent, calls } = frame(hello());
+		const arcane = await Arcane.init({ self, parent, hostOrigin: HOST });
+		expect(arcane.available).toBe(true);
+		expect(calls[0].targetOrigin).toBe(HOST);
+		const other = frame(hello());
+		const refused = await Arcane.init({ self: other.self, parent: other.parent, hostOrigin: "http://tauri.localhost", timeoutMs: 20 });
+		expect(refused.available).toBe(false);
 	});
 });
 
