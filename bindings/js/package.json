@@ -1,6 +1,6 @@
 {
   "name": "@arcane/sdk-web",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Achievements, friends, lobbies and cloud-synced saves for HTML5 games played in the Arcane Powered desktop app.",
   "license": "MIT OR Apache-2.0",
   "type": "module",
