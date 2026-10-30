@@ -34,11 +34,12 @@ pub struct Friend {
     /// Whether they are playing **this** title right now — the title named by
     /// `ARCANE_GAME_ID`.
     pub in_game: bool,
-    /// Whether they are in a lobby of this title with a free slot, other than a
-    /// `code` lobby. Join it with [`crate::P2p::join`] and [`Friend::lobby_id`].
+    /// Whether [`Friend::lobby_id`] has a free slot. Check it before joining
+    /// with [`crate::P2p::join`].
     pub joinable: bool,
     /// The lobby they are in, when it is a lobby of this title other than a
-    /// `code` lobby. `None` otherwise, including for a lobby of another title.
+    /// `code` lobby, full or not. `None` otherwise, including for a lobby of
+    /// another title.
     pub lobby_id: Option<String>,
 }
 

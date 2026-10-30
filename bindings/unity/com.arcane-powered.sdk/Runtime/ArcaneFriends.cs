@@ -27,12 +27,14 @@ namespace ArcanePowered
         public bool InGame { get; private set; }
 
         /// <summary>
-        /// Whether they are in a lobby of this title with a free slot, other than a code lobby —
-        /// pass <see cref="LobbyId"/> to <see cref="ArcaneLobbies.Join"/>.
+        /// Whether <see cref="LobbyId"/> has a free slot — check it before passing
+        /// <see cref="LobbyId"/> to <see cref="ArcaneLobbies.Join"/>.
         /// </summary>
         public bool Joinable { get; private set; }
 
-        /// <summary>The lobby of this title they are in, or <see langword="null"/>.</summary>
+        /// <summary>
+        /// Their lobby of this title other than a code lobby, full or not, or <see langword="null"/>.
+        /// </summary>
         public string LobbyId { get; private set; }
 
         internal static ArcaneFriend FromJson(ArcaneJson node)
@@ -144,9 +146,18 @@ namespace ArcanePowered
             }
 
             byte[] target = ArcaneBuffer.ToUtf8(userId);
-            return ArcaneCall.Run(
-                (buffer, length) => ArcaneNative.arcane_sdk_friend_request(target, buffer, length),
-                out error);
+            try
+            {
+                return ArcaneCall.Run(
+                    (buffer, length) => ArcaneNative.arcane_sdk_friend_request(target, buffer, length),
+                    out error);
+            }
+            catch (EntryPointNotFoundException)
+            {
+                error = ArcaneError.InvalidResponse(
+                    "The installed Arcane native plugin predates friend requests. Reinstall the native plugins of this package version.");
+                return false;
+            }
         }
 
         /// <summary>Send a friend request, throwing on failure.</summary>
@@ -157,6 +168,22 @@ namespace ArcanePowered
             {
                 throw new ArcaneException(error);
             }
+        }
+
+        /// <summary>Send a friend request on a background thread.</summary>
+        /// <remarks>
+        /// Completes off Unity's main thread, so hand the result back with
+        /// <see cref="Arcane.RunOnMainThread"/> before you touch the scene. A failure
+        /// answers <see langword="false"/> and leaves the reason in <see cref="Arcane.LastError"/> —
+        /// use the <c>Try…</c> form to be handed the error itself.
+        /// </remarks>
+        public Task<bool> SendRequestAsync(string userId)
+        {
+            return Task.Run(() =>
+            {
+                ArcaneError ignored;
+                return TrySendRequest(userId, out ignored);
+            });
         }
 
         /// <summary>The friends list, fetched on a background thread.</summary>

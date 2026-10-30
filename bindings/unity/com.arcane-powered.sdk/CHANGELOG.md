@@ -7,9 +7,9 @@ This package tracks the version of the native SDK it wraps.
 ### Added
 
 - **Join a friend.** `ArcaneFriend.Joinable` and `ArcaneFriend.LobbyId` say when
-  a friend is in a lobby of this title open to friends with a free slot; pass the id to
-  `Arcane.Lobbies.Join`.
-- **Friend requests from the game.** `Arcane.Friends.SendRequest(userId)` asks
+  a friend is in a lobby of this title other than a code lobby, and whether it
+  has a free slot; pass the id of a joinable one to `Arcane.Lobbies.Join`.
+- **Friend requests from the game.** `Arcane.Friends.SendRequest(userId)` (and `SendRequestAsync`) asks
   someone met in a lobby to be friends; the request waits in their launcher.
 - `ArcaneErrorCode.UserNotFound` and `ArcaneErrorCode.AlreadyFriends`.
 

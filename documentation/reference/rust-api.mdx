@@ -205,11 +205,9 @@ for friend in &list.friends {
 
 `in_game` is `true` when the friend is playing the same `game_id` as this client — the id in `ARCANE_GAME_ID`; a friend playing anything else is `online` but not `in_game`.
 
-`joinable` and `lobby_id` are set for a friend in a lobby of this title open to friends with a free slot; pass `lobby_id` to `p2p().join`. `send_request` asks another account to be friends — typically a `LobbyMember::user_id` — and the request waits in their launcher.
+`lobby_id` is set for a friend in a lobby of this title other than a `code` lobby, full or not; `joinable` is `true` when that lobby also has a free slot. Check `joinable` before passing `lobby_id` to `p2p().join`. `send_request` asks another account to be friends — typically a `LobbyMember::user_id` — and the request waits in their launcher.
 
 **Errors:** `list` answers `not_authenticated`, `network_required`, `arcane_unavailable`, `feature_unavailable`; `send_request` adds `invalid_argument` (malformed id, or this player's own — raised before any call), `user_not_found` and `already_friends`.
-
-**Errors:** `not_authenticated`, `network_required` (including under `ARCANE_OFFLINE_ONLY`, raised before any call), `arcane_unavailable`, `feature_unavailable`.
 
 ## `P2p`
 

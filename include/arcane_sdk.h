@@ -140,9 +140,10 @@ int arcane_sdk_friend_request(const char *user_id, char *err_buf, size_t err_len
 // Write this player's friends as JSON into `buf`:
 // `{"friends":[{"user_id","pseudo","online","in_game","joinable","lobby_id"}],"stale":bool}`.
 //
-// `in_game` is `true` for a friend playing this title right now. `joinable` is
-// `true` when they are in a lobby of this title open to friends with a free slot, and
-// `lobby_id` (else `null`) is what `arcane_sdk_lobby_join` takes. `stale` is
+// `in_game` is `true` for a friend playing this title right now. `lobby_id`
+// (else `null`) is their lobby of this title other than a `code` lobby, full or
+// not, and `joinable` is `true` when it also has a free slot: check it before
+// passing `lobby_id` to `arcane_sdk_lobby_join`. `stale` is
 // `true` when the Arcane desktop app answered from its cache because it is
 // offline. This makes one synchronous loopback call — call it when a menu
 // opens or on a timer of your own, never from the render loop.
