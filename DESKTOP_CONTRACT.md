@@ -289,11 +289,14 @@ game binary is extractable, and an attacker can simply patch out the init call.
 Real enforcement belongs on the server, where entitlement checks cannot be
 edited by the client.
 
-Note for the desktop team, separately from the SDK: the loopback currently has
-no authentication of any kind. Any local process — including a web page issuing
-`fetch` against `127.0.0.1:39284` — can call these endpoints. Whether that
-matters is a desktop-side decision, but it is worth being deliberate about
-before endpoints beyond ownership are added.
+The desktop loopback checks every caller: `Host` must be `127.0.0.1:39284` or
+`localhost:39284`, a request carrying `Origin` or `Sec-Fetch-*` is refused, every
+POST needs `Content-Type: application/json` even with no body (`415`), and every
+`/v1/games/{game_id}/**` and `/v1/friends*` route needs
+`Authorization: Bearer <ARCANE_SDK_TOKEN>` (`401 sdk_token_required`,
+`403 sdk_token_mismatch`). The SDK sends the token on every call when the
+variable is set and a JSON content type on every POST; a refused token reads as
+`arcane_unavailable`.
 
 ---
 
@@ -303,13 +306,14 @@ before endpoints beyond ownership are added.
 |---|---|
 | `ARCANE_GAME_ID` | The title to check (§0). *Set by the desktop; a developer may set it by hand.* |
 | `ARCANE_USER_ID` | The account whose ticket to read (§0). *Set by the desktop; a developer may set it by hand.* |
+| `ARCANE_SDK_TOKEN` | The per-launch secret sent as `Authorization: Bearer` on every loopback call (§6). *Set by the desktop; a game started by hand has none and cannot reach the game routes.* |
 | `ARCANE_DRM_ROOT` | Replaces `{app_data}/Arcane Powered/drm`. |
 | `ARCANE_SDK_PORT` | Replaces the loopback port `39284`. |
 | `ARCANE_OFFLINE_ONLY` | `1`/`true`: never contact or launch the desktop app. Can only make a check fail earlier, never let one pass. Also disables the session thread entirely. |
 | `ARCANE_SESSION_TICK_MS` | Replaces the 60 s session heartbeat period, so a test does not have to wait a minute. Does not change the FPS window schedule. |
 
 The last four are developer/QA overrides and must never be set by a shipped game.
-The first two are the launch environment, and are expected in production.
+The first three are the launch environment, and are expected in production.
 
 ---
 

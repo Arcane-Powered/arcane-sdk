@@ -35,6 +35,7 @@ struct Reply {
 #[derive(Clone, Debug)]
 struct Request {
     line: String,
+    headers: Vec<String>,
     body: String,
 }
 
@@ -159,6 +160,7 @@ impl Drop for Stub {
         std::env::remove_var("ARCANE_GAME_ID");
         std::env::remove_var("ARCANE_USER_ID");
         std::env::remove_var("ARCANE_SESSION_TICK_MS");
+        std::env::remove_var("ARCANE_SDK_TOKEN");
     }
 }
 
@@ -189,6 +191,7 @@ where
     }
 
     let mut content_length = 0usize;
+    let mut headers = Vec::new();
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line) {
@@ -196,6 +199,7 @@ where
             Ok(_) if line == "\r\n" || line == "\n" => break,
             Ok(_) => {
                 let lowered = line.to_ascii_lowercase();
+                headers.push(lowered.trim_end().to_string());
                 if let Some(value) = lowered.strip_prefix("content-length:") {
                     content_length = value.trim().parse().unwrap_or(0);
                 }
@@ -211,6 +215,7 @@ where
 
     let request = Request {
         line: request_line,
+        headers,
         body: String::from_utf8_lossy(&body).to_string(),
     };
     let reply = handler(&request);
@@ -2283,4 +2288,56 @@ fn setting_metadata_patches_the_lobby_and_maps_not_host() {
         .set_metadata("lobby-1", &[("map", "docks")])
         .expect_err("not the host");
     assert_eq!(err.code(), "not_host");
+}
+
+#[test]
+fn every_call_carries_the_launch_token_and_bodyless_posts_are_json() {
+    let stub = lobby_stub(Reply {
+        status: "200 OK",
+        body: r#"{"lobby_id":"lobby-1","join_code":null,"host_user_id":"user-host",
+                  "host_payload":"dWRwOi8vMTAuMC4wLjE6Nzc3Nw==","max_players":4,"members":[]}"#,
+    });
+    std::env::set_var("ARCANE_SDK_TOKEN", " launch-secret ");
+    let client = ArcaneClient::init().expect("init");
+    client.p2p().get_lobby("lobby-1").expect("get");
+    client.p2p().leave("lobby-1").expect("leave");
+
+    let requests = stub.requests();
+    assert!(!requests.is_empty());
+    for request in &requests {
+        assert!(
+            request
+                .headers
+                .iter()
+                .any(|h| h == "authorization: bearer launch-secret"),
+            "no token on {}",
+            request.line.trim_end()
+        );
+    }
+
+    let left = stub.matching("/lobbies/lobby-1/leave");
+    assert_eq!(left.len(), 1);
+    assert!(left[0]
+        .headers
+        .iter()
+        .any(|h| h == "content-type: application/json"));
+}
+
+#[test]
+fn a_refused_launch_token_reads_as_arcane_unavailable() {
+    let _stub = Stub::start_with(|request| {
+        if request.line.contains("/v1/health") {
+            HEALTHY
+        } else if request.line.contains("/lobbies/") {
+            Reply {
+                status: "401 Unauthorized",
+                body: r#"{"error":"sdk_token_required","message":"Send Authorization."}"#,
+            }
+        } else {
+            DRM_OFF
+        }
+    });
+    let client = ArcaneClient::init().expect("init");
+    let err = client.p2p().get_lobby("lobby-1").expect_err("refused");
+    assert_eq!(err.code(), "arcane_unavailable");
 }

@@ -25,6 +25,13 @@ This package tracks the version of the native SDK it wraps.
 - Needs an Arcane desktop build with the lobby search and metadata routes for
   the new calls; an older one answers `feature_unavailable`.
 
+### Fixed
+
+- **Every game call failed against a current desktop app.** The SDK now sends
+  the `ARCANE_SDK_TOKEN` the desktop gives each launch as a bearer token, and a
+  JSON content type on POSTs without a body. Before, the desktop refused them
+  with `sdk_token_required` or `415`.
+
 ## 0.11.0
 
 ### Fixed
