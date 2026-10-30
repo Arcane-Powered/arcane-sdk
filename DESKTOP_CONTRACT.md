@@ -520,7 +520,7 @@ GET  /v1/games/{game_id}/launch-context   → 200 { "join_code": "K7P3QX" | null
   usual meaning. A game that gets one re-reads the lobbies it is in with `GET
   /lobbies/{id}` rather than trusting what the earlier events built up.
 - `metadata` is at most 16 pairs, keys `^[a-z0-9_]{1,32}$`, values at most 128
-  characters. The SDK validates it before any call (`invalid_argument`). `PATCH
+  characters, and 2048 bytes in all once serialized as a JSON object. The SDK validates it before any call (`invalid_argument`). `PATCH
   …/metadata` replaces the whole set and sends `lobby_updated` to the other members.
   `search` filters with `meta.<key>=<value>` query parameters, every pair matched
   exactly; friends' lobbies come first, then the newest, at most 50 (`limit`, default

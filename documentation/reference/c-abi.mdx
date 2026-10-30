@@ -208,7 +208,7 @@ int n = arcane_sdk_lobby_create(4, ARCANE_LOBBY_FRIENDS_AND_CODE, "dWRwOi8v...",
     "members":[{"user_id":"…","pseudo":"…","payload":"…"}],"max_players":4,"metadata":{}} */
 ```
 
-`visibility` is `ARCANE_LOBBY_FRIENDS` (`0`), `ARCANE_LOBBY_CODE` (`1`) or `ARCANE_LOBBY_FRIENDS_AND_CODE` (`2`). `payload_b64` is your connection blob **already base64-encoded**, at most 4096 raw bytes — a null pointer means no payload. Payloads come back base64 too; Arcane never reads them. `join_code` is `null` for a friends-only lobby and for a member who is not the host.
+`visibility` is `ARCANE_LOBBY_FRIENDS` (`0`), `ARCANE_LOBBY_CODE` (`1`) `ARCANE_LOBBY_FRIENDS_AND_CODE` (`2`) or `ARCANE_LOBBY_PUBLIC` (`3`). `payload_b64` is your connection blob **already base64-encoded**, at most 4096 raw bytes — a null pointer means no payload. Payloads come back base64 too; Arcane never reads them. `join_code` is `null` for a friends-only lobby and for a member who is not the host.
 
 A `-2` means a bad argument — a payload that is not base64, an unknown visibility, a null or non-UTF-8 id. A `-4` means the call failed: read `arcane_sdk_last_error_json` for `lobby_not_found`, `lobby_full`, `lobby_closed`, `not_friends`, or `invalid_argument` when the join code or payload was rejected before any call.
 
@@ -229,7 +229,7 @@ if (arcane_sdk_lobby_events_json(json, sizeof(json)) > 0) {
 }
 ```
 
-`arcane_sdk_lobby_events_json` reads memory only — the `arcane-session` thread does the polling, armed by the first lobby call — and **drains the queue only once the JSON is safely in your buffer**. A `-3` leaves every event queued, so retry with a bigger buffer and lose nothing. Event objects carry `type` first, then `lobby_id`, then the fields of that type: `invite` has `join_code`, `from_user_id`, `pseudo`; `member_joined` has `user_id`, `pseudo`, `payload`; `member_left` has `user_id`; `lobby_closed` has nothing more. A `{"type":"resync"}` event has no `lobby_id` at all: Arcane dropped events before this client fetched them, so re-read the lobbies you are in with `arcane_sdk_lobby_get`.
+`arcane_sdk_lobby_events_json` reads memory only — the `arcane-session` thread does the polling, armed by the first lobby call — and **drains the queue only once the JSON is safely in your buffer**. A `-3` leaves every event queued, so retry with a bigger buffer and lose nothing. Event objects carry `type` first, then `lobby_id`, then the fields of that type: `invite` has `join_code`, `from_user_id`, `pseudo`; `member_joined` has `user_id`, `pseudo`, `payload`; `member_left` has `user_id`; `lobby_closed` has nothing more; `lobby_updated` has `metadata`, the whole new set. A `{"type":"resync"}` event has no `lobby_id` at all: Arcane dropped events before this client fetched them, so re-read the lobbies you are in with `arcane_sdk_lobby_get`.
 
 Buffer sizing: user ids and device hashes fit comfortably in 64 bytes; allow 256 for the session JSON, 512 for `err_buf`, 1024 for the error JSON, 8 for a join code, and size the achievement, friends and lobby JSON to your title (a few hundred bytes per entry, plus your payloads at 4/3 their raw size once base64-encoded). A short buffer is never a silent truncation — you get `-3` and an empty string.
 

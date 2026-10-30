@@ -78,7 +78,7 @@ Only a `Public` lobby is ever listed. The others are reachable through the host'
 
 ## Public lobbies and metadata
 
-A public lobby carries up to 16 metadata pairs — a mode, a map, a region — that players filter on. Keys are 1–32 characters of `a–z`, `0–9` and `_`; values are at most 128 characters.
+A public lobby carries up to 16 metadata pairs — a mode, a map, a region — that players filter on. Keys are 1–32 characters of `a–z`, `0–9` and `_`; values are at most 128 characters, and the whole set is at most 2048 bytes as a JSON object (`MAX_LOBBY_METADATA_BYTES`).
 
 ```rust
 use arcane_sdk::{LobbyOptions, LobbyQuery, Visibility};

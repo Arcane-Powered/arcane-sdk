@@ -64,10 +64,12 @@ pub const MAX_LOBBY_METADATA_KEY_LEN: usize = 32;
 /// Longest metadata value, in characters.
 pub const MAX_LOBBY_METADATA_VALUE_LEN: usize = 128;
 
+/// Largest lobby metadata set, in bytes of its JSON object.
+pub const MAX_LOBBY_METADATA_BYTES: usize = 2048;
+
 /// Most lobbies one [`P2p::search`] returns.
 pub const MAX_LOBBY_SEARCH_RESULTS: u8 = 50;
 
-const MAX_LOBBY_METADATA_BYTES: usize = 2048;
 const MAX_ID_LEN: usize = 64;
 const MAX_QUEUED_EVENTS: usize = 256;
 const MAX_SEEN_EVENT_IDS: usize = 256;
@@ -991,7 +993,7 @@ pub(crate) fn metadata_arg<'k>(
         .unwrap_or(usize::MAX);
     if bytes > MAX_LOBBY_METADATA_BYTES {
         return Err(SdkError::invalid_argument(
-            "The lobby metadata is larger than Arcane carries.",
+            "The lobby metadata is over 2048 bytes as JSON.",
         )
         .with_context("bytes", bytes)
         .with_context("max_bytes", MAX_LOBBY_METADATA_BYTES));

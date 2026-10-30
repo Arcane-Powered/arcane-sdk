@@ -2,6 +2,7 @@
 using System;
 using System.IO;
 using System.IO.Compression;
+using System.Threading;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -19,6 +20,7 @@ namespace ArcanePowered.Editor
             "https://github.com/Arcane-Powered/arcane-sdk/releases/download/v{0}/arcane-sdk-unity-plugins.zip";
 
         private const string PluginsFolder = "Assets/Plugins/Arcane";
+        private const int DownloadTimeoutSeconds = 120;
 
         [MenuItem("Tools/Arcane Powered/Install native plugins", priority = 10)]
         internal static void Install()
@@ -34,6 +36,7 @@ namespace ArcanePowered.Editor
             byte[] archive;
             using (UnityWebRequest request = UnityWebRequest.Get(url))
             {
+                request.timeout = DownloadTimeoutSeconds;
                 UnityWebRequestAsyncOperation operation = request.SendWebRequest();
                 try
                 {
@@ -46,6 +49,8 @@ namespace ArcanePowered.Editor
                             request.Abort();
                             return;
                         }
+
+                        Thread.Sleep(50);
                     }
                 }
                 finally
@@ -108,7 +113,7 @@ namespace ArcanePowered.Editor
 
         private static string PackageVersion()
         {
-            var info = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(ArcanePluginInstaller).Assembly);
+            var info = UnityEditor.PackageManager.PackageInfo.FindForAssetPath("Packages/com.arcane-powered.sdk");
             return info == null ? null : info.version;
         }
     }

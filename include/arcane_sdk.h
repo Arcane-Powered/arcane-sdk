@@ -22,6 +22,9 @@
 // Longest metadata value, in characters.
 #define MAX_LOBBY_METADATA_VALUE_LEN 128
 
+// Largest lobby metadata set, in bytes of its JSON object.
+#define MAX_LOBBY_METADATA_BYTES 2048
+
 // Most lobbies one [`P2p::search`] returns.
 #define MAX_LOBBY_SEARCH_RESULTS 50
 
