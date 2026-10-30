@@ -95,7 +95,7 @@ Everything hangs off the static `Arcane` class.
 | `Arcane.Session` | Playtime, FPS samples, and what the background thread is doing |
 | `Arcane.Refresh()`, `Shutdown()`, `Frame()`, `SetGraphics(…)` | Lifecycle |
 | `Arcane.Achievements` | `Unlock`, `List`, `IsUnlocked` |
-| `Arcane.Friends` | `List`, with `Online`, `InGame` and `Stale` |
+| `Arcane.Friends` | `List`, with `Online`, `InGame`, `Joinable`, `LobbyId` and `Stale`; `SendRequest` / `SendRequestAsync` |
 | `Arcane.Lobbies` | `Create`, `Join`, `JoinByCode`, `Get`, `Invite`, `Leave`, `Close`, `PollEvents`, `LaunchJoinCode` |
 | `Arcane.LastError` | The last failure, for a debug overlay or a crash report |
 
@@ -114,7 +114,7 @@ if (!Arcane.Achievements.TryUnlock("boss.01", out error))
 }
 ```
 
-Which codes reach you depends on the call — `Init` can return every code in the [Errors table](/concepts/errors#error-codes) except `not_initialized`, achievements add `unknown_achievement`, lobbies add `lobby_not_found`, `lobby_full`, `lobby_closed` and `not_friends`. The package adds two of its own: `plugin_missing` when the native library is not in the project, and `invalid_response` when the plugin and the package are from different releases.
+Which codes reach you depends on the call — `Init` can return every code in the [Errors table](/concepts/errors#error-codes) except `not_initialized`, achievements add `unknown_achievement`, lobbies add `lobby_not_found`, `lobby_full`, `lobby_closed` and `not_friends`, friend requests add `user_not_found` and `already_friends`. The package adds two of its own: `plugin_missing` when the native library is not in the project, and `invalid_response` when the plugin and the package are from different releases.
 
 ### Blocking calls say so
 

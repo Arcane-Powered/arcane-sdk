@@ -58,6 +58,8 @@ match ArcaneClient::init() {
 | `rate_limited` | Too many lobby searches in a short time | Wait a few seconds and search again; refresh a browser every few seconds, not every frame | yes |
 | `lobby_closed` | The host closed the lobby, or their play session expired | There is no host migration — open a new lobby | no |
 | `not_friends` | The lobby is open to the host's friends and this account is not one of them | Ask the host for a join code, or become friends on Arcane first | no |
+| `user_not_found` | A [friend request](/concepts/friends) went to an id no Arcane account has | Pass an id Arcane gave you, such as a lobby member's `user_id` | no |
+| `already_friends` | A friend request went to a friend, or a request between you is already pending | Check `friends().list()` before offering to add someone | no |
 | `ambiguous_session` | Several accounts hold a ticket for this title and Arcane has not recorded which is signed in | Open Arcane desktop once so it records the session. Needs a build that writes `session.json` | no |
 | `not_initialized` | A C ABI getter was called before `arcane_sdk_init` | Call `arcane_sdk_init` once at launch first | no |
 | `internal` | Filesystem / path failure | Check permissions on the Arcane DRM directory — context names the path | no |

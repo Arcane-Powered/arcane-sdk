@@ -26,6 +26,17 @@ namespace ArcanePowered
         /// <summary>Whether they are playing <em>this</em> title right now.</summary>
         public bool InGame { get; private set; }
 
+        /// <summary>
+        /// Whether <see cref="LobbyId"/> has a free slot — check it before passing
+        /// <see cref="LobbyId"/> to <see cref="ArcaneLobbies.Join"/>.
+        /// </summary>
+        public bool Joinable { get; private set; }
+
+        /// <summary>
+        /// Their lobby of this title other than a code lobby, full or not, or <see langword="null"/>.
+        /// </summary>
+        public string LobbyId { get; private set; }
+
         internal static ArcaneFriend FromJson(ArcaneJson node)
         {
             return new ArcaneFriend
@@ -34,6 +45,8 @@ namespace ArcanePowered
                 Pseudo = node["pseudo"].AsString(string.Empty),
                 Online = node["online"].AsBool(),
                 InGame = node["in_game"].AsBool(),
+                Joinable = node["joinable"].AsBool(),
+                LobbyId = node["lobby_id"].AsString(null),
             };
         }
     }
@@ -113,6 +126,64 @@ namespace ArcanePowered
             }
 
             return friends;
+        }
+
+        /// <summary>
+        /// Send a friend request, answering <see langword="false"/> instead of throwing.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="userId"/> is typically an <see cref="ArcaneLobbyMember.UserId"/>.
+        /// The request shows up in their launcher, where they accept it.
+        /// </remarks>
+        public bool TrySendRequest(string userId, out ArcaneError error)
+        {
+            if (string.IsNullOrEmpty(userId))
+            {
+                error = ArcaneError.Argument(
+                    "The player's user id is required.",
+                    "User ids come from a lobby's members.");
+                return false;
+            }
+
+            byte[] target = ArcaneBuffer.ToUtf8(userId);
+            try
+            {
+                return ArcaneCall.Run(
+                    (buffer, length) => ArcaneNative.arcane_sdk_friend_request(target, buffer, length),
+                    out error);
+            }
+            catch (EntryPointNotFoundException)
+            {
+                error = ArcaneError.InvalidResponse(
+                    "The installed Arcane native plugin predates friend requests. Reinstall the native plugins of this package version.");
+                return false;
+            }
+        }
+
+        /// <summary>Send a friend request, throwing on failure.</summary>
+        public void SendRequest(string userId)
+        {
+            ArcaneError error;
+            if (!TrySendRequest(userId, out error))
+            {
+                throw new ArcaneException(error);
+            }
+        }
+
+        /// <summary>Send a friend request on a background thread.</summary>
+        /// <remarks>
+        /// Completes off Unity's main thread, so hand the result back with
+        /// <see cref="Arcane.RunOnMainThread"/> before you touch the scene. A failure
+        /// answers <see langword="false"/> and leaves the reason in <see cref="Arcane.LastError"/> —
+        /// use the <c>Try…</c> form to be handed the error itself.
+        /// </remarks>
+        public Task<bool> SendRequestAsync(string userId)
+        {
+            return Task.Run(() =>
+            {
+                ArcaneError ignored;
+                return TrySendRequest(userId, out ignored);
+            });
         }
 
         /// <summary>The friends list, fetched on a background thread.</summary>

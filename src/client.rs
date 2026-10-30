@@ -306,7 +306,7 @@ impl ArcaneClient {
     /// # Ok::<(), arcane_sdk::SdkError>(())
     /// ```
     pub fn friends(&self) -> Friends<'_> {
-        Friends::new(&self.game_id)
+        Friends::new(&self.game_id, self.user_id.as_deref())
     }
 
     /// P2P lobbies for this title: create one, join by code or by id, invite a

@@ -102,6 +102,12 @@ namespace ArcanePowered
 
         /// <summary>Too many calls in a short time. Wait, then try again.</summary>
         RateLimited,
+
+        /// <summary>No Arcane account has that user id.</summary>
+        UserNotFound,
+
+        /// <summary>Already friends, or a friend request between you is already pending.</summary>
+        AlreadyFriends,
     }
 
     /// <summary>
@@ -357,6 +363,8 @@ namespace ArcanePowered
                 case "invalid_response": return ArcaneErrorCode.InvalidResponse;
                 case "not_host": return ArcaneErrorCode.NotHost;
                 case "rate_limited": return ArcaneErrorCode.RateLimited;
+                case "user_not_found": return ArcaneErrorCode.UserNotFound;
+                case "already_friends": return ArcaneErrorCode.AlreadyFriends;
                 default: return ArcaneErrorCode.Unknown;
             }
         }

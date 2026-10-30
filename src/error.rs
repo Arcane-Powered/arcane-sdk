@@ -45,6 +45,11 @@ pub enum ErrorCode {
     NotFriends,
     /// Only the lobby's host may do this — change its metadata or close it.
     NotHost,
+    /// No Arcane account has that id.
+    UserNotFound,
+    /// You are already friends with that player, or a friend request between
+    /// you is already pending either way.
+    AlreadyFriends,
     /// Arcane refused the call because this player made too many of them;
     /// wait and try again.
     RateLimited,
@@ -85,6 +90,8 @@ impl ErrorCode {
             Self::LobbyClosed => "lobby_closed",
             Self::NotFriends => "not_friends",
             Self::NotHost => "not_host",
+            Self::UserNotFound => "user_not_found",
+            Self::AlreadyFriends => "already_friends",
             Self::RateLimited => "rate_limited",
             Self::MissingGameId => "missing_game_id",
             Self::InvalidGameId => "invalid_game_id",
@@ -296,6 +303,14 @@ impl SdkError {
 
     pub(crate) fn not_host(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::NotHost, message)
+    }
+
+    pub(crate) fn user_not_found(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::UserNotFound, message)
+    }
+
+    pub(crate) fn already_friends(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::AlreadyFriends, message)
     }
 
     pub(crate) fn rate_limited(message: impl Into<String>) -> Self {

@@ -187,6 +187,7 @@ Ends the play session, reporting the final playtime to the Arcane desktop app wi
 ```rust
 impl Friends<'_> {
     pub fn list(&self) -> Result<FriendList, SdkError>;
+    pub fn send_request(&self, user_id: &str) -> Result<(), SdkError>;
 }
 ```
 
@@ -204,7 +205,9 @@ for friend in &list.friends {
 
 `in_game` is `true` when the friend is playing the same `game_id` as this client — the id in `ARCANE_GAME_ID`; a friend playing anything else is `online` but not `in_game`.
 
-**Errors:** `not_authenticated`, `network_required` (including under `ARCANE_OFFLINE_ONLY`, raised before any call), `arcane_unavailable`, `feature_unavailable`.
+`lobby_id` is set for a friend in a lobby of this title other than a `code` lobby, full or not; `joinable` is `true` when that lobby also has a free slot. Check `joinable` before passing `lobby_id` to `p2p().join`. `send_request` asks another account to be friends — typically a `LobbyMember::user_id` — and the request waits in their launcher.
+
+**Errors:** `list` answers `not_authenticated`, `network_required`, `arcane_unavailable`, `feature_unavailable`; `send_request` adds `invalid_argument` (malformed id, or this player's own — raised before any call), `user_not_found` and `already_friends`.
 
 ## `P2p`
 
@@ -374,6 +377,8 @@ pub struct Friend {
     pub pseudo: String,               // their display name on Arcane
     pub online: bool,                 // signed in to Arcane right now
     pub in_game: bool,                // playing this title right now
+    pub joinable: bool,               // in a lobby of this title open to friends with a free slot
+    pub lobby_id: Option<String>,     // that lobby, for p2p().join
 }
 
 pub enum LobbyPollingState {
