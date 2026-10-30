@@ -31,6 +31,7 @@ namespace ArcanePowered
         private static readonly ArcaneAchievements AchievementsApi = new ArcaneAchievements();
         private static readonly ArcaneFriends FriendsApi = new ArcaneFriends();
         private static readonly ArcaneLobbies LobbiesApi = new ArcaneLobbies();
+        private static readonly ArcaneNet NetApi = new ArcaneNet();
         private static readonly Queue<Action> MainThreadWork = new Queue<Action>();
 
         /// <summary>
@@ -65,6 +66,12 @@ namespace ArcanePowered
         public static ArcaneLobbies Lobbies
         {
             get { return LobbiesApi; }
+        }
+
+        /// <summary>The coop network between the members of a lobby.</summary>
+        public static ArcaneNet Net
+        {
+            get { return NetApi; }
         }
 
         // --- Lifecycle -----------------------------------------------------

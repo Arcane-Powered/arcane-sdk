@@ -2,7 +2,7 @@
 //!
 //! Arcane hosts the **lobby** — a host, its members, a capacity, a join code —
 //! and carries an opaque `payload` for each member. Your game keeps its own
-//! netcode: there is no relay here, no NAT traversal and no host migration.
+//! netcode, or uses the coop network ([`crate::Net`]); there is no host migration.
 //! What Arcane gives you is the part that is annoying to build yourself: a
 //! place for players to find each other — by friends, by code, or by
 //! [`P2p::search`] over the [`Visibility::Public`] lobbies of your game —

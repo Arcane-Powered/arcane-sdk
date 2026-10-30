@@ -160,6 +160,32 @@ namespace ArcanePowered.Native
         [DllImport(Lib, CallingConvention = Cdecl)]
         internal static extern int arcane_sdk_launch_join_code(byte[] buf, UIntPtr len);
 
+        // --- Coop network --------------------------------------------------
+
+        [DllImport(Lib, CallingConvention = Cdecl)]
+        internal static extern int arcane_sdk_net_open(byte[] lobby_id, int allow_relay, byte[] err_buf, UIntPtr err_len);
+
+        [DllImport(Lib, CallingConvention = Cdecl)]
+        internal static extern int arcane_sdk_net_send(
+            ushort peer,
+            int channel,
+            byte[] data,
+            UIntPtr data_len,
+            byte[] err_buf,
+            UIntPtr err_len);
+
+        [DllImport(Lib, CallingConvention = Cdecl)]
+        internal static extern int arcane_sdk_net_receive(out ushort peer, out int channel, byte[] buf, UIntPtr len);
+
+        [DllImport(Lib, CallingConvention = Cdecl)]
+        internal static extern int arcane_sdk_net_events_json(byte[] buf, UIntPtr len);
+
+        [DllImport(Lib, CallingConvention = Cdecl)]
+        internal static extern void arcane_sdk_net_close();
+
+        [DllImport(Lib, CallingConvention = Cdecl)]
+        internal static extern int arcane_sdk_net_is_open();
+
         // --- Diagnostics ---------------------------------------------------
 
         [DllImport(Lib, CallingConvention = Cdecl)]

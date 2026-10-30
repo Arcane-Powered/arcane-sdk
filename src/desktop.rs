@@ -449,6 +449,24 @@ fn map_known_desktop_error(body: &SdkErrorBody) -> Option<SdkError> {
              hand cannot reach the desktop app's game routes.",
         )
         .with_context("detail", detail),
+        "not_in_lobby" => {
+            SdkError::not_in_lobby("This player is not a member of that lobby.")
+                .with_hint("Create or join the lobby first, then open the network on it.")
+                .with_context("detail", detail)
+        }
+        "no_open_session" => SdkError::no_open_session(
+            "The Arcane desktop app has no play session open for this game.",
+        )
+        .with_hint(
+            "Launch the game from Arcane Powered and let ArcaneClient::init finish before \
+             opening the network.",
+        )
+        .with_context("detail", detail),
+        "net_unavailable" => {
+            SdkError::internal("The Arcane desktop app could not open its local network sockets.")
+                .with_hint("Restart the Arcane Powered desktop app, then retry.")
+                .with_context("detail", detail)
+        }
         "user_not_found" => SdkError::user_not_found("Arcane has no account with that id.")
             .with_hint("Pass a user id Arcane gave you, such as LobbyMember::user_id.")
             .with_context("detail", detail),

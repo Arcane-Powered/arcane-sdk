@@ -60,6 +60,8 @@ match ArcaneClient::init() {
 | `not_friends` | The lobby is open to the host's friends and this account is not one of them | Ask the host for a join code, or become friends on Arcane first | no |
 | `user_not_found` | A [friend request](/concepts/friends) went to an id no Arcane account has | Pass an id Arcane gave you, such as a lobby member's `user_id` | no |
 | `already_friends` | A friend request went to a friend, or a request between you is already pending | Check `friends().list()` before offering to add someone | no |
+| `not_in_lobby` | The [coop network](/concepts/coop-network) was opened on a lobby this player is not in | Create or join the lobby first, then open the network | no |
+| `no_open_session` | The desktop app has no play session open for your game, so it will not open the coop network | Let `init` finish, and launch the game from Arcane Powered. It succeeds once the session is open | yes |
 | `ambiguous_session` | Several accounts hold a ticket for this title and Arcane has not recorded which is signed in | Open Arcane desktop once so it records the session. Needs a build that writes `session.json` | no |
 | `not_initialized` | A C ABI getter was called before `arcane_sdk_init` | Call `arcane_sdk_init` once at launch first | no |
 | `internal` | Filesystem / path failure | Check permissions on the Arcane DRM directory — context names the path | no |
@@ -107,6 +109,14 @@ A `stale` answer — the desktop app served its own cache because it is offline 
 `invalid_argument` (malformed filters or a limit outside 1–50, raised before any call), `rate_limited`, `not_owned`, `not_authenticated`, `network_required` (also under `ARCANE_OFFLINE_ONLY`, raised before any call), `arcane_unavailable`, `feature_unavailable`.
 
 `P2p::poll_events` / `arcane_sdk_lobby_events_json` and `P2p::launch_join_code` / `arcane_sdk_launch_join_code` never fail. A lobby object Arcane sends without an id, or carrying a payload over 4096 bytes, is refused as `arcane_unavailable` rather than half-read. A desktop app that predates the lobby routes makes `launch_join_code` answer `None` and stops event polling silently — read `client.session().lobby_events` for that, it is `Unavailable`. See [Lobbies](/concepts/lobbies).
+
+### `Net::open` — `arcane_sdk_net_open`
+
+`invalid_argument` (malformed lobby id, raised before any call), `not_in_lobby`, `no_open_session`, `lobby_not_found`, `lobby_closed`, `not_authenticated`, `network_required` (the desktop app is offline, or `ARCANE_OFFLINE_ONLY` is set, raised before any call), `arcane_unavailable`, `feature_unavailable`.
+
+### `Net::send` — `arcane_sdk_net_send`
+
+`invalid_argument` (a message larger than its channel allows), `lobby_closed` (the network is not open), `arcane_unavailable` (the local socket failed). `Net::receive`, `poll_events`, `is_open` and `close` never fail. See [Coop network](/concepts/coop-network).
 
 ### `ArcaneClient::frame`, `set_graphics`, `session`, `shutdown`
 

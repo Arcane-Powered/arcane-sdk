@@ -108,6 +108,12 @@ namespace ArcanePowered
 
         /// <summary>Already friends, or a friend request between you is already pending.</summary>
         AlreadyFriends,
+
+        /// <summary>This player is not a member of that lobby.</summary>
+        NotInLobby,
+
+        /// <summary>The Arcane desktop app has no play session open for this game.</summary>
+        NoOpenSession,
     }
 
     /// <summary>
@@ -365,6 +371,8 @@ namespace ArcanePowered
                 case "rate_limited": return ArcaneErrorCode.RateLimited;
                 case "user_not_found": return ArcaneErrorCode.UserNotFound;
                 case "already_friends": return ArcaneErrorCode.AlreadyFriends;
+                case "not_in_lobby": return ArcaneErrorCode.NotInLobby;
+                case "no_open_session": return ArcaneErrorCode.NoOpenSession;
                 default: return ArcaneErrorCode.Unknown;
             }
         }

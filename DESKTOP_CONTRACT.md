@@ -24,6 +24,7 @@ The desktop app sets both variables on the game process when it launches a game
 ```
 ARCANE_GAME_ID={game_id}
 ARCANE_USER_ID={user_id}
+ARCANE_SDK_TOKEN={token}
 ```
 
 - `{game_id}` is the same value the desktop puts in the `{game_id}` path segment
@@ -31,7 +32,12 @@ ARCANE_USER_ID={user_id}
 - `{user_id}` is the cloud account id — the same value that names
   `tickets/{user_id}/` and that `session.json` records. It is **not** the auth
   `sub`.
-- Both are set on the "Join" launch path too; nothing else about that path changes.
+- `{token}` is a per-launch secret bound to `{game_id}`. The desktop refuses every
+  `/v1/games/{game_id}/…` and `/v1/friends` call that does not carry it as
+  `Authorization: Bearer {token}` (`401 sdk_token_required`, `403 sdk_token_mismatch`
+  for another game's token). The SDK sends it on every loopback call when the
+  variable is set; a game started outside Arcane has none and gets those refusals.
+- All three are set on the "Join" launch path too; nothing else about that path changes.
 
 `ArcaneClient::init` takes no argument: the game passes nothing, and the SDK
 reads these two variables. A developer running a build by hand sets them
@@ -507,8 +513,9 @@ GET  /v1/games/{game_id}/lobbies/events?after={cursor}
 GET  /v1/games/{game_id}/launch-context   → 200 { "join_code": "K7P3QX" | null }
 ```
 
-- Arcane provides the **meeting point only**. There is no relay, no NAT traversal, no
-  transport and no host migration in the SDK: game traffic is the game's own netcode.
+- The lobby itself is the **meeting point only**: game traffic is the game's own
+  netcode, or the coop network of §13, which brings the transport, NAT traversal and
+  relay. There is no host migration.
   Only a `public` lobby is listed, by `/lobbies/search`, and only to accounts that own
   the game. The lobby carries who is in it and one opaque blob per member.
 - `payload` is that blob — an address, a ticket from the game's netcode, whatever it
@@ -642,3 +649,69 @@ ticket bound to it keep passing long after the key was gone.
 `{user_id}` names a file, so the SDK validates it as `[A-Za-z0-9-]{1,256}`
 before building the path — a ticket file naming a traversal sequence cannot
 reach outside the DRM root.
+
+---
+
+## 13. Coop network
+
+**Status: new. An absent route degrades to `feature_unavailable`; it never fails `init`.**
+
+The desktop app runs the WebRTC links of a lobby — STUN first, Arcane's TURN relay
+when no direct path is found — and hands the game two loopback sockets. The game
+never sees an address, an ICE candidate or a relay credential. The topology is a
+star around the lobby host.
+
+```
+POST /v1/games/{game_id}/net/open   { "lobby_id": "…", "allow_relay": true }
+→ 200 { "udp_port": 50123, "tcp_port": 50124, "session_key": "<32 hex chars>" }
+→ 403 not_in_lobby · 409 no_open_session · 502 offline · 500 net_unavailable
+  + the lobby codes of §11 (lobby_not_found, lobby_closed, …)
+
+POST /v1/games/{game_id}/net/close  → 200 { "ok": true }
+```
+
+One network per game: opening again replaces the previous one. The desktop also
+closes it when the play session ends, when the host leaves and when the lobby
+closes.
+
+### Frames
+
+Both sockets carry the same frame, big endian:
+
+```
+version u8 (1) · kind u8 · peer u16 · length u32 · data[length]
+```
+
+| kind | name | direction | data |
+|---|---|---|---|
+| 1 | `HELLO` | game → desktop | the 16-byte session key |
+| 2 | `SEND` | game → desktop | the message |
+| 16 | `MESSAGE` | desktop → game | the message |
+| 17 | `PEER_CONNECTED` | desktop → game (TCP) | JSON `{ user_id, route, is_host }` |
+| 18 | `QUALITY` | desktop → game (TCP) | JSON `{ user_id, route, rtt_ms, loss_pct, jitter_ms }` |
+| 19 | `PEER_DISCONNECTED` | desktop → game (TCP) | JSON `{ user_id, reason }` |
+| 20 | `RELAY_REFUSED` | desktop → game (TCP) | JSON `{ user_id }` |
+
+- The game connects to `tcp_port` and sends `HELLO` first; anything else, or a
+  wrong key, and the desktop drops the connection. It sends `HELLO` to `udp_port`
+  from its UDP socket, which is how the desktop learns where to send unreliable
+  messages; the SDK repeats it every 2 s.
+- TCP is the reliable channel (at most 65,535 bytes a message), UDP the unreliable
+  one (at most 1,200 bytes). Larger messages are dropped by the desktop.
+- `peer` is a peer index the desktop assigns per user for the session.
+  `0xFFFE` addresses the host, `0xFFFF` every peer (host only). On a frame from
+  the desktop it is the sender's index.
+- `route` is `direct` or `relayed`. `rtt_ms` and `jitter_ms` are `null` until
+  measured. `QUALITY` is sent only when the route changes, the round trip moves
+  by more than 20 %, or loss crosses 2 % or 10 %.
+- The desktop closing the TCP connection is the end of the network; the SDK
+  reports it as a `closed` event.
+
+### How the SDK behaves
+
+| State | SDK behaviour |
+|---|---|
+| Route absent (older desktop) | `feature_unavailable` from `Net::open`. |
+| `allow_relay: false` and no direct path | `relay_refused` event for that player; nothing is relayed. |
+| More than 64 MiB of messages waiting | New unreliable messages are dropped; a reliable one closes the network with `receive_overflow`. |
+| `ARCANE_OFFLINE_ONLY` | `network_required` from `Net::open`; no call is made. |

@@ -50,6 +50,11 @@ pub enum ErrorCode {
     /// You are already friends with that player, or a friend request between
     /// you is already pending either way.
     AlreadyFriends,
+    /// The coop network was asked for a lobby this player is not a member of.
+    NotInLobby,
+    /// The Arcane desktop app has no play session open for this game, so it
+    /// will not open the coop network.
+    NoOpenSession,
     /// Arcane refused the call because this player made too many of them;
     /// wait and try again.
     RateLimited,
@@ -92,6 +97,8 @@ impl ErrorCode {
             Self::NotHost => "not_host",
             Self::UserNotFound => "user_not_found",
             Self::AlreadyFriends => "already_friends",
+            Self::NotInLobby => "not_in_lobby",
+            Self::NoOpenSession => "no_open_session",
             Self::RateLimited => "rate_limited",
             Self::MissingGameId => "missing_game_id",
             Self::InvalidGameId => "invalid_game_id",
@@ -203,6 +210,7 @@ impl SdkError {
                 | ErrorCode::NotAuthenticated
                 | ErrorCode::ArcaneUnavailable
                 | ErrorCode::RateLimited
+                | ErrorCode::NoOpenSession
         )
     }
 
@@ -311,6 +319,14 @@ impl SdkError {
 
     pub(crate) fn already_friends(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::AlreadyFriends, message)
+    }
+
+    pub(crate) fn not_in_lobby(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::NotInLobby, message)
+    }
+
+    pub(crate) fn no_open_session(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::NoOpenSession, message)
     }
 
     pub(crate) fn rate_limited(message: impl Into<String>) -> Self {

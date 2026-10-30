@@ -25,6 +25,7 @@
           "concepts/achievements",
           "concepts/friends",
           "concepts/lobbies",
+          "concepts/coop-network",
           "concepts/errors"
         ]
       },

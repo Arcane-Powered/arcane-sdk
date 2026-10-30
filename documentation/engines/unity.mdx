@@ -169,6 +169,29 @@ Arcane.Lobbies.LobbyUpdated += e => ShowSettings(e.Metadata);
 
 `Arcane.Lobbies.LaunchJoinCode` is set when the player started the game from a friend's **Join** in the launcher. Check it once at boot, before you show a menu.
 
+### Coop network
+
+Once the players are in a lobby, `Arcane.Net` carries your messages between them with no port to open. The desktop app connects them directly, or through Arcane's relay when it has to.
+
+```csharp
+Arcane.Net.Open(lobby.LobbyId);                        // allowRelay: false keeps every link direct
+
+Arcane.Net.PeerConnected  += e => AddPlayer(e.Peer, e.UserId, e.IsHost);
+Arcane.Net.QualityChanged += e => ShowPing(e.Peer, e.RttMs, e.Route);
+Arcane.Net.Closed         += e => ReturnToMenu();
+
+Arcane.Net.Send(ArcaneNet.Host, ArcaneNetChannel.Unreliable, positionBytes);
+
+var buffer = new byte[ArcaneNet.MaxReliableBytes];
+int length;
+while ((length = Arcane.Net.Receive(buffer, out ushort peer, out ArcaneNetChannel channel)) >= 0)
+{
+    Apply(peer, buffer, length);                       // no allocation per message
+}
+```
+
+`Open` and `Close` are blocking; `Send` and `Receive` never wait on the network and are fine in `Update`. The runtime raises the network events every frame once the network is open.
+
 ## Outside Arcane
 
 Started without the launcher — no `ARCANE_GAME_ID` and no Editor game id — the SDK stays inert: `ArcaneRuntime.InitializationError` reads `missing_game_id`, every call answers `not_initialized` or an empty value, and nothing throws or blocks. Whether the game then quits, shows a message or runs on is your decision. A failure inside the native library is caught at the C boundary and comes back as an `internal` error; it never takes the engine down.

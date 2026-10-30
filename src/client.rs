@@ -7,6 +7,7 @@ use crate::desktop::{offline_only, refresh_ownership_via_desktop, RefreshOutcome
 use crate::device::{now_unix, primary_device_hash};
 use crate::error::{OwnershipStatus, SdkError};
 use crate::friends::Friends;
+use crate::net::{Net, NetState};
 use crate::p2p::{P2p, P2pState};
 use crate::paths::{launch_user_id, load_cached_drm_flag, load_session, SessionState};
 use crate::session::{Session, SessionSnapshot, TrackingState};
@@ -75,6 +76,7 @@ pub struct ArcaneClient {
     session: Arc<Session>,
     achievements: Arc<AchievementCache>,
     p2p: Arc<P2pState>,
+    net: Arc<NetState>,
 }
 
 impl ArcaneClient {
@@ -211,6 +213,7 @@ impl ArcaneClient {
         next.session = Arc::clone(&self.session);
         next.achievements = Arc::clone(&self.achievements);
         next.p2p = Arc::clone(&self.p2p);
+        next.net = Arc::clone(&self.net);
 
         let status = next.ownership.clone();
         *self = next;
@@ -333,6 +336,28 @@ impl ArcaneClient {
         P2p::new(&self.game_id, &self.p2p)
     }
 
+    /// The coop network: reliable and unreliable messages between the members
+    /// of a lobby, with no port to open.
+    ///
+    /// The Arcane desktop app runs the links — direct when it can, through
+    /// Arcane's relay otherwise — and the game reads and writes local sockets.
+    /// [`Net::open`] and [`Net::close`] make one loopback round trip;
+    /// [`Net::send`], [`Net::receive`] and [`Net::poll_events`] never block on
+    /// the network.
+    ///
+    /// ```no_run
+    /// # use arcane_sdk::{Channel, NetOptions, Peer};
+    /// # let client = arcane_sdk::ArcaneClient::init()?;
+    /// # let lobby_id = "3f2b9c1e-0d4a-4e7b-9a61-5c8e2f7d1b40";
+    /// client.net().open(lobby_id, NetOptions::default())?;
+    /// client.net().send(Peer::Host, Channel::Unreliable, b"pos 12 4")?;
+    /// while let Some(message) = client.net().receive() { /* … */ }
+    /// # Ok::<(), arcane_sdk::SdkError>(())
+    /// ```
+    pub fn net(&self) -> Net<'_> {
+        Net::new(&self.game_id, &self.net)
+    }
+
     /// A copy of the current play session state: tracking, playtime, FPS
     /// samples. Reads memory only.
     pub fn session(&self) -> SessionSnapshot {
@@ -347,6 +372,7 @@ impl ArcaneClient {
     /// does the same thing, best-effort, so calling this is optional — it just
     /// makes the moment explicit.
     pub fn shutdown(self) {
+        self.net().close();
         self.session.end();
     }
 
@@ -362,6 +388,7 @@ impl ArcaneClient {
             session: Arc::new(Session::dormant(game_id, Arc::clone(&p2p))),
             achievements: Arc::new(AchievementCache::new()),
             p2p,
+            net: Arc::new(NetState::new()),
         }
     }
 
@@ -387,6 +414,7 @@ impl ArcaneClient {
             session: Arc::new(Session::dormant(game_id, Arc::clone(&p2p))),
             achievements: Arc::new(AchievementCache::new()),
             p2p,
+            net: Arc::new(NetState::new()),
         })
     }
 }
