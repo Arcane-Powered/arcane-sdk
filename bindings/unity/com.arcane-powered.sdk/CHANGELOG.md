@@ -2,6 +2,11 @@
 
 This package tracks the version of the native SDK it wraps.
 
+## 0.15.0
+
+No change to the C# API: this release adds `@arcane/sdk-web`, the binding for HTML5
+games, next to this package.
+
 ## 0.14.0
 
 ### Added

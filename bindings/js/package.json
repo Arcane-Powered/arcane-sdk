@@ -1,0 +1,33 @@
+{
+  "name": "@arcane/sdk-web",
+  "version": "0.15.0",
+  "description": "Achievements, friends, lobbies and cloud-synced saves for HTML5 games played in the Arcane Powered desktop app.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Arcane-Powered/arcane-sdk.git",
+    "directory": "bindings/js"
+  },
+  "homepage": "https://docs.arcane-powered.com/sdk/engines/web",
+  "keywords": ["arcane", "html5", "webgl", "achievements", "lobbies", "saves"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "type-check": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test test",
+    "prepublishOnly": "bun run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

@@ -31,7 +31,7 @@
       },
       {
         "group": "Engines",
-        "pages": ["engines/unity"]
+        "pages": ["engines/unity", "engines/web"]
       },
       {
         "group": "Reference",
