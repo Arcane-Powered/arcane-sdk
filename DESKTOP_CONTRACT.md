@@ -753,7 +753,7 @@ drops messages from any other origin (`hostOrigin` pins it from the start). The 
 drops any message whose `source` is not the game's iframe or whose `origin`
 is not `https://<game_id><VITE_WEB_PLAY_HOST_SUFFIX>`, answers `hello` itself with
 `{ available: true, game_id, focused }`, limits each method to 20 calls per second
-(`rate_limited`) and hands the rest to the Tauri command `web_play_bridge_call`.
+and all methods to 60 (`rate_limited`), answers `unavailable` when the Tauri command itself fails, and hands the rest to the Tauri command `web_play_bridge_call`.
 
 The desktop maps a fixed allow-list of methods onto the routes above, called in-process on
 the loopback router with a launch token issued when the play window opens and revoked when it
@@ -774,5 +774,6 @@ are the desktop's own: one file per slot in
 characters at most, 8 MB per slot, 32 slots (`invalid_slot`, `save_too_large`,
 `too_many_slots`). `data` is a `Uint8Array` between the game and the host page and base64
 between the host page and Rust. The first write adopts the folder as the confirmed save folder
-of the game's `arcane:` subject, and closing the window after a write backs it up, so the
+of the game's `arcane:` subject (unless that subject is already confirmed on another folder),
+and closing the window after a write backs it up, so the
 slots follow the player like any Arcane game's saves.

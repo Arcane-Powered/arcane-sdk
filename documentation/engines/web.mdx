@@ -60,7 +60,7 @@ Lobby payloads take a `Uint8Array` or a string and come back as `Uint8Array`. A 
 
 ## Saves
 
-A slot is a kebab-case name (`slot-1`, `autosave`, 64 characters at most) holding up to 8 MB; a game keeps 32 slots at most. The files live on the player's machine and are backed up to their Arcane cloud saves like any other Arcane game, so they follow the player to another computer. Keep using `localStorage` or IndexedDB for anything that does not need to travel: they stay in the game's own origin and survive updates.
+A slot is a kebab-case name (`slot-1`, `autosave`, 64 characters at most) holding up to 8 MB; a game keeps 32 slots at most. The files live on the player's machine and, for a game in the player's library, are backed up to their Arcane cloud saves like any other Arcane game, so they follow the player to another computer. Keep using `localStorage` or IndexedDB for anything that does not need to travel: they stay in the game's own origin and survive updates.
 
 ```ts
 await arcane.saves.write("autosave", JSON.stringify(state));
@@ -78,7 +78,8 @@ A refused call rejects with an `ArcaneError`. Its `code` is the one the desktop 
 
 | Code | Meaning |
 |---|---|
-| `rate_limited` | More than 20 calls per second to the same method |
+| `rate_limited` | More than 20 calls per second to the same method, or 60 in all |
+| `unavailable` | The play window could not reach the app |
 | `unknown_method` | Not a method of the bridge |
 | `invalid_params` | Missing or malformed parameter |
 | `invalid_slot` | A slot name that is not kebab-case |
