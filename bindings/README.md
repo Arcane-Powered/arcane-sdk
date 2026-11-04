@@ -39,5 +39,5 @@ The web binding is the one exception to that layering: a browser game cannot loa
 native library, so [`js/`](./js) speaks `postMessage` to the desktop's play window
 instead of the C ABI, keeping the same names. It also departs from the shape above:
 `Arcane.init()` resolves to an instance the game keeps rather than a singleton, every call
-is asynchronous, a refused call rejects its promise with an `ArcaneError`, and the codes are
+that reaches the desktop is asynchronous (`achievements.isUnlocked()` and `on()` stay synchronous), a refused call rejects its promise with an `ArcaneError`, and the codes are
 the desktop app's (`offline` where the native SDK says `network_required`).

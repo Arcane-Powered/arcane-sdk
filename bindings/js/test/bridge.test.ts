@@ -5,7 +5,7 @@ type Handler = (method: string, params: any) => { result?: unknown; error?: stri
 
 const HOST = "tauri://localhost";
 
-function frame(handler: Handler) {
+function frame(handler: Handler, replyOrigin = HOST) {
 	const listeners: ((event: any) => void)[] = [];
 	const calls: { method: string; params: any; targetOrigin: string }[] = [];
 	const self: any = {
@@ -17,7 +17,7 @@ function frame(handler: Handler) {
 			const reply = handler(message.method, message.params);
 			if (!reply) return;
 			queueMicrotask(() => {
-				for (const listener of listeners) listener({ source: parent, origin: HOST, data: { arcane: 1, id: message.id, ...reply } });
+				for (const listener of listeners) listener({ source: parent, origin: replyOrigin, data: { arcane: 1, id: message.id, ...reply } });
 			});
 		},
 	};
@@ -188,6 +188,26 @@ describe("lobbies", () => {
 		expect(await arcane.p2p.pollEvents()).toEqual([{ type: "lobby_closed", lobby_id: "l1" }]);
 		expect(await arcane.p2p.pollEvents()).toEqual([{ type: "resync" }]);
 		expect(calls.at(-1)?.params).toEqual({ after: 7 });
+	});
+
+	test("friends events flag a resync after a drop", async () => {
+		const { self, parent } = frame(hello(() => ({ result: { events: [], cursor: 3, dropped: true } })));
+		const arcane = await Arcane.init({ self, parent });
+		expect(await arcane.friends.pollEvents()).toEqual([{ type: "resync" }]);
+	});
+
+	test("a hostOrigin with a trailing slash still matches the host", async () => {
+		const { self, parent, calls } = frame(hello(), "http://tauri.localhost");
+		const arcane = await Arcane.init({ self, parent, hostOrigin: "http://tauri.localhost/" });
+		expect(arcane.available).toBe(true);
+		expect(calls[0]?.targetOrigin).toBe("http://tauri.localhost");
+	});
+
+	test("an opaque host origin is never learned", async () => {
+		const { self, parent, calls } = frame(hello(() => ({ result: { achievements: [] } })), "null");
+		const arcane = await Arcane.init({ self, parent });
+		await arcane.achievements.list();
+		expect(calls.at(-1)?.targetOrigin).toBe("*");
 	});
 });
 

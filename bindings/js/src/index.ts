@@ -222,10 +222,16 @@ class Bridge implements Transport {
 		const pending = this.pending.get(data.id);
 		if (!pending) return;
 		this.pending.delete(data.id);
-		if (pending.method === "hello" && this.hostOrigin === "*" && event.origin) this.hostOrigin = event.origin;
+		if (pending.method === "hello" && this.hostOrigin === "*" && event.origin && event.origin !== "null")
+			this.hostOrigin = event.origin;
 		if (typeof data.error === "string") pending.reject(new ArcaneError(data.error, data.message ?? data.error));
 		else pending.resolve(data.result);
 	}
+}
+
+function normalizeOrigin(origin: string): string {
+	if (/^https?:\/\//i.test(origin)) return new URL(origin).origin;
+	return origin.replace(/\/+$/, "");
 }
 
 export interface InitOptions {
@@ -257,7 +263,7 @@ export class Arcane {
 		const self = options.self ?? (typeof window === "undefined" ? undefined : window);
 		const parent = options.parent ?? self?.parent;
 		if (!self || !parent || parent === self) return new Arcane(false, null, null);
-		const bridge = new Bridge(parent, self, options.hostOrigin ?? "*");
+		const bridge = new Bridge(parent, self, normalizeOrigin(options.hostOrigin ?? "*"));
 		const hello = bridge.call("hello") as Promise<{ available?: boolean; game_id?: string }>;
 		const id = bridge.lastId;
 		const timeout = new Promise<null>((resolve) =>
@@ -324,9 +330,10 @@ class Friends {
 		const reply = (await this.transport.call(
 			"friends.events",
 			this.cursor === null ? {} : { after: this.cursor },
-		)) as { events?: unknown[]; cursor?: number | string | null };
+		)) as { events?: unknown[]; cursor?: number | string | null; dropped?: boolean };
 		if (reply?.cursor !== undefined && reply.cursor !== null) this.cursor = reply.cursor;
-		return reply?.events ?? [];
+		const events = reply?.events ?? [];
+		return reply?.dropped ? [{ type: "resync" }, ...events] : events;
 	}
 }
 

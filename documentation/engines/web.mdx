@@ -4,7 +4,7 @@ description: "Unlock achievements, read friends, host lobbies and keep cloud-syn
 keywords: ["html5", "web", "webgl", "javascript", "typescript", "postMessage", "browser game", "sdk-web"]
 ---
 
-A browser game published on Arcane runs in the desktop app, inside a sandboxed iframe of its own play window. It cannot load the native SDK and has no loopback port, so `@arcane/sdk-web` talks to the play window with `postMessage` instead. The desktop checks every call and answers with the same data the native SDK gets, under the names of the Rust API.
+A browser game published on Arcane runs in the desktop app, inside a sandboxed iframe of its own play window. It cannot load the native SDK and has no loopback port, so `@arcane/sdk-web` talks to the play window with `postMessage` instead. The desktop checks every call, and the results take the shapes `@arcane/sdk-web` defines.
 
 ```ts
 import { Arcane } from "@arcane/sdk-web";
@@ -56,7 +56,7 @@ The same build runs anywhere. In your own browser, on an itch page, or when the 
 
 Playtime, the play session and the first launch are recorded by the desktop on its own, with or without the package. The [coop network](/concepts/coop-network) is not available to a browser game: lobbies hand out the payloads, and the connection between players is the game's own (WebRTC in the page, for instance), limited to the origins the build declared.
 
-Lobby payloads take a `Uint8Array` or a string and come back as `Uint8Array`. A lobby event list that starts with `{ type: "resync" }` means events were dropped while the game was not polling: read the lobby again with `getLobby`.
+Lobby payloads take a `Uint8Array` or a string and come back as `Uint8Array`. A lobby event list that starts with `{ type: "resync" }` means events were dropped while the game was not polling: read the lobby again with `getLobby`. `friends.pollEvents()` does the same: after a `resync`, call `friends.list()` again.
 
 ## Saves
 
