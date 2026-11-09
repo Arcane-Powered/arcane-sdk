@@ -16,6 +16,10 @@
         "pages": ["index", "quickstart", "contributing"]
       },
       {
+        "group": "Publish your game",
+        "pages": ["publishing/getting-started"]
+      },
+      {
         "group": "Concepts",
         "pages": [
           "concepts/client",
