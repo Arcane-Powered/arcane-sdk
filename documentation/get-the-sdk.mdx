@@ -1,0 +1,76 @@
+---
+title: "Get the SDK"
+description: "Where the Arcane SDK lives, how it is released, and which package to add for your engine."
+keywords: ["download", "install", "github", "crates.io", "unity", "c abi", "header", "release", "repository"]
+---
+
+The SDK is open source. Everything — the Rust core, the C ABI header, the Unity package and the web package — lives in one repository:
+
+<Card title="Arcane-Powered/arcane-sdk" icon="github" href="https://github.com/Arcane-Powered/arcane-sdk">
+  Source, releases, the Unity package and the web package. Licensed under MIT or Apache 2.0, at your option.
+</Card>
+
+## Pick your path
+
+| Your game | What you add | Guide |
+|---|---|---|
+| Rust | The `arcane-sdk` crate from [crates.io](https://crates.io/crates/arcane-sdk) | [Quickstart](/quickstart) |
+| Unity | The `com.arcane-powered.sdk` package, from the repository by git URL | [Unity](/engines/unity) |
+| Unreal, Godot, C, C++ or any engine that loads a native library | The shared library and `include/arcane_sdk.h` | [C ABI](/reference/c-abi) |
+| HTML5, played in the desktop app | `@arcane/sdk-web`, built from `bindings/js` | [Web (HTML5)](/engines/web) |
+
+### Rust
+
+```toml Cargo.toml
+[dependencies]
+arcane-sdk = "0.15"
+```
+
+### Unity
+
+In `Packages/manifest.json`:
+
+```json
+{
+  "dependencies": {
+    "com.arcane-powered.sdk": "https://github.com/Arcane-Powered/arcane-sdk.git?path=bindings/unity/com.arcane-powered.sdk"
+  }
+}
+```
+
+Then **Tools ▸ Arcane Powered ▸ Install native plugins** downloads the Windows, macOS and Linux libraries from the matching GitHub release. No Rust toolchain needed.
+
+### Native engines (C ABI)
+
+Each [GitHub release](https://github.com/Arcane-Powered/arcane-sdk/releases) carries the header, `arcane_sdk.h`. Build the library from the repository for the platforms you ship:
+
+```bash
+git clone https://github.com/Arcane-Powered/arcane-sdk
+cd arcane-sdk
+cargo build --release
+```
+
+`target/release/` then holds the shared library (`arcane_sdk.dll`, `libarcane_sdk.dylib` or `libarcane_sdk.so`) and a static one.
+
+### Web (HTML5)
+
+The package is not on npm yet. Build it from the repository and import `dist/index.js` from your game:
+
+```bash
+cd arcane-sdk/bindings/js
+bun install && bun run build
+```
+
+## What you need from the publisher portal
+
+The SDK needs one value from the portal: your title's **game id**. Open the title in the [publisher portal](https://portal.arcane-powered.com), and find it on the **Overview** tab, in the **SDK** card, next to `ARCANE_GAME_ID`. If the title has none yet, click **Create game id**. The id is final: it does not change when the game goes live.
+
+A shipped game never passes that id itself. The desktop app sets `ARCANE_GAME_ID` when it launches the game. You set it by hand only to run your build outside the app — see [Local development](/concepts/local-development).
+
+The same card creates **playtest accounts**: accounts that own the title, so a tester can install and play it before release.
+
+## Versions and releases
+
+The SDK follows semantic versioning. Every release is tagged `vX.Y.Z`, published to crates.io and listed on the [releases page](https://github.com/Arcane-Powered/arcane-sdk/releases). While the version starts with `0.`, a minor version bump can carry a breaking change, so read the release notes before you update.
+
+Found a bug or missing something? [Open an issue](https://github.com/Arcane-Powered/arcane-sdk/issues) on the repository. See [Contributing](/contributing) to send a change.
