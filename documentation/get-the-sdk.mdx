@@ -63,7 +63,7 @@ bun install && bun run build
 
 ## What you need from the publisher portal
 
-The SDK needs one value from the portal: your title's **game id**. Open the title in the [publisher portal](/portal), and find it on the **Overview** tab, in the **SDK** card, next to `ARCANE_GAME_ID`. If the title has none yet, click **Create game id**. The id is final: it does not change when the game goes live.
+The SDK needs one value from the portal: your title's **game id**. Open the title in the [publisher portal](https://portal.arcane-powered.com), and find it on the **Overview** tab, in the **SDK** card, next to `ARCANE_GAME_ID`. If the title has none yet, click **Create game id**. The id is final: it does not change when the game goes live.
 
 A shipped game never passes that id itself. The desktop app sets `ARCANE_GAME_ID` when it launches the game. You set it by hand only to run your build outside the app — see [Local development](/concepts/local-development).
 
@@ -71,6 +71,6 @@ The same card creates **playtest accounts**: accounts that own the title, so a t
 
 ## Versions and releases
 
-The SDK follows semantic versioning. Every release is tagged `vX.Y.Z`, published to crates.io and listed on the [releases page](https://github.com/Arcane-Powered/arcane-sdk/releases). While the version starts with `0.`, a minor bump (`0.14` → `0.15`) can carry a breaking change, so read the release notes before you update.
+The SDK follows semantic versioning. Every release is tagged `vX.Y.Z`, published to crates.io and listed on the [releases page](https://github.com/Arcane-Powered/arcane-sdk/releases). While the version starts with `0.`, a minor version bump can carry a breaking change, so read the release notes before you update.
 
 Found a bug or missing something? [Open an issue](https://github.com/Arcane-Powered/arcane-sdk/issues) on the repository. See [Contributing](/contributing) to send a change.

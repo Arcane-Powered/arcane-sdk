@@ -47,9 +47,9 @@ After the first build of a title, you can upload from a terminal or a CI job (Gi
     export ARCANE_PORTAL_URL=https://portal.arcane-powered.com
 
     node arcane-builds.mjs titles
-    node arcane-builds.mjs push ./build/windows --title <id> --platform windows --version 1.4.2
-    node arcane-builds.mjs push ./build/web --title <id> --platform web --version 1.4.2 --viewport 1280x720
-    node arcane-builds.mjs push ./build/android --title <id> --platform android --version 1.4.2
+    node arcane-builds.mjs push ./build/windows --title YOUR_TITLE_ID --platform windows --version 1.4.2
+    node arcane-builds.mjs push ./build/web --title YOUR_TITLE_ID --platform web --version 1.4.2 --viewport 1280x720
+    node arcane-builds.mjs push ./build/android --title YOUR_TITLE_ID --platform android --version 1.4.2
     ```
 
     `titles` lists the id of every game and add-on. `--draft` keeps the build out of players' hands, and `--scheduled-at <ISO date>` publishes it later. `node arcane-builds.mjs help` lists every option.
