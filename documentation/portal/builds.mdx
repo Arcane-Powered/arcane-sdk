@@ -1,0 +1,59 @@
+---
+title: "Builds"
+description: "Upload Windows, macOS, Linux, browser and Android builds from the portal, or from a terminal and CI with a studio API key."
+keywords: ["build", "upload", "windows", "macos", "linux", "html5", "web build", "android", "apk", "ci", "github actions", "api key", "draft", "scheduled"]
+---
+
+The **Builds** tab of a title uploads its builds. Each build has a version and a platform, and is published at once, kept as a **draft** or **scheduled** for a later date. Uploads resume after a dropped connection.
+
+Whether a new build reaches players at once depends on the review: see [Release review](/portal/review).
+
+## Desktop builds
+
+Windows, macOS and Linux builds are folders you drop on the tab. Players install them from the desktop app.
+
+## Browser builds (HTML5)
+
+A browser build is played in the desktop app or on the web store, with nothing to install. A free browser game can be played there without an account. Drop a folder or a `.zip`. The portal checks it before uploading anything:
+
+- it needs a start file (`index.html` at the root, or one you pick);
+- no native executables, and no two files whose names differ only by case;
+- the size limits shown on the tab: total size, file count and largest file.
+
+You also set the viewport, whether fullscreen is allowed, the network origins the game talks to, and the inputs it uses. Tick **The game uses the Arcane web SDK** if it calls `@arcane/sdk-web` — see [Web (HTML5)](/engines/web).
+
+## Android builds
+
+An Android build is exactly one `.apk`. An `.aab` cannot be installed directly, so the portal refuses it. Players who own the game download the APK from their library on the web store, then install it on their phone.
+
+## From the command line or CI
+
+After the first build of a title, you can upload from a terminal or a CI job (GitHub Actions, GitLab CI, …) instead of the browser. It is the same upload, authenticated with a studio API key.
+
+<Steps>
+  <Step title="Create a key">
+    **Settings → API Access** creates a key. It is shown once: store it as a secret.
+  </Step>
+  <Step title="Download the tool">
+    The upload tool is served by the portal. It needs Node.js 20 or later and nothing else.
+
+    ```bash
+    curl -fsSL https://portal.arcane-powered.com/cli/arcane-builds.mjs -o arcane-builds.mjs
+    ```
+  </Step>
+  <Step title="Upload">
+    ```bash
+    export ARCANE_API_KEY=…
+    export ARCANE_PORTAL_URL=https://portal.arcane-powered.com
+
+    node arcane-builds.mjs titles
+    node arcane-builds.mjs push ./build/windows --title <id> --platform windows --version 1.4.2
+    node arcane-builds.mjs push ./build/web --title <id> --platform web --version 1.4.2 --viewport 1280x720
+    node arcane-builds.mjs push ./build/android --title <id> --platform android --version 1.4.2
+    ```
+
+    `titles` lists the id of every game and add-on. `--draft` keeps the build out of players' hands, and `--scheduled-at <ISO date>` publishes it later. `node arcane-builds.mjs help` lists every option.
+  </Step>
+</Steps>
+
+The same rules apply as in the portal: a studio not yet approved cannot upload, a held update waits for review, and browser builds are checked against the same limits. One file is at most 512 MB. Every upload made with a key shows in the studio's activity log.

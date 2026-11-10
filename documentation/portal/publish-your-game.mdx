@@ -4,11 +4,11 @@ description: "From a studio account to a game players can buy: sign-up, approval
 keywords: ["publish", "studio", "publisher portal", "review", "stripe", "builds", "discovery", "store"]
 ---
 
-This page walks a studio through everything between "we want to be on Arcane Powered" and "players can buy our game". Everything happens in the **publisher portal**, at [portal.arcane-powered.com](https://portal.arcane-powered.com). Integrating the SDK is optional: a game without it still launches, and Arcane tracks its playtime from the process. See [Quickstart](/quickstart) when you want achievements, friends, lobbies or ownership checks.
+This page walks a studio through everything between "we want to be on Arcane Powered" and "players can buy our game", in order. Everything happens in the **publisher portal**, at [portal.arcane-powered.com](https://portal.arcane-powered.com); each step links to the page that covers it in detail. Integrating the SDK is optional: a game without it still launches, and Arcane tracks its playtime from the process. See [Get the SDK](/get-the-sdk) when you want achievements, friends, lobbies or ownership checks.
 
 <Steps>
   <Step title="Create your studio">
-    Sign in with an Arcane account, then create your studio. Pick what you apply as: **studio** (you make games), **publisher** (you publish other studios' games) or **both**. A publisher also describes what it does, its website and the games it already published.
+    Sign in with an Arcane account, then create your studio. Pick what you apply as: **studio** (you make games), **publisher** (you publish other studios' games) or **both**. A publisher also describes what it does, its website and the games it already published. See [Studio and team](/portal/studio).
 
     Creating a studio means accepting the studio terms, shown in the sign-up form. The version you accepted, the date and the account that accepted are recorded.
   </Step>
@@ -19,24 +19,24 @@ This page walks a studio through everything between "we want to be on Arcane Pow
     **Payments** opens a Stripe Connect onboarding. Stripe asks for your company, a bank account and an identity check. Until Stripe says the account is ready, sales still happen but your share cannot be transferred, so do this first.
   </Step>
   <Step title="Invite your team">
-    **Settings → Team** invites people by email. Studio roles are **admin**, **finance** and **member**; members then get per-game presets (release manager, store manager, developer, QA, analyst, community manager, viewer). Everyone on a game's team gets a free team copy to play it before release.
+    **Settings → Studio Team** invites people by email. Studio roles are **admin**, **finance** and **member**; members then get per-game presets (release manager, store manager, developer, QA, analyst, community manager, viewer). Everyone on a game's team gets a free team copy to play it before release.
   </Step>
   <Step title="Create the title and its store page">
-    **Catalogue → New title.** Fill in the store page: description, cover, screenshots, trailer, tags, system requirements and price. Add DLCs and editions (bundles of the game and its DLCs) from the same workspace.
+    **Games → New title.** Fill in the store page: description, cover, screenshots, trailer, tags, system requirements and price. Add DLCs and editions (bundles of the game and its DLCs) from the same workspace. See [Store page](/portal/store-page).
 
     Every game also declares how it used **generative AI** (LLMs, image, music and voice generators; upscaling and ordinary tools do not count), on the **Generative AI** tab. Players see a badge built from it. A false declaration gets the game refused or removed.
   </Step>
   <Step title="Upload a build">
-    The **Builds** tab uploads Windows, macOS and Linux builds, an HTML5 build players run in their browser, or an Android `.apk`. Uploads resume after a dropped connection. Builds can be published at once, kept as drafts or scheduled.
+    The **Builds** tab uploads Windows, macOS and Linux builds, an HTML5 build players run in their browser, or an Android `.apk`. Uploads resume after a dropped connection. Builds can be published at once, kept as drafts or scheduled. See [Builds](/portal/builds).
 
-    After the first build, you can upload from a terminal or a CI job with a studio API key: see the command line guide shipped with the portal at `https://portal.arcane-powered.com/cli/arcane-builds.mjs` (`node arcane-builds.mjs help`).
+    After the first build, you can upload from a terminal or a CI job with a studio API key: see [From the command line or CI](/portal/builds#from-the-command-line-or-ci).
 
     Every build is scanned for malware before it is published. A build that fails the scan is refused and never reaches players.
   </Step>
   <Step title="Submit the game for review">
     Every game's **first release** is reviewed by Arcane before players can see it. **Submit for review** checks that the store page has a description, a cover, screenshots, a price, system requirements, a published build and an AI declaration, then freezes a copy of the page for the reviewer. Staff play the game in the desktop app and approve it, or send it back with a note.
 
-    Once approved, you choose when it goes live.
+    Once approved, you choose when it goes live. See [Release review](/portal/review).
   </Step>
 </Steps>
 
@@ -54,6 +54,8 @@ Store-page edits on a live game are not reviewed. Arcane can take a game down at
 
 ## Where your game is sold
 
+Details in [Storefronts and pricing](/portal/storefronts).
+
 Arcane has two storefronts. While Discovery is in beta, the launcher shows Discovery in place of the Store, and the Store reads as coming soon.
 
 - **Discovery**, for small independent games. A team of 15 people or fewer can join from the title's **Discovery** tab. You choose Arcane's share of each sale (10 % by default, anywhere from 0 to 100 %), and the portal simulates what you receive on a 1, 2 or 5 € copy. A copy bought on Discovery can **never be resold**. You can add reward tiers, a funding goal, pay-what-you-want on a paid game, or donations on a free one. Once the game sells well enough, Arcane offers to move it to the Store; you decide.
@@ -62,6 +64,8 @@ Arcane has two storefronts. While Discovery is in beta, the launcher shows Disco
 In both cases Arcane collects the payment and the tax, and your share is transferred to your Stripe account. A free game is never "bought": players add it to their library.
 
 ## Other tools in the portal
+
+Details in [Selling tools](/portal/selling-tools).
 
 - **Activation keys** for press, giveaways, bundles or retail. A key copy can never be resold.
 - **Pre-orders** and **demo builds**.

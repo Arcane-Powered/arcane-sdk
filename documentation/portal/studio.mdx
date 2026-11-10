@@ -1,0 +1,62 @@
+---
+title: "Studio and team"
+description: "Create a studio, get it approved, set up payouts, invite your team and create API keys."
+keywords: ["studio", "sign-up", "approval", "pending", "stripe", "payouts", "team", "roles", "api key", "publisher"]
+---
+
+## Create your studio
+
+Sign in to the portal with an Arcane account, then create your studio. One account owns one studio; to join another studio, ask its admin for an invitation.
+
+You apply as one of three kinds:
+
+| Kind | For |
+|---|---|
+| **Studio** | You make games. |
+| **Publisher** | You publish other studios' games. |
+| **Both** | You do both. |
+
+A publisher, or both, also describes what it does, its website and the games it already published. Arcane reviews that together with the studio, and it is what opens **Scouting**: browsing Discovery games and writing to their makers.
+
+## Approval
+
+A new studio starts **pending**. Until an Arcane staff member approves it, you can:
+
+- set up payouts;
+- fill in your profile;
+- invite your team;
+- browse the catalogue, read-only.
+
+You cannot create titles, upload builds or publish a store page yet. Every other page tells you so. If Arcane declines the studio, or sends it back, the note left by the reviewer says what is missing.
+
+## Payouts
+
+**Payments** opens Stripe Connect onboarding: your company, a bank account and an identity check. Do it first. Until Stripe says the account is ready, players can still buy your game, but your share cannot be transferred to you, and partner studios cannot accept a revenue share with you.
+
+Arcane collects every payment and the tax on it, then Stripe transfers your share to your account on each sale.
+
+## Team and roles
+
+**Settings → Studio Team** invites people by email. An invitation is accepted with an account whose email address is verified.
+
+Each member has a studio role:
+
+| Role | Can |
+|---|---|
+| **Admin** | Everything, including the team and payments. |
+| **Finance** | Payments, payouts and billing. |
+| **Member** | What their per-game roles allow. |
+
+A member then gets a role on each game: **release manager**, **store manager**, **developer**, **QA**, **analyst**, **community manager** or **viewer**. Members who work on a game get a free team copy, so they can install and play it before release.
+
+## Public studio page
+
+**Settings → Studio Profile** and **Public studio page** set your studio's name, website, country and description. Players see them on your studio page in the store, and on games where you are credited.
+
+## API keys
+
+**Settings → API Access** creates keys for uploading builds from a terminal or a CI job — see [Builds](/portal/builds#from-the-command-line-or-ci). A key is shown once. It can upload builds for every title of the studio, so keep one key per CI system, label it, and revoke it in the same place when you no longer need it.
+
+## Activity log
+
+Every change made in the portal for your studio — by a person or an API key — is recorded. Arcane staff read it when they review your games.
